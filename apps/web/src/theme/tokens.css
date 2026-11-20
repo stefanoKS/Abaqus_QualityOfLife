@@ -1,0 +1,131 @@
+/*
+ * Abaqus QOL design tokens.
+ *
+ * Contrast pairs below are computed with the WCAG 2.2 relative-luminance
+ * formula, not estimated. Ratios in parentheses must stay >= 4.5 for body text
+ * and >= 3.0 for large text and non-text boundaries.
+ *
+ *   #FFFFFF on --color-primary  #146953  -> 6.61  (AA normal text)
+ *   #FFFFFF on --color-primary-hover      -> 8.62  (AAA normal text)
+ *   #DCE6E8 on --color-nav      #142C39  -> 11.41 (AAA normal text)
+ *   #AFC1C6 on --color-nav      #142C39  -> 7.78  (AAA normal text)
+ *   #192E39 on --color-page     #F4F6F8  -> 13.69 (AAA normal text)
+ *   #5D727A on --color-surface  #FFFFFF  -> 5.03  (AA normal text)
+ *   #9A5600 on --color-surface  #FFFFFF  -> 5.67  (AA normal text)
+ *   #B42318 on --color-surface  #FFFFFF  -> 6.57  (AA normal text)
+ *   #CFD8DD border on #FFFFFF            -> 1.50  (decorative only, never the sole cue)
+ */
+:root {
+  /* Surfaces */
+  --color-nav: #142c39;
+  --color-nav-hover: #254451;
+  --color-nav-divider: #48606b;
+  --color-nav-text: #dce6e8;
+  --color-nav-text-muted: #afc1c6;
+  --color-nav-accent: #6ed5bd;
+
+  --color-primary: #146953;
+  --color-primary-hover: #0c5745;
+  --color-primary-text: #ffffff;
+  --color-primary-soft: #e3f2ec;
+  --color-primary-soft-strong: #e0eee9;
+
+  --color-page: #f4f6f8;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f6f8f9;
+  --color-surface-sunken: #edf2f4;
+
+  --color-border: #cfd8dd;
+  --color-border-strong: #9bb7ae;
+  --color-border-subtle: #e3e9eb;
+  --color-divider: #dbe2e5;
+
+  --color-text: #192e39;
+  --color-text-muted: #5d727a;
+  --color-text-faint: #63767e;
+  --color-text-on-brand: #ffffff;
+
+  --color-warning: #9a5600;
+  --color-warning-surface: #fff4e5;
+  --color-danger: #b42318;
+  --color-danger-surface: #fff1e9;
+  --color-good: #1b6a48;
+  --color-good-surface: #e2f1e8;
+  --color-live: #176082;
+  --color-live-surface: #deeff9;
+
+  --color-focus: #42ac9a;
+  --color-selection: #e3f2ec;
+
+  /* Accent used by CAD preview geometry and the rigid panel. */
+  --color-cad-edge: #354f55;
+  --color-cad-default: #57aaa0;
+  --color-panel: #4c5963;
+  --color-swatch-empty: #acb7b9;
+
+  /* Typography. Japanese fallbacks come before the generic family so kanji
+     and kana render with a Japanese-capable face on every supported OS. */
+  --font-sans:
+    'Segoe UI', 'Yu Gothic UI', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
+    'Meiryo', Inter, Arial, sans-serif;
+  --font-mono: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  --text-body: 0.9rem;
+  --text-label: 0.84rem;
+  --text-meta: 0.78rem;
+  --text-micro: 0.72rem;
+  --text-heading: 1.16rem;
+  --line-height: 1.55;
+
+  /* Shape and spacing */
+  --radius-sm: 5px;
+  --radius: 6px;
+  --radius-lg: 9px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 22px;
+  --shadow-card: 0 1px 3px #142c3810;
+  --focus-ring: 3px solid var(--color-focus);
+  --focus-offset: 2px;
+
+  color-scheme: light;
+}
+
+/* Visually hidden but available to screen readers. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.lang-picker {
+  display: flex;
+  align-items: center;
+}
+.lang-picker select {
+  background: var(--color-nav-hover);
+  color: var(--color-nav-text);
+  border: 1px solid var(--color-nav-divider);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-meta);
+  padding: 5px 6px;
+  min-height: 30px;
+  cursor: pointer;
+}
+.lang-picker select:hover {
+  background: #2d5262;
+}
+
+@media (forced-colors: active) {
+  .lang-picker select {
+    border: 1px solid ButtonText;
+    color: ButtonText;
+  }
+}

@@ -5,9 +5,31 @@ import Dashboard from './Dashboard'
 import Workspace from './Workspace'
 import { RunView } from './RunView'
 import { err, go, request, type Revision, type Summary, type Job } from './api'
+import { I18nProvider, LANGUAGES, useI18n, type Language } from './i18n'
+import './theme/tokens.css'
 import './style.css'
 
+function LanguageSelect() {
+  const { t, lang, setLang } = useI18n()
+  return (
+    <label className="lang-picker">
+      <select
+        aria-label={t('lang.switch')}
+        value={lang}
+        onChange={(e) => setLang(e.target.value as Language)}
+      >
+        {LANGUAGES.map((option) => (
+          <option key={option.id} value={option.id}>
+            {t(option.labelKey)}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function App() {
+  const { t } = useI18n()
   const [route, setRoute] = useState(location.hash.slice(1)),
     [rev, setRev] = useState<Revision | null>(null),
     [job, setJob] = useState<Job | undefined>()
@@ -65,22 +87,22 @@ function App() {
   return (
     <>
       <header className="topbar">
-        <button className="brand" onClick={workspace} aria-label="SimplifyAbaqus workspace">
+        <button className="brand" onClick={workspace} aria-label={t('nav.brandAria')}>
           <span className="brand-icon">
             <Layers3 />
           </span>
-          <span>
-            Simplify<strong>Abaqus</strong>
+          <span className="brand-name">
+            Abaqus <strong>QOL</strong>
           </span>
         </button>
         <div className="nav-separator" />
-        <nav aria-label="Main navigation">
+        <nav aria-label={t('nav.main')}>
           <button
             className={!['dashboard', 'diagnostics', 'results'].includes(view) ? 'here' : ''}
             onClick={workspace}
           >
             <PanelTop />
-            Workspace
+            {t('nav.workspace')}
           </button>
           <button
             className={
@@ -89,14 +111,15 @@ function App() {
             onClick={() => go('dashboard')}
           >
             <LayoutDashboard />
-            Dashboard
+            {t('nav.dashboard')}
           </button>
         </nav>
         <span className="spacer" />
         <span className="local">
           <Monitor />
-          Local session
+          {t('nav.localSession')}
         </span>
+        <LanguageSelect />
       </header>
       {view === 'dashboard' ? (
         <Dashboard notify={notify} />
@@ -105,12 +128,12 @@ function App() {
       ) : rev ? (
         <Workspace key={route + rev.id} initial={rev} locked={job} notify={notify} />
       ) : (
-        <main className="page">{loadingError || 'Opening project…'}</main>
+        <main className="page">{loadingError || t('common.openingProject')}</main>
       )}
       {message && (
         <div role="alert" className="toast">
           {message}
-          <button aria-label="Dismiss message" onClick={() => toast('')}>
+          <button aria-label={t('nav.dismiss')} onClick={() => toast('')}>
             <X />
           </button>
         </div>
@@ -118,4 +141,8 @@ function App() {
     </>
   )
 }
-createRoot(document.getElementById('root')!).render(<App />)
+createRoot(document.getElementById('root')!).render(
+  <I18nProvider>
+    <App />
+  </I18nProvider>,
+)

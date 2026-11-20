@@ -20,8 +20,11 @@ def serve(port, test_data=None):
         raise SystemExit("Build the browser first: npm --prefix apps/web run build")
     if test_data:
         os.environ["SEAL_DATA"] = test_data
+        os.environ.pop("ABAQUS_QOL_DATA", None)
         os.environ.pop("SIMPLIFY_ABAQUS_LAUNCHER", None)
+        os.environ.pop("ABAQUS_QOL_LAUNCHER", None)
         os.environ.pop("SEAL_ODA", None)
+        os.environ.pop("ABAQUS_QOL_ODA", None)
     from services import store
     import socket
 
@@ -32,7 +35,7 @@ def serve(port, test_data=None):
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     worker = subprocess.Popen(args, cwd=ROOT, creationflags=flags)
     try:
-        print(f"SimplifyAbaqus http://127.0.0.1:{port} · worker PID {worker.pid}", flush=True)
+        print(f"Abaqus QOL http://127.0.0.1:{port} · worker PID {worker.pid}", flush=True)
         uvicorn.run("services.api.main:app", host="127.0.0.1", port=port, log_level="warning")
     finally:
         stop.touch()

@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 import type { Job, Revision } from '../src/api'
 import type { Display, ViewMesh } from '../src/viewportModel'
 

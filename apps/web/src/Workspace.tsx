@@ -6,20 +6,15 @@ import {
   Box,
   Boxes,
   CheckCheck,
-  ChevronDown,
   ChevronRight,
   CircleDot,
   Copy,
-  Eye,
-  EyeOff,
   FileInput,
   FileText,
   Grid2X2,
   Layers3,
-  Link2,
   LoaderCircle,
   MousePointer2,
-  MoveVertical,
   Play,
   Save,
   ScanLine,
@@ -29,80 +24,28 @@ import {
 import Viewport from './Viewport'
 import type { Display, ViewMesh, Picked, SelectionMode } from './viewportModel'
 import { Plot } from './Plot'
+import { artifact, err, go, request, type Job, type Project, type Revision } from './api'
+import { useI18n, labelFrom } from './i18n'
+import type { TranslationKey } from './i18n'
+import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
+import { Facts } from './shared/components/Facts'
+import { NumberInput } from './shared/components/NumberInput'
+import { AssemblyTree } from './features/workspace/AssemblyTree'
+import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
+import { workflowStates } from './features/workspace/workflowStates'
 import {
-  artifact,
-  demoNotice,
-  err,
-  go,
-  request,
-  type Job,
-  type Project,
-  type Revision,
-} from './api'
+  MaterialEditor,
+  freshCard,
+  materialIssues,
+} from './features/materials/MaterialEditor'
+import { meshQuality, type MeshFile } from './features/mesh/meshQuality'
+import { MeshReview } from './features/mesh/MeshReview'
 
-const steps = [
-  { name: 'Import', icon: FileInput },
-  { name: 'Components', icon: Boxes },
-  { name: 'Materials', icon: Layers3 },
-  { name: 'Mounting / Contact', icon: Link2 },
-  { name: 'Motion', icon: MoveVertical },
-  { name: 'Mesh', icon: Grid2X2 },
-  { name: 'Review / Run', icon: Play },
-  { name: 'Results', icon: Activity },
-]
-const roleNames = {
-  seal: 'Weatherstrip seal',
-  moving_panel: 'Moving panel',
-  vehicle_body: 'Vehicle body',
-  unassigned: 'Unassigned',
-}
-type Mesh = ViewMesh & { counts: Record<string, number> }
+type Mesh = ViewMesh & MeshFile
 type Props = { initial: Revision; locked?: Job; notify: (msg: string) => void }
-function NumberInput({
-  label,
-  value,
-  onChange,
-  min,
-  step = 'any',
-}: {
-  label: string
-  value: number
-  onChange: (v: number) => void
-  min?: number
-  step?: string
-}) {
-  return (
-    <label>
-      {label}
-      <input
-        type="number"
-        step={step}
-        min={min}
-        key={value}
-        defaultValue={value}
-        onBlur={(e) => {
-          const n = e.currentTarget.valueAsNumber
-          if (Number.isFinite(n) && n !== value) onChange(n)
-          else e.currentTarget.value = String(value)
-        }}
-      />
-    </label>
-  )
-}
-function Facts({ rows }: { rows: [string, React.ReactNode][] }) {
-  return (
-    <dl>
-      {rows.map(([k, v]) => (
-        <div key={k}>
-          <dt>{k}</dt>
-          <dd>{v}</dd>
-        </div>
-      ))}
-    </dl>
-  )
-}
 
 export default function Workspace({ initial, locked, notify }: Props) {
+  const { t } = useI18n()
   const [rev, setRev] = useState(initial),
     [p, setP] = useState(initial.setup)
   const [stage, setStage] = useState(1),
@@ -125,10 +68,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
     [related, setRelated] = useState<Job[]>([])
   const [execution, setExecution] = useState('DEMO'),
     [scenario, setScenario] = useState('success'),
-    [runName, setRunName] = useState('Closing analysis'),
+    [runName, setRunName] = useState(() => t('review.defaultRunName')),
     [cpus, setCpus] = useState(1)
   const [unitConfirmed, confirmUnit] = useState(false),
     [expanded, expand] = useState<string[]>([])
+  const [activeMaterial, setActiveMaterial] = useState<string | null>(p.materials[0]?.id ?? null)
   const [placement, setPlacement] = useState<{ initial_vertical_mesh_clearance_mm: number } | null>(
     null,
   )
@@ -169,11 +113,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
           history.replaceState(null, '', '#workspace/' + next.id)
           setRev(next)
           setP(next.setup)
+          setActiveMaterial(next.setup.materials[0]?.id ?? null)
           select(null)
           hide([])
           setBuild(null)
           setMesh(null)
-          message('Drawing imported. Review roles, materials, and mounting.')
+          message(t('import.done'))
           setStage(1)
         } else if (['Cancelled', 'Failed', 'Unknown / worker disconnected'].includes(job.status)) {
           throw new Error(job.diagnostic || job.status)
@@ -190,7 +135,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
       ac.abort()
       clearTimeout(timer)
     }
-  }, [drawingJob, rev.id, problem])
+  }, [drawingJob, rev.id, problem, t])
   useEffect(() => {
     request<Record<string, string>>('/api/capabilities').then(setCap).catch(problem)
   }, [problem])
@@ -206,6 +151,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
       })
     return () => ac.abort()
   }, [p, problem])
+  const active = anyActive([...(build ? [build] : []), ...related])
   useEffect(() => {
     let live = true
     async function poll() {
@@ -223,12 +169,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
       }
     }
     void poll()
-    const timer = setInterval(poll, 1400)
+    // Faster cadence only while a job can still change; the interval is rebuilt on
+    // the transition to idle, not on every poll result.
+    const timer = setInterval(poll, active ? ACTIVE_POLL_MS : IDLE_POLL_MS)
     return () => {
       live = false
       clearInterval(timer)
     }
-  }, [rev.id, generation, problem])
+  }, [rev.id, generation, problem, active])
   const ready = build?.status === 'Completed' && !dirty
   useEffect(() => {
     setMesh(null)
@@ -291,6 +239,16 @@ export default function Workspace({ initial, locked, notify }: Props) {
       ),
     [p],
   )
+  const quality = useMemo(() => (mesh ? meshQuality(mesh, p) : null), [mesh, p])
+  const invalidMaterials = useMemo(
+    () => p.materials.filter((material) => materialIssues(material).errors.length > 0),
+    [p.materials],
+  )
+  const steps = useMemo(
+    () => WORKFLOW_STEPS.map((step) => t(step.nameKey)),
+    [t],
+  )
+  const states = useMemo(() => workflowStates(p, build, related), [p, build, related])
   function target(next: SelectionMode) {
     setMode(next)
     if (next === 'component') {
@@ -320,7 +278,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     setP(saved.setup)
     setBuild(null)
     setMesh(null)
-    message('Revision ' + saved.number + ' saved.')
+    message(t('status.revisionSaved', { number: saved.number }))
     return saved
   }
   async function execute(fn: () => Promise<unknown>) {
@@ -361,7 +319,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     go('diagnostics/' + r.id)
   }
   async function importFile(f: File) {
-    if (!unitConfirmed) throw new Error('Confirm that the drawing coordinates are in millimetres.')
+    if (!unitConfirmed) throw new Error(t('import.needsUnits'))
     const r = await save(),
       form = new FormData()
     form.append('base', r.id)
@@ -370,7 +328,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     const job = await request<Job>('/api/projects/' + r.project + '/drawing', 'POST', form)
     sessionStorage.setItem('import:' + r.id, job.id)
     setDrawingJob(job.id)
-    message('Drawing import queued.')
+    message(t('import.queued'))
   }
   function switchDimension(value: Project['dimension']) {
     edit((n) => {
@@ -380,20 +338,29 @@ export default function Workspace({ initial, locked, notify }: Props) {
     setShowMesh(false)
     select(null)
   }
+  function updateMaterial(id: string, patch: Partial<Project['materials'][number]>) {
+    edit((n) => {
+      const card = n.materials.find((m) => m.id === id)
+      if (card) Object.assign(card, patch)
+    })
+  }
   const selectionName = pick?.instance
     ? pick.id
     : pick?.kind === 'component'
       ? component?.name
       : (edge?.name ?? face?.name ?? pick?.id)
   const dimension = p.dimension === '3D'
+  const blockedReason = invalidMaterials.length
+    ? invalidMaterials.map((m) => m.name).join(' · ')
+    : ''
   return (
     <main className="workspace page">
       <div className="crumb">
-        <span>Workbench</span>
+        <span>{t('workspace.workbench')}</span>
         <ChevronRight />
-        <button onClick={() => go('dashboard')}>Projects</button>
+        <button onClick={() => go('dashboard')}>{t('workspace.projects')}</button>
         <ChevronRight />
-        Revision {String(rev.number).padStart(2, '0')}
+        {t('workspace.revision', { number: String(rev.number).padStart(2, '0') })}
       </div>
       <div className="page-heading">
         <div>
@@ -403,17 +370,17 @@ export default function Workspace({ initial, locked, notify }: Props) {
               <Axis3D />
               {p.dimension}
             </span>
-            <span>{dimension ? 'Straight extrusion preview' : 'Plane stress'}</span>
+            <span>{dimension ? t('workspace.extrusionPreview') : t('workspace.planeStress')}</span>
             <i />
             N–mm–s–tonne
             <i />
-            {p.source.kind === 'synthetic' ? 'Synthetic example' : p.source.filename}
+            {p.source.kind === 'synthetic' ? t('workspace.synthetic') : p.source.filename}
           </div>
         </div>
         <div className="actions">
           {locked ? (
             <>
-              <span className="badge">Submitted setup</span>
+              <span className="badge">{t('workspace.submittedSetup')}</span>
               <button
                 onClick={() =>
                   execute(async () => {
@@ -426,117 +393,74 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 }
               >
                 <Copy />
-                Duplicate setup
+                {t('dashboard.duplicate')}
               </button>
             </>
           ) : (
             <>
-              <button disabled={!dirty || busy} onClick={() => execute(save)}>
+              <button
+                disabled={!dirty || busy || !!blockedReason}
+                title={blockedReason || undefined}
+                onClick={() => execute(save)}
+              >
                 <Save />
-                Save revision
+                {t('workspace.saveRevision')}
               </button>
               <button className="primary" onClick={() => changeStage(6)}>
                 <Play />
-                Review / Run
+                {t('workspace.reviewRun')}
               </button>
             </>
           )}
         </div>
       </div>
+      {blockedReason && (
+        <p className="error-text blocked-banner" role="alert">
+          {t('materials.err.finite')} — {blockedReason}
+        </p>
+      )}
       <div className="workgrid">
         <aside className="left card">
           <div className="panel-title">
             <Waypoints />
-            Workflow
+            {t('workspace.workflow')}
           </div>
-          <nav className="steps" aria-label="Workflow">
-            {steps.map(({ name, icon: Icon }, i) => (
-              <button
-                key={name}
-                className={stage === i ? 'selected' : ''}
-                onClick={() => changeStage(i)}
-              >
-                <Icon />
-                {name}
-                {stage === i && <ChevronRight />}
-              </button>
-            ))}
-          </nav>
+          <WorkflowNavigation stage={stage} states={states} onSelect={changeStage} />
           <div className="panel-title tree-title">
             <Boxes />
-            Assembly tree
+            {t('workspace.assemblyTree')}
           </div>
-          <div className="tree">
-            {p.components.map((c) => (
-              <div key={c.id}>
-                <div className={'tree-row ' + (component?.id === c.id ? 'current' : '')}>
-                  <button
-                    aria-label={'Expand ' + c.name}
-                    onClick={() =>
-                      expand((old) =>
-                        old.includes(c.id) ? old.filter((v) => v !== c.id) : [...old, c.id],
-                      )
-                    }
-                  >
-                    {expanded.includes(c.id) ? <ChevronDown /> : <ChevronRight />}
-                  </button>
-                  <button
-                    className="tree-item"
-                    onClick={() => {
-                      setMode('component')
-                      select({ kind: 'component', id: c.id, component: c.id })
-                      setStage(1)
-                    }}
-                  >
-                    <Box />
-                    {c.name}
-                  </button>
-                  <button
-                    aria-label={'Toggle visibility ' + c.name}
-                    onClick={() =>
-                      hide((old) =>
-                        old.includes(c.id) ? old.filter((id) => id !== c.id) : [...old, c.id],
-                      )
-                    }
-                  >
-                    {hidden.includes(c.id) ? <EyeOff /> : <Eye />}
-                  </button>
-                </div>
-                {expanded.includes(c.id) && (
-                  <div className="children">
-                    {[
-                      ...p.faces
-                        .filter((f) => f.component === c.id)
-                        .map((f) => ({ ...f, kind: 'face' as const })),
-                      ...p.edges
-                        .filter((e) => e.component === c.id)
-                        .map((e) => ({ ...e, kind: 'edge' as const })),
-                    ].map((t) => (
-                      <button
-                        key={t.id}
-                        className={chosen === t.id ? 'active' : ''}
-                        onClick={() => {
-                          setMode(t.kind)
-                          setStage(t.kind === 'face' ? 2 : 3)
-                          select({ kind: t.kind, id: t.id, entity: t.id, component: c.id })
-                        }}
-                      >
-                        {t.kind === 'face' ? <Layers3 /> : <ScanLine />}
-                        {t.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+          <AssemblyTree
+            project={p}
+            currentComponent={component?.id}
+            chosen={chosen}
+            hidden={hidden}
+            expanded={expanded}
+            onExpand={(id) =>
+              expand((old) =>
+                old.includes(id) ? old.filter((value) => value !== id) : [...old, id],
+              )
+            }
+            onVisibility={(id) =>
+              hide((old) =>
+                old.includes(id) ? old.filter((value) => value !== id) : [...old, id],
+              )
+            }
+            onPick={(kind, id, componentId) => {
+              setMode(kind)
+              setStage(kind === 'face' ? 2 : kind === 'edge' ? 3 : 1)
+              select({ kind, id, entity: id, component: componentId })
+            }}
+          />
         </aside>
         <section className="canvas-card card">
           <div className="panel-title">
             <Box />
-            Geometry viewport
+            {t('workspace.geometryViewport')}
             <div className="spacer" />
-            <span className="view-label">{dimension ? '3D MODEL' : 'SECTION XY'}</span>
+            <span className="view-label">
+              {dimension ? t('workspace.view3d') : t('workspace.view2d')}
+            </span>
           </div>
           <div className="canvas-toolbar">
             <div className="segment">
@@ -545,6 +469,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   key={d}
                   disabled={!!locked && p.dimension !== d}
                   className={p.dimension === d ? 'active' : ''}
+                  aria-pressed={p.dimension === d}
                   onClick={() => {
                     if (d !== p.dimension) switchDimension(d)
                   }}
@@ -557,17 +482,17 @@ export default function Workspace({ initial, locked, notify }: Props) {
             <label className="pick-mode">
               <MousePointer2 />
               <select
-                aria-label="Selection mode"
+                aria-label={t('workspace.selectionMode')}
                 value={mode}
                 onChange={(e) => target(e.target.value as SelectionMode)}
               >
-                <option value="component">Component</option>
-                <option value="face">{dimension ? 'Face' : 'Region'}</option>
-                <option value="edge">Edge</option>
+                <option value="component">{t('sel.component')}</option>
+                <option value="face">{dimension ? t('sel.face') : t('sel.region')}</option>
+                <option value="edge">{t('sel.edge')}</option>
                 {mesh && showMesh && (
                   <>
-                    <option value="element">Element</option>
-                    <option value="node">Node</option>
+                    <option value="element">{t('sel.element')}</option>
+                    <option value="node">{t('sel.node')}</option>
                   </>
                 )}
               </select>
@@ -576,8 +501,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
             {mesh && (
               <button
                 className={'icon ' + (showMesh ? 'active' : '')}
-                title="Toggle mesh"
-                aria-label="Toggle mesh"
+                title={t('workspace.toggleMesh')}
+                aria-label={t('workspace.toggleMesh')}
+                aria-pressed={showMesh}
                 onClick={() => setShowMesh((v) => !v)}
               >
                 <Grid2X2 />
@@ -611,32 +537,32 @@ export default function Workspace({ initial, locked, notify }: Props) {
             ))}
             <span>
               <b style={{ background: '#50616e' }} />
-              Rigid panel
+              {t('workspace.rigidPanel')}
             </span>
           </div>
           <div className="canvas-footer">
             <span>
               <MousePointer2 />
-              {dimension ? 'Drag to orbit' : 'Drag to pan'} · Scroll to zoom
+              {dimension ? t('workspace.hint3d') : t('workspace.hint2d')}
             </span>
             <span>
-              {p.faces.length} regions · {p.edges.length} edges
+              {t('workspace.selectionCounts', { regions: p.faces.length, edges: p.edges.length })}
             </span>
           </div>
         </section>
         <aside className="right card">
           <div className="panel-title">
             <SlidersHorizontal />
-            Properties
+            {t('workspace.properties')}
           </div>
           <div className="property-body">
-            <div className="eyebrow"> {steps[stage].name}</div>
+            <div className="eyebrow">{steps[stage]}</div>
             <fieldset disabled={!!locked || busy}>
               {stage === 0 && (
                 <>
-                  <h2>Drawing source</h2>
+                  <h2>{t('import.title')}</h2>
                   <label>
-                    Project name
+                    {t('import.projectName')}
                     <input
                       value={p.name}
                       maxLength={100}
@@ -649,28 +575,25 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </label>
                   <Facts
                     rows={[
-                      ['Source', p.source.filename],
-                      ['Section plane', 'XY · Z = 0'],
-                      ['Units', 'N–mm–s–tonne'],
+                      [t('import.source'), p.source.filename],
+                      [t('import.sectionPlane'), 'XY · Z = 0'],
+                      [t('import.units'), 'N–mm–s–tonne'],
                     ]}
                   />
                   {rev.source_id && (
                     <a className="asset" href={'/api/revisions/' + rev.id + '/drawing'} download>
                       <ArrowDownToLine />
-                      Download source drawing
+                      {t('import.download')}
                     </a>
                   )}
-                  <p>
-                    Import a clean planar section with closed regions and a panel profile. A
-                    replacement drawing starts a new revision with fresh selections.
-                  </p>
+                  <p>{t('import.help')}</p>
                   <label className="check">
                     <input
                       type="checkbox"
                       checked={unitConfirmed}
                       onChange={(e) => confirmUnit(e.target.checked)}
                     />
-                    Drawing coordinates are in mm
+                    {t('import.confirmUnits')}
                   </label>
                   <input
                     ref={file}
@@ -685,22 +608,24 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   />
                   <button disabled={!unitConfirmed} onClick={() => file.current?.click()}>
                     <FileInput />
-                    Import DXF / DWG
+                    {t('import.action')}
                   </button>
-                  <small>{cap.dwg === 'Configured' ? 'ODA converter configured' : cap.dwg}</small>
+                  <small>
+                    {cap.dwg === 'Configured' ? t('import.odaConfigured') : cap.dwg}
+                  </small>
                 </>
               )}
               {stage === 1 && (
                 <>
-                  <h2>{component?.name ?? 'Select a component'}</h2>
+                  <h2>{component?.name ?? t('components.select')}</h2>
                   {component && (
                     <>
                       <span className="kind-tag">
                         <Box />
-                        Component
+                        {t('components.kind')}
                       </span>
                       <label>
-                        Engineering role
+                        {t('components.role')}
                         <select
                           value={component.role}
                           onChange={(e) =>
@@ -710,25 +635,30 @@ export default function Workspace({ initial, locked, notify }: Props) {
                             })
                           }
                         >
-                          {Object.entries(roleNames).map(([id, name]) => (
-                            <option key={id} value={id}>
-                              {name}
+                          {(
+                            ['seal', 'moving_panel', 'vehicle_body', 'unassigned'] as const
+                          ).map((role) => (
+                            <option key={role} value={role}>
+                              {t(('role.' + role) as TranslationKey)}
                             </option>
                           ))}
                         </select>
                       </label>
                       <Facts
                         rows={[
-                          ['Regions', p.faces.filter((f) => f.component === component.id).length],
                           [
-                            'Boundary edges',
+                            t('components.regions'),
+                            p.faces.filter((f) => f.component === component.id).length,
+                          ],
+                          [
+                            t('components.boundaryEdges'),
                             p.edges.filter((e) => e.component === component.id).length,
                           ],
                         ]}
                       />
                     </>
                   )}
-                  <h3>Section regions</h3>
+                  <h3>{t('components.sectionRegions')}</h3>
                   <div className="region-list">
                     {p.faces
                       .filter((f) => !component || f.component === component.id)
@@ -751,15 +681,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
               )}
               {stage === 2 && (
                 <>
-                  <h2>{face?.name ?? 'Select a region'}</h2>
+                  <h2>{face?.name ?? t('materials.select')}</h2>
                   {face && (
                     <>
                       <span className="kind-tag">
                         <Layers3 />
-                        Material region
+                        {t('materials.kind')}
                       </span>
                       <label>
-                        Material card
+                        {t('materials.card')}
                         <select
                           value={face.material ?? ''}
                           onChange={(e) =>
@@ -770,7 +700,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                           }
                         >
                           <option value="">
-                            {face.cavity ? 'Cavity (unfilled)' : 'Unassigned'}
+                            {face.cavity ? t('materials.cavity') : t('materials.unassigned')}
                           </option>
                           {p.materials.map((m) => (
                             <option key={m.id} value={m.id}>
@@ -783,14 +713,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         <>
                           <Facts
                             rows={[
-                              ['Card version', mat.version],
+                              [t('materials.cardVersion'), mat.version],
                               [
-                                'Model',
+                                t('materials.model'),
                                 mat.model === 'hyperfoam_test'
-                                  ? 'Hyperfoam · test data'
-                                  : 'Linear elastic',
+                                  ? t('materials.modelHyperfoam')
+                                  : t('materials.modelLinear'),
                               ],
-                              ['Density (tonne/mm³)', mat.density.toExponential(2)],
+                              [t('materials.density'), mat.density.toExponential(2)],
                             ]}
                           />
                           <Plot
@@ -804,21 +734,68 @@ export default function Workspace({ initial, locked, notify }: Props) {
                                 ? mat.test_data.map((d) => d[0])
                                 : [0, (mat.young ?? 0) * 0.01]
                             }
-                            xlabel="Nominal strain"
-                            ylabel="Stress (MPa)"
+                            xlabel={t('materials.nominalStrain')}
+                            ylabel={t('materials.stress')}
                           />
                         </>
                       )}
+                      <h3>{t('materials.list')}</h3>
+                      <MaterialEditor
+                        materials={p.materials}
+                        faces={p.faces}
+                        selected={activeMaterial}
+                        onSelect={setActiveMaterial}
+                        onAdd={() => {
+                          const card = freshCard(p.materials, t('materials.defaultName'))
+                          edit((n) => {
+                            n.materials.push(card)
+                          })
+                          return card
+                        }}
+                        onDuplicate={(id) => {
+                          const source = p.materials.find((m) => m.id === id)
+                          if (!source) return
+                          const copy: Project['materials'][number] = {
+                            ...structuredClone(source),
+                            id: freshCard(p.materials, source.name).id,
+                            name: source.name + ' · copy',
+                            version: 1,
+                          }
+                          edit((n) => {
+                            n.materials.push(copy)
+                          })
+                          setActiveMaterial(copy.id)
+                        }}
+                        onDelete={(id) => {
+                          edit((n) => {
+                            n.materials = n.materials.filter((m) => m.id !== id)
+                          })
+                          setActiveMaterial(p.materials.find((m) => m.id !== id)?.id ?? null)
+                        }}
+                        onUpdate={updateMaterial}
+                        disabled={!!locked || busy}
+                        onRevealRegion={(faceId) => {
+                          const target = p.faces.find((f) => f.id === faceId)
+                          if (!target) return
+                          setMode('face')
+                          select({
+                            kind: 'face',
+                            id: target.id,
+                            entity: target.id,
+                            component: target.component,
+                          })
+                        }}
+                      />
                     </>
                   )}
                 </>
               )}
               {stage === 3 && (
                 <>
-                  <h2>Mounting & contact</h2>
+                  <h2>{t('contact.title')}</h2>
                   <label>
-                    Selected boundary
-                    <input readOnly value={edge?.name ?? 'Select a section edge'} />
+                    {t('contact.selectedBoundary')}
+                    <input readOnly value={edge?.name ?? t('contact.selectEdge')} />
                   </label>
                   {edge && component?.role === 'seal' && (
                     <label className="check">
@@ -829,24 +806,26 @@ export default function Workspace({ initial, locked, notify }: Props) {
                           edit((n) => {
                             n.selections.find((s) => s.id === mount.id)!.entities = e.target.checked
                               ? [...mount.entities, edge.id]
-                              : mount.entities.filter((t) => t !== edge.id)
+                              : mount.entities.filter((t2) => t2 !== edge.id)
                           })
                         }
                       />
-                      Fix this edge
+                      {t('contact.fixEdge')}
                     </label>
                   )}
                   <Facts
                     rows={[
-                      ['Mounting', mount.entities.length + ' fixed edges'],
-                      ['Normal contact', 'Hard'],
-                      ['Contact domain', 'All exterior'],
+                      [t('contact.mounting'), t('contact.fixedEdges', { count: mount.entities.length })],
+                      [t('contact.normal'), t('contact.hard')],
+                      [t('contact.domain'), t('contact.allExterior')],
                     ]}
                   />
                   <NumberInput
-                    label="Friction coefficient"
+                    label={t('contact.friction')}
                     value={p.contact.friction}
                     min={0}
+                    max={5}
+                    rangeHint="0 – 5"
                     onChange={(v) =>
                       edit((n) => {
                         n.contact.friction = v
@@ -857,9 +836,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
               )}
               {stage === 4 && (
                 <>
-                  <h2>Panel motion</h2>
+                  <h2>{t('motion.title')}</h2>
                   <NumberInput
-                    label="Initial Y offset (mm)"
+                    label={t('motion.offset')}
+                    unit="mm"
                     value={p.motion.offset}
                     onChange={(v) =>
                       edit((n) => {
@@ -868,7 +848,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     }
                   />
                   <NumberInput
-                    label="Prescribed Y travel (mm)"
+                    label={t('motion.travel')}
+                    unit="mm"
+                    max={0}
+                    rangeHint="< 0 (closing direction)"
                     value={p.motion.travel}
                     onChange={(v) =>
                       edit((n) => {
@@ -877,8 +860,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     }
                   />
                   <NumberInput
-                    label="Step duration (s)"
-                    min={0}
+                    label={t('motion.duration')}
+                    unit="s"
+                    min={1e-9}
                     value={p.motion.duration}
                     onChange={(v) =>
                       edit((n) => {
@@ -886,17 +870,16 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       })
                     }
                   />
-                  <p>
-                    Travel starts at the assembled panel position. Contact onset requires a geometry
-                    or results check.
-                  </p>
+                  <p>{t('motion.help')}</p>
                 </>
               )}
               {dimension && stage !== 7 && (
                 <>
-                  <h3>Extruded segment</h3>
+                  <h3>{t('extrusion.title')}</h3>
                   <NumberInput
-                    label="Segment length (mm)"
+                    label={t('extrusion.length')}
+                    unit="mm"
+                    min={1e-9}
                     value={p.extrusion.length}
                     onChange={(v) =>
                       edit((n) => {
@@ -905,23 +888,29 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     }
                   />
                   <NumberInput
-                    label="Longitudinal subdivisions"
-                    value={p.extrusion.subdivisions}
+                    label={t('extrusion.subdivisions')}
                     step="1"
+                    min={1}
+                    max={100}
+                    value={p.extrusion.subdivisions}
                     onChange={(v) =>
                       edit((n) => {
                         n.extrusion.subdivisions = v
                       })
                     }
                   />
-                  <small>Geometry preview only. Solving is available in 2D.</small>
+                  <small>{t('extrusion.previewOnly')}</small>
                 </>
               )}
               {stage === 5 && !dimension && (
                 <>
-                  <h2>Section mesh</h2>
+                  <h2>{t('mesh.title')}</h2>
                   <NumberInput
-                    label="Global size (mm)"
+                    label={t('mesh.globalSize')}
+                    unit="mm"
+                    min={0.01}
+                    max={10000}
+                    rangeHint="0.01 – 10000"
                     value={p.mesh.size}
                     onChange={(v) =>
                       edit((n) => {
@@ -939,21 +928,21 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         })
                       }
                     />
-                    Recombine triangles into quads
+                    {t('mesh.recombine')}
                   </label>
                   <label>
-                    Local edge
+                    {t('mesh.localEdge')}
                     <select
                       value={edge?.id ?? ''}
                       onChange={(e) => {
-                        const x = p.edges.find((t) => t.id === e.target.value)
+                        const x = p.edges.find((t2) => t2.id === e.target.value)
                         if (x) {
                           setMode('edge')
                           select({ kind: 'edge', id: x.id, entity: x.id, component: x.component })
                         }
                       }}
                     >
-                      <option value="">Select an edge</option>
+                      <option value="">{t('mesh.selectEdge')}</option>
                       {p.edges.map((e) => (
                         <option key={e.id} value={e.id}>
                           {e.name}
@@ -963,7 +952,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </label>
                   {edge && (
                     <NumberInput
-                      label="Edge size (mm)"
+                      label={t('mesh.edgeSize')}
+                      unit="mm"
+                      min={0.01}
+                      max={10000}
                       value={p.mesh.local[edge.id] ?? p.mesh.size}
                       onChange={(v) =>
                         edit((n) => {
@@ -976,16 +968,18 @@ export default function Workspace({ initial, locked, notify }: Props) {
               )}
               {stage === 6 && !dimension && (
                 <>
-                  <h2>Closing analysis</h2>
+                  <h2>{t('review.title')}</h2>
                   <Facts
                     rows={[
-                      ['Formulation', 'Plane stress'],
-                      ['Step', 'Implicit dynamic'],
-                      ['Geometry', 'Nonlinear'],
+                      [t('review.formulation'), t('review.planeStress')],
+                      [t('review.step'), t('review.implicitDynamic')],
+                      [t('review.geometry'), t('review.nonlinear')],
                     ]}
                   />
                   <NumberInput
-                    label="Section thickness (mm)"
+                    label={t('review.thickness')}
+                    unit="mm"
+                    min={1e-9}
                     value={p.analysis.thickness}
                     onChange={(v) =>
                       edit((n) => {
@@ -994,7 +988,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     }
                   />
                   <label>
-                    Force reporting
+                    {t('review.forceReporting')}
                     <select
                       value={p.analysis.force_normalization}
                       onChange={(e) =>
@@ -1003,8 +997,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         })
                       }
                     >
-                      <option value="total">Total reaction (N)</option>
-                      <option value="per_mm">Per mm of thickness (N/mm)</option>
+                      <option value="total">{t('review.totalReaction')}</option>
+                      <option value="per_mm">{t('review.perMm')}</option>
                     </select>
                   </label>
                 </>
@@ -1015,44 +1009,26 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     className="primary wide"
                     disabled={
                       busy ||
+                      !!blockedReason ||
                       !!(
                         build &&
                         !['Failed', 'Completed', 'Cancelled'].includes(build.status) &&
                         !dirty
                       )
                     }
+                    title={blockedReason || undefined}
                     onClick={() => execute(generate)}
                   >
                     <Grid2X2 />
-                    Generate mesh & input
+                    {t('mesh.generate')}
                   </button>
                   {build && !dirty && (
                     <div className="build-info">
-                      <strong>{build.status === 'Completed' ? 'Input ready' : build.status}</strong>
-                      {mesh && (
-                        <small>
-                          {Object.entries(mesh.counts)
-                            .map(([k, v]) => v + ' ' + k)
-                            .join(' · ')}
-                        </small>
-                      )}
-                      {placement && (
-                        <>
-                          <small>
-                            Initial vertical clearance ·{' '}
-                            {placement.initial_vertical_mesh_clearance_mm.toFixed(3)} mm
-                          </small>
-                          <small>Prescribed Y travel · {p.motion.travel} mm</small>
-                          <small>
-                            Travel beyond the initial gap ·{' '}
-                            {Math.max(
-                              0,
-                              -p.motion.travel - placement.initial_vertical_mesh_clearance_mm,
-                            ).toFixed(3)}{' '}
-                            mm (geometric)
-                          </small>
-                        </>
-                      )}
+                      <strong>
+                        {build.status === 'Completed'
+                          ? t('mesh.inputReady')
+                          : labelFrom(t, 'state', build.status)}
+                      </strong>
                       {build.diagnostic && <p className="error-text">{build.diagnostic}</p>}
                       {ready && (
                         <a
@@ -1061,18 +1037,25 @@ export default function Workspace({ initial, locked, notify }: Props) {
                           rel="noreferrer"
                         >
                           <FileText />
-                          Inspect input deck
+                          {t('mesh.inspectDeck')}
                         </a>
                       )}
                     </div>
+                  )}
+                  {quality && mesh && ready && (
+                    <MeshReview
+                      quality={quality}
+                      project={p}
+                      clearance={placement?.initial_vertical_mesh_clearance_mm ?? null}
+                    />
                   )}
                 </>
               )}
               {stage === 6 && !dimension && (
                 <>
-                  <h3>Submit simulation</h3>
+                  <h3>{t('review.submit')}</h3>
                   <label>
-                    Run name
+                    {t('review.runName')}
                     <input
                       maxLength={100}
                       value={runName}
@@ -1080,7 +1063,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     />
                   </label>
                   <label>
-                    Execution mode
+                    {t('review.mode')}
                     <select
                       value={execution}
                       onChange={(e) => {
@@ -1088,20 +1071,20 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         token.current = crypto.randomUUID()
                       }}
                     >
-                      <option>DEMO</option>
-                      <option>ABAQUS</option>
+                      <option value="DEMO">{t('mode.demo')}</option>
+                      <option value="ABAQUS">{t('mode.abaqus')}</option>
                     </select>
                   </label>
                   {execution === 'DEMO' ? (
                     <>
-                      <small className="mode-label">{demoNotice}</small>
+                      <small className="mode-label">{t('demo.notice')}</small>
                       <label>
-                        Scenario
+                        {t('review.scenario')}
                         <select value={scenario} onChange={(e) => setScenario(e.target.value)}>
-                          <option value="success">Successful closing</option>
-                          <option value="failure">Solver failure</option>
-                          <option value="slow">Slow run for cancellation</option>
-                          <option value="extraction_failure">Extraction fails once</option>
+                          <option value="success">{t('review.scenarioSuccess')}</option>
+                          <option value="failure">{t('review.scenarioFailure')}</option>
+                          <option value="slow">{t('review.scenarioSlow')}</option>
+                          <option value="extraction_failure">{t('review.scenarioExtraction')}</option>
                         </select>
                       </label>
                     </>
@@ -1109,10 +1092,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     <>
                       <small>{cap.abaqus}</small>
                       <NumberInput
-                        label="Solver CPUs"
+                        label={t('review.cpus')}
                         value={cpus}
                         min={1}
+                        max={32}
                         step="1"
+                        rangeHint="1 – 32"
                         onChange={setCpus}
                       />
                     </>
@@ -1125,19 +1110,22 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       !runName.trim() ||
                       (execution === 'ABAQUS' && cap.abaqus !== 'Configured')
                     }
+                    title={
+                      execution === 'ABAQUS' && cap.abaqus !== 'Configured' ? cap.abaqus : undefined
+                    }
                     onClick={() => execute(submit)}
                   >
                     <Play />
-                    {execution === 'ABAQUS' ? 'Submit licensed analysis' : 'Submit demo run'}
+                    {execution === 'ABAQUS' ? t('review.submitLicensed') : t('review.submitDemo')}
                   </button>
                 </>
               )}
             </fieldset>
             {stage === 7 && (
               <>
-                <h2>Revision results</h2>
+                <h2>{t('results.revisionResults')}</h2>
                 {related.length === 0 ? (
-                  <p>No runs have been submitted for this revision.</p>
+                  <p>{t('results.noRuns')}</p>
                 ) : (
                   related.map((r) => (
                     <button
@@ -1149,7 +1137,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     >
                       {r.name}
                       <small>
-                        {r.mode} · {r.status}
+                        {r.mode} · {labelFrom(t, 'state', r.status)}
                       </small>
                     </button>
                   ))
@@ -1163,27 +1151,27 @@ export default function Workspace({ initial, locked, notify }: Props) {
         {busy ? <LoaderCircle className="spin" /> : issue ? <Activity /> : <CheckCheck />}
         <strong>
           {issue
-            ? 'Validation'
+            ? t('status.validation')
             : dirty
-              ? 'Unsaved changes'
+              ? t('status.unsaved')
               : locked
-                ? 'Historical revision'
-                : 'Revision saved'}
+                ? t('status.historical')
+                : t('status.saved')}
         </strong>
         <span>
           {issue ||
             info ||
             build?.diagnostic ||
             (busy
-              ? 'Working…'
+              ? t('status.working')
               : selectionName
-                ? 'Selected · ' + selectionName
-                : 'Select geometry to inspect properties.')}
+                ? t('status.selected', { name: selectionName })
+                : t('status.selectPrompt'))}
         </span>
         <span className="spacer" />
         <span>
           <CircleDot />
-          {build && !dirty ? build.phase : 'Local project'}
+          {build && !dirty ? labelFrom(t, 'phase', build.phase) : t('status.localProject')}
         </span>
       </div>
     </main>

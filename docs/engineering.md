@@ -31,11 +31,27 @@ Solver success requires acceptable exit and diagnostic evidence, a Standard comp
 
 Each run has a submitted setup, input deck, mesh, mapping/placement metadata and logs. A real solve also owns its ODB. The manifest restricts downloads to known artifacts inside the run directory.
 
-`results.json` stores mode, units, thickness, normalization, instance topology, region IDs, time-indexed frame filenames, variable availability and a panel history. `frame-NNNNN.json` contains instance-qualified nodal U and supported raw field records with position and integration/section-point identity. History interpolation is restricted to the shared sampled time interval. `history.csv` includes signed panel U2, signed RF2 in the selected unit and total force in N. Missing values remain unavailable. The UI fetches topology once and frame payloads on demand, scales actual displacement by one, and colors available nodal U magnitude. The 3D roadmap retains the volume mesh for eventual interior cuts and a separate exterior display map.
+`results.json` stores mode, units, thickness, normalization, instance topology, region IDs, time-indexed frame filenames, variable availability and a panel history. `frame-NNNNN.json` contains instance-qualified nodal U and supported raw field records with position and integration/section-point identity. History interpolation is restricted to the shared sampled time interval. `history.csv` includes signed panel U2, signed RF2 in the selected unit and total force in N. Missing values remain unavailable. The UI fetches topology once and frame payloads on demand, scales actual displacement by one, and contours the selected nodal U component. A component is coloured by its absolute value while the probe field reports the signed value, so the ramp is never mistaken for a signed field. Variables listed in `unavailable` are shown as unavailable rather than as zero. The 3D roadmap retains the volume mesh for eventual interior cuts and a separate exterior display map.
+
+## Material cards
+
+The browser edits material cards directly. Density, Young's modulus and Poisson's ratio are editable for linear elastic cards; hyperfoam cards expose an editable uniaxial test-data table with row paste and a chart. Card validation runs in the browser before saving and blocks saving on non-finite, non-positive or out-of-range values; engineering advice such as non-monotonic axial strain is reported as a warning only. The server recomputes `version` on save from the actual data difference, so an unchanged card never bumps and historical revisions keep their values. `integrations/abaqus/deck.py` writes material cards only for materials assigned to meshed regions.
+
+## Mesh review metrics
+
+The review step reports values measured from the produced mesh: node and element counts, counts by element type, per-region element counts, boundary edge segment counts, the shortest and longest element edge, and the worst longest/shortest edge ratio within a single element. Inverted and degenerate elements never appear because the mesher rejects them during generation. No synthetic quality score is displayed.
 
 ## Local storage and distribution
 
-Store confidential fixtures under the ignored `fixtures/private/` or outside the checkout. Local drawings, database and jobs live under `SEAL_DATA`. Back up the entire data directory with services stopped. Large ODBs and job artifacts require disk-space planning.
+The product is displayed as **Abaqus QOL**. The on-disk directory intentionally keeps its previous
+name, `%LOCALAPPDATA%\SimplifyAbaqus`, so an upgrade opens existing projects instead of creating an
+empty database beside them. `SEAL_DATA` (legacy) takes precedence over the `ABAQUS_QOL_DATA` alias;
+`SIMPLIFY_ABAQUS_LAUNCHER` takes precedence over `ABAQUS_QOL_LAUNCHER`; `SEAL_ODA` takes precedence
+over `ABAQUS_QOL_ODA`. The rules are pinned by `tests/test_configuration.py`.
+
+Store confidential fixtures under the ignored `fixtures/private/` or outside the checkout. Local
+drawings, database and jobs live under the data directory. Back up the entire data directory with
+services stopped. Large ODBs and job artifacts require disk-space planning.
 
 The pilot trusts the Windows user and binds to loopback. Shared deployment requires authenticated project/artifact access, transport security, service-account isolation, resource/disk quotas, retention/backups, managed job supervision and license-aware scheduling. Keep SQLite on one host's local storage.
 
@@ -43,7 +59,11 @@ The Gmsh distribution is GPL-licensed and the authors offer commercial licensing
 
 ## Verification record
 
-The Windows milestone check passed 33 Python tests, including the installed Abaqus 2024 Python round trip, and five Playwright tests in real Edge with WebGL. TypeScript checking and the Vite production build passed after a clean npm installation. Coverage includes a separate API-process restart during a worker job, browser closure, solver failure, queued/running cancellation, extraction-only retry, historical revisions, DXF replacement and Gmsh-to-INP generation. Browser tests select actual CAD and FE geometry, probe a result node and link a plotted force sample back to its frame.
+The Windows milestone check passed 39 Python tests (1 skipped: the optional installed-Abaqus ODB round trip) and twelve Playwright tests in real Edge with WebGL. TypeScript checking, the translation-completeness gate (330 keys in both languages), the regenerated OpenAPI contract and the Vite production build passed after a clean npm installation.
+
+Coverage includes a separate API-process restart during a worker job, browser closure, solver failure, queued/running cancellation, extraction-only retry, historical revisions, DXF replacement, Gmsh-to-INP generation, material card creation/editing/validation/versioning with deck verification, Japanese-default and English switching, language persistence, form-value preservation across a language switch, localized job states, and localized accessibility labels. Browser tests select actual CAD and FE geometry, probe a result node and link a plotted force sample back to its frame. Configuration precedence for `SEAL_DATA`/`ABAQUS_QOL_DATA`, `SIMPLIFY_ABAQUS_LAUNCHER`/`ABAQUS_QOL_LAUNCHER` and `SEAL_ODA`/`ABAQUS_QOL_ODA` is covered by automated tests.
+
+Visual inspection was performed on captured Japanese and English renders at 1280, 1440 and 1920 px widths. Automated pixel-diff visual regression is **not** configured.
 
 ## Tested environment
 

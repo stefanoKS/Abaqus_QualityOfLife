@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Maximize, Minus, Plus } from 'lucide-react'
-import {
-  makeScene,
-  ramp,
-  type Picked,
-  type ViewportProps,
-} from './viewportModel'
+import { makeScene, ramp, type Picked, type ViewportProps } from './viewportModel'
 import { ViewportRenderer } from './viewportRenderer'
+import { useI18n } from './i18n'
 import './viewport.css'
 
 export type {
@@ -19,6 +15,11 @@ export type {
 } from './viewportModel'
 
 export function Viewport(props: ViewportProps) {
+  const { t } = useI18n()
+  // The renderer effect must not depend on the language: recreating it would
+  // discard the camera state the user is working with.
+  const translate = useRef(t)
+  translate.current = t
   const host = useRef<HTMLDivElement>(null)
   const overlay = useRef<HTMLCanvasElement>(null)
   const controller = useRef<ViewportRenderer | null>(null)
@@ -40,9 +41,10 @@ export function Viewport(props: ViewportProps) {
       props.results?.frame,
       props.deformed,
       props.panelOffset,
+      props.resultComponent,
       colorsKey,
       hiddenKey,
-    ]
+    ],
   )
   // Keep the view stable through frame changes while fitting newly loaded topology.
   const resultExtent = useMemo(() => {
@@ -92,15 +94,14 @@ export function Viewport(props: ViewportProps) {
         return [e.clientX - rect.left, e.clientY - rect.top] as const
       }
       const setHover = (hit: Picked | null) => {
-        if (hit?.kind === hover.current?.kind && hit?.id === hover.current?.id)
-          return
+        if (hit?.kind === hover.current?.kind && hit?.id === hover.current?.id) return
         hover.current = hit
         setHoverLabel(
           hit
             ? hit.instance
               ? hit.instance + ' · ' + hit.kind + ' ' + hit.label
               : hit.kind + ' · ' + hit.id
-            : ''
+            : '',
         )
         view!.highlight(latest.current.selection, hit)
       }
@@ -121,7 +122,7 @@ export function Viewport(props: ViewportProps) {
             button: e.button,
           }
         },
-        { signal }
+        { signal },
       )
       el.addEventListener(
         'pointermove',
@@ -129,9 +130,7 @@ export function Viewport(props: ViewportProps) {
           cancelAnimationFrame(animation)
           if (drag) {
             if (drag.pointer !== e.pointerId) return
-            if (
-              Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 3
-            ) {
+            if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 3) {
               drag.moved = true
               setGrabbing(true)
             }
@@ -143,12 +142,10 @@ export function Viewport(props: ViewportProps) {
             drag.y = e.clientY
           } else {
             const [x, y] = local(e)
-            animation = requestAnimationFrame(() =>
-              setHover(view!.pick(latest.current.mode, x, y))
-            )
+            animation = requestAnimationFrame(() => setHover(view!.pick(latest.current.mode, x, y)))
           }
         },
-        { signal }
+        { signal },
       )
       el.addEventListener(
         'pointerleave',
@@ -156,22 +153,19 @@ export function Viewport(props: ViewportProps) {
           cancelAnimationFrame(animation)
           setHover(null)
         },
-        { signal }
+        { signal },
       )
       el.addEventListener(
         'pointerup',
         (e) => {
           if (drag?.pointer !== e.pointerId) return
           if (!drag.moved && drag.button === 0)
-            latest.current.onSelect(
-              view!.pick(latest.current.mode, ...local(e))
-            )
+            latest.current.onSelect(view!.pick(latest.current.mode, ...local(e)))
           drag = null
           setGrabbing(false)
-          if (el.hasPointerCapture(e.pointerId))
-            el.releasePointerCapture(e.pointerId)
+          if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
         },
-        { signal }
+        { signal },
       )
       el.addEventListener(
         'lostpointercapture',
@@ -179,7 +173,7 @@ export function Viewport(props: ViewportProps) {
           drag = null
           setGrabbing(false)
         },
-        { signal }
+        { signal },
       )
       el.addEventListener('contextmenu', (e) => e.preventDefault(), { signal })
       el.addEventListener(
@@ -190,7 +184,7 @@ export function Viewport(props: ViewportProps) {
           view!.zoom(Math.exp(Math.max(-1, Math.min(1, delta * 0.0015))))
           setHover(null)
         },
-        { signal, passive: false }
+        { signal, passive: false },
       )
       el.addEventListener(
         'keydown',
@@ -200,13 +194,10 @@ export function Viewport(props: ViewportProps) {
           else if (e.key === '-') view!.zoom(1.25)
           else if (e.key === 'Escape') latest.current.onSelect(null)
         },
-        { signal }
+        { signal },
       )
     } catch (e) {
-      setError(
-        'The engineering viewport could not start. Enable WebGL in this browser. ' +
-          String(e)
-      )
+      setError(translate.current('viewport.startError') + ' ' + String(e))
     }
     return () => {
       cancelAnimationFrame(animation)
@@ -222,18 +213,14 @@ export function Viewport(props: ViewportProps) {
     if (!controller.current) return
     controller.current.lengthUnit = props.lengthUnit ?? 'mm'
     try {
-      controller.current.setScene(
-        scene,
-        props.dimension,
-        lastFit.current !== fitKey
-      )
+      controller.current.setScene(scene, props.dimension, lastFit.current !== fitKey)
       lastFit.current = fitKey
       hover.current = null
       setHoverLabel('')
       setError('')
       controller.current.highlight(latest.current.selection, null)
     } catch (e) {
-      setError('Unable to display this geometry. ' + String(e))
+      setError(translate.current('viewport.displayError') + ' ' + String(e))
     }
   }, [scene, props.dimension, fitKey, props.lengthUnit])
 
@@ -244,50 +231,48 @@ export function Viewport(props: ViewportProps) {
   }, [props.selection, props.mode])
 
   return (
-    <div
-      className="seal-viewport"
-      data-testid="vtk-viewport"
-      data-dimension={props.dimension}
-    >
+    <div className="seal-viewport" data-testid="vtk-viewport" data-dimension={props.dimension}>
       <div
         className="seal-vtk-host"
         ref={host}
         tabIndex={0}
         role="application"
-        aria-label={props.dimension + ' engineering viewport'}
+        aria-label={
+          props.dimension === '2D' ? t('viewport.label2d') : t('viewport.label3d')
+        }
         style={{
           cursor: grabbing ? 'grabbing' : hoverLabel ? 'pointer' : 'crosshair',
         }}
       />
       <canvas ref={overlay} aria-hidden="true" className="seal-vtk-overlay" />
-      <div className="seal-vtk-tools" aria-label="View controls">
+      <div className="seal-vtk-tools" aria-label={t('viewport.controls')}>
         <button
           type="button"
-          title="Zoom in (+)"
-          aria-label="Zoom in"
+          title={t('viewport.zoomIn') + ' (+)'}
+          aria-label={t('viewport.zoomIn')}
           onClick={() => controller.current?.zoom(0.8)}
         >
           <Plus size={15} />
         </button>
         <button
           type="button"
-          title="Zoom out (−)"
-          aria-label="Zoom out"
+          title={t('viewport.zoomOut') + ' (−)'}
+          aria-label={t('viewport.zoomOut')}
           onClick={() => controller.current?.zoom(1.25)}
         >
           <Minus size={15} />
         </button>
         <button
           type="button"
-          title="Fit and reset view (F)"
-          aria-label="Fit and reset view"
+          title={t('viewport.fit') + ' (F)'}
+          aria-label={t('viewport.fit')}
           onClick={() => controller.current?.fit()}
         >
           <Maximize size={15} />
         </button>
       </div>
       <div className="seal-vtk-orientation">
-        {props.dimension === '2D' ? 'XY section' : '3D segment'}
+        {props.dimension === '2D' ? t('viewport.xySection') : t('viewport.segment3d')}
       </div>
       {error ? (
         <div role="alert" className="seal-vtk-empty">
@@ -295,14 +280,14 @@ export function Viewport(props: ViewportProps) {
         </div>
       ) : (
         scene.surfaces.length === 0 && (
-          <div className="seal-vtk-empty">No visible geometry</div>
+          <div className="seal-vtk-empty">{t('viewport.noGeometry')}</div>
         )
       )}
       {props.results && (
         <div className="seal-vtk-legend">
-          <strong>Displacement magnitude</strong>
+          <strong>{props.resultLabel ?? t('run.displacementField')}</strong>
           {scene.range === null ? (
-            <span>Unavailable</span>
+            <span>{t('viewport.unavailable')}</span>
           ) : (
             <>
               <i
@@ -316,12 +301,11 @@ export function Viewport(props: ViewportProps) {
               <span>
                 0{' '}
                 <b>
-                  {Number(scene.range.toPrecision(4))}{' '}
-                  {props.lengthUnit ?? 'mm'}
+                  {Number(scene.range.toPrecision(4))} {props.lengthUnit ?? 'mm'}
                 </b>
               </span>
               {scene.surfaces.some((s) => !s.contour) && (
-                <span>Gray · U unavailable</span>
+                <span>{t('viewport.grayUnavailable')}</span>
               )}
             </>
           )}

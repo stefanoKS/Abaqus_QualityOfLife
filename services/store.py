@@ -13,18 +13,41 @@ from uuid import UUID, uuid4
 STALE_SECONDS = 30
 TERMINAL = {"Completed", "Failed", "Cancelled"}
 
+# The product is now "Abaqus QOL", but the on-disk directory keeps its previous
+# name so every existing installation opens its projects without a migration
+# step. Renaming the directory would silently create an empty database next to
+# the real one. See docs/migration-and-recovery.md.
+LEGACY_DIRECTORY = "SimplifyAbaqus"
+ENV_DATA = "SEAL_DATA"
+ENV_DATA_ALIAS = "ABAQUS_QOL_DATA"
+
 
 class Conflict(ValueError):
     pass
 
 
+def data_setting():
+    """Return the configured data root name and value.
+
+    Precedence is documented and deterministic: the established ``SEAL_DATA``
+    wins over the new ``ABAQUS_QOL_DATA`` alias so existing startup scripts keep
+    their exact behaviour.
+    """
+    for name in (ENV_DATA, ENV_DATA_ALIAS):
+        value = os.environ.get(name)
+        if value:
+            return name, value
+    return ENV_DATA, ""
+
+
 def root():
-    base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "SimplifyAbaqus"
-    path = Path(os.environ.get("SEAL_DATA", base)).expanduser().resolve()
+    base = Path(os.environ.get("LOCALAPPDATA", Path.home())) / LEGACY_DIRECTORY
+    _, configured = data_setting()
+    path = Path(configured).expanduser().resolve() if configured else base.resolve()
     if str(path).startswith(("//", "\\\\")) or (
         os.name == "nt" and ctypes.windll.kernel32.GetDriveTypeW(path.anchor) == 4
     ):
-        raise ValueError("SEAL_DATA must be on a local disk for SQLite.")
+        raise ValueError("The Abaqus QOL data directory must be on a local disk for SQLite.")
     path.mkdir(parents=True, exist_ok=True)
     return path
 

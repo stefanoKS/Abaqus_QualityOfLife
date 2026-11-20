@@ -14,19 +14,12 @@ import {
   Square,
   RotateCcw,
 } from 'lucide-react'
-import {
-  request,
-  date,
-  elapsed,
-  go,
-  err,
-  demoNotice,
-  type Summary,
-  type Job,
-  type Revision,
-} from './api'
+import { request, elapsed, go, err, type Summary, type Job, type Revision } from './api'
+import { labelFrom, useI18n } from './i18n'
+import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 
 export function Badge({ value }: { value: string }) {
+  const { t } = useI18n()
   return (
     <span
       className={
@@ -39,11 +32,14 @@ export function Badge({ value }: { value: string }) {
               ? 'live'
               : '')
       }
+      data-status={value}
+      title={value}
     >
-      {value}
+      {labelFrom(t, 'state', value)}
     </span>
   )
 }
+
 export function JobActions({
   job,
   refresh,
@@ -53,6 +49,7 @@ export function JobActions({
   refresh: () => void
   notify: (s: string) => void
 }) {
+  const { t } = useI18n()
   async function act(kind: string) {
     try {
       if (kind === 'duplicate') {
@@ -71,38 +68,48 @@ export function JobActions({
       {job.status === 'Completed' && job.mode !== 'BUILD' && (
         <button onClick={() => go('results/' + job.id)}>
           <ChartNoAxesCombined />
-          Results
+          {t('dashboard.jobResults')}
         </button>
       )}
       <button onClick={() => go('setup/' + job.id)}>
         <FileText />
-        Setup
+        {t('dashboard.jobSetup')}
       </button>
-      <button title="Duplicate setup" aria-label="Duplicate setup" onClick={() => act('duplicate')}>
+      <button
+        title={t('dashboard.duplicate')}
+        aria-label={t('dashboard.duplicate')}
+        onClick={() => act('duplicate')}
+      >
         <Copy />
       </button>
       <button
-        title="Open diagnostics"
-        aria-label="Open diagnostics"
+        title={t('dashboard.diagnostics')}
+        aria-label={t('dashboard.diagnostics')}
         onClick={() => go('diagnostics/' + job.id)}
       >
         <Activity />
       </button>
       {!['Completed', 'Failed', 'Cancelled', 'Cancel requested'].includes(job.status) && (
-        <button title="Cancel job" aria-label="Cancel job" onClick={() => act('cancel')}>
+        <button
+          title={t('dashboard.cancelJob')}
+          aria-label={t('dashboard.cancelJob')}
+          onClick={() => act('cancel')}
+        >
           <Square />
         </button>
       )}
       {job.solver === 'Succeeded' && ['Failed', 'Cancelled'].includes(job.extraction) && (
         <button onClick={() => act('retry')}>
           <RotateCcw />
-          Retry extraction
+          {t('dashboard.retryExtraction')}
         </button>
       )}
     </div>
   )
 }
+
 export default function Dashboard({ notify }: { notify: (s: string) => void }) {
+  const { t, formatDate } = useI18n()
   const [projects, ps] = useState<Summary[]>([]),
     [runs, rs] = useState<Job[]>([])
   const [filter, pf] = useState(''),
@@ -125,9 +132,14 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
   }
   useEffect(() => {
     void refresh()
-    const id = setInterval(refresh, 1400)
+  }, [notify])
+  // Faster cadence only while a run can still change; an idle dashboard settles to
+  // a slow refresh instead of polling every 1.4 s forever.
+  const active = anyActive(runs)
+  useEffect(() => {
+    const id = setInterval(refresh, active ? ACTIVE_POLL_MS : IDLE_POLL_MS)
     return () => clearInterval(id)
-  }, [])
+  }, [active])
   async function add(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
@@ -151,19 +163,19 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
       <div className="page-heading">
         <div>
           <div className="eyebrow">
-            <Boxes size={15} /> LOCAL WORKBENCH
+            <Boxes size={15} /> {t('dashboard.eyebrow')}
           </div>
-          <h1>Simulation dashboard</h1>
+          <h1>{t('dashboard.title')}</h1>
         </div>
         <button className="primary" onClick={() => create(!creating)}>
           <Plus />
-          New project
+          {t('dashboard.newProject')}
         </button>
       </div>
       {creating && (
         <form className="create-form card" onSubmit={add}>
           <label>
-            Project name
+            {t('dashboard.projectName')}
             <input
               autoFocus
               required
@@ -173,23 +185,23 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             />
           </label>
           <label>
-            Starting geometry
+            {t('dashboard.startingGeometry')}
             <select value={dim} onChange={(e) => dm(e.target.value)}>
-              <option value="2D">2D hollow bulb section</option>
-              <option value="3D">3D extruded segment</option>
+              <option value="2D">{t('dashboard.section2d')}</option>
+              <option value="3D">{t('dashboard.section3d')}</option>
             </select>
           </label>
           <button className="primary" disabled={busy || !name.trim()}>
-            Create project
+            {t('dashboard.createProject')}
           </button>
           <button type="button" onClick={() => create(false)}>
-            Cancel
+            {t('common.cancel')}
           </button>
         </form>
       )}
       <h2>
         <FolderOpen />
-        Projects <small>{projects.length}</small>
+        {t('dashboard.projects')} <small>{projects.length}</small>
       </h2>
       <div className="project-cards">
         {projects.map((p) => (
@@ -200,7 +212,8 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             <span>
               <strong>{p.name}</strong>
               <small>
-                {p.dimension} · Revision {p.number} · {date(p.created)}
+                {p.dimension} · {t('dashboard.revision', { number: p.number })} ·{' '}
+                {formatDate(p.created)}
               </small>
             </span>
             <ChevronRight />
@@ -211,16 +224,16 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
         <div className="card-heading">
           <h2>
             <History />
-            Simulation runs
+            {t('dashboard.runs')}
           </h2>
           <div className="filters">
             <ListFilter />
             <select
-              aria-label="Filter by project"
+              aria-label={t('dashboard.filterProject')}
               value={filter}
               onChange={(e) => pf(e.target.value)}
             >
-              <option value="">All projects</option>
+              <option value="">{t('dashboard.allProjects')}</option>
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -228,13 +241,16 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               ))}
             </select>
             <select
-              aria-label="Filter by status"
+              aria-label={t('dashboard.filterStatus')}
               value={status}
               onChange={(e) => sf(e.target.value)}
             >
-              <option value="">All statuses</option>
+              <option value="">{t('dashboard.allStatuses')}</option>
               {[...new Set(runs.map((r) => r.status).concat(status || []))].map((s) => (
-                <option key={s}>{s}</option>
+                /* The option value stays the raw contract value; only the label is translated. */
+                <option key={s} value={s}>
+                  {labelFrom(t, 'state', s)}
+                </option>
               ))}
             </select>
           </div>
@@ -244,8 +260,14 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             <table>
               <thead>
                 <tr>
-                  {['Run / project', 'State', 'Submitted', 'Elapsed', 'Setup & output'].map((t) => (
-                    <th key={t}>{t}</th>
+                  {[
+                    t('dashboard.colRun'),
+                    t('dashboard.colState'),
+                    t('dashboard.colSubmitted'),
+                    t('dashboard.colElapsed'),
+                    t('dashboard.colOutput'),
+                  ].map((heading) => (
+                    <th key={heading}>{heading}</th>
                   ))}
                 </tr>
               </thead>
@@ -258,17 +280,19 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                         {r.project_name} · {r.dimension} · Rev {r.number}
                       </small>
                       <small className="mode-label">
-                        {r.mode === 'DEMO' ? demoNotice : 'ABAQUS'}
+                        {r.mode === 'DEMO' ? t('demo.notice') : r.mode}
                       </small>
                     </td>
                     <td>
                       <Badge value={r.status} />
                       <small>
-                        {r.step || r.phase}
-                        {r.increment != null ? ' · Inc ' + r.increment : ''}
+                        {labelFrom(t, 'phase', r.step || r.phase)}
+                        {r.increment != null
+                          ? ' · ' + t('dashboard.increment', { value: r.increment })
+                          : ''}
                       </small>
                     </td>
-                    <td>{date(r.created)}</td>
+                    <td>{formatDate(r.created)}</td>
                     <td>{elapsed(r)}</td>
                     <td>
                       <JobActions job={r} notify={notify} refresh={refresh} />
@@ -281,12 +305,8 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
         ) : (
           <div className="empty">
             <History />
-            <h3>{runs.length ? 'No matching runs' : 'No simulations submitted'}</h3>
-            <p>
-              {runs.length
-                ? 'Change the project or status filter.'
-                : 'Open a project, generate its input deck, and submit a run from Review / Run.'}
-            </p>
+            <h3>{runs.length ? t('dashboard.noMatchingRuns') : t('dashboard.noRuns')}</h3>
+            <p>{runs.length ? t('dashboard.noMatchingHint') : t('dashboard.noRunsHint')}</p>
           </div>
         )}
       </section>

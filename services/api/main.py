@@ -27,7 +27,7 @@ async def lifespan(_):
     yield
 
 
-app = FastAPI(title="SimplifyAbaqus", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Abaqus QOL", version="0.2.0", lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]"])
 
 

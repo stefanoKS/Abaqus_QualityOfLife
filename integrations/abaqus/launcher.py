@@ -8,13 +8,28 @@ import signal
 import subprocess
 
 ENV_LAUNCHER = "SIMPLIFY_ABAQUS_LAUNCHER"
+ENV_LAUNCHER_ALIAS = "ABAQUS_QOL_LAUNCHER"
 HERE = Path(__file__).resolve().parent
 
 
-def _launcher(value):
+def launcher_setting():
+    """Return the configured launcher variable name and value.
+
+    The legacy variable wins so existing startup scripts keep working exactly as
+    before; the new alias is only consulted when the legacy one is unset.
+    """
+    for name in (ENV_LAUNCHER, ENV_LAUNCHER_ALIAS):
+        value = os.environ.get(name)
+        if value:
+            return name, value
+    return ENV_LAUNCHER, ""
+
+
+def _launcher(value, name=ENV_LAUNCHER):
     if not value:
         raise ValueError(
-            f"Abaqus launcher not configured. Set {ENV_LAUNCHER} to the installed launcher."
+            f"Abaqus launcher not configured. Set {ENV_LAUNCHER} "
+            f"(or its alias {ENV_LAUNCHER_ALIAS}) to the installed launcher."
         )
     path = Path(value)
     if not path.is_absolute() or not path.is_file():
@@ -32,7 +47,8 @@ def _launcher(value):
 
 
 def configured_launcher():
-    return _launcher(os.environ.get(ENV_LAUNCHER))
+    _, value = launcher_setting()
+    return _launcher(value)
 
 
 def _start(path, arguments, job_dir, log_stream):

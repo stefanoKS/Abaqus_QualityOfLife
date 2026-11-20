@@ -13,7 +13,8 @@ class StepImporter(Protocol):
 
 
 def oda():
-    raw = os.environ.get("SEAL_ODA", "")
+    """Installed ODA converter path. ``ABAQUS_QOL_ODA`` is an alias for ``SEAL_ODA``."""
+    raw = os.environ.get("SEAL_ODA", "") or os.environ.get("ABAQUS_QOL_ODA", "")
     path = Path(raw)
     if not raw or not path.is_absolute() or not path.is_file() or path.suffix.lower() != ".exe":
         raise ValueError("DWG converter not configured")

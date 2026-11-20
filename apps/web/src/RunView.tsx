@@ -11,11 +11,13 @@ import {
   ScanLine,
   Terminal,
 } from 'lucide-react'
-import { artifact, date, demoNotice, elapsed, err, go, request, type Job } from './api'
+import { artifact, elapsed, err, go, request, type Job } from './api'
 import { Badge, JobActions } from './Dashboard'
 import Viewport from './Viewport'
 import type { Picked, ResultFrame, ResultInstance } from './viewportModel'
 import { Plot } from './Plot'
+import { labelFrom, useI18n } from './i18n'
+import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 
 interface Index {
   notice: string
@@ -26,7 +28,19 @@ interface Index {
   instances: ResultInstance[]
   unavailable: string[]
   thickness: number
+  averaging?: string
 }
+
+/** Fields the extractor may publish in addition to displacements. */
+interface Frame extends ResultFrame {
+  fields?: Record<string, unknown>
+  unavailable?: string[]
+}
+
+type Component = 'magnitude' | 'U1' | 'U2' | 'U3'
+
+const COMPONENTS: Component[] = ['magnitude', 'U1', 'U2', 'U3']
+
 export function RunView({
   id,
   resultView,
@@ -36,17 +50,20 @@ export function RunView({
   resultView: boolean
   notify: (s: string) => void
 }) {
+  const { t, formatDate } = useI18n()
   const [job, setJob] = useState<Job | null>(null),
     [tick, refresh] = useState(0),
     [index, setIndex] = useState<Index | null>(null)
   const [n, setN] = useState(0),
-    [frame, setFrame] = useState<ResultFrame | null>(null),
+    [frame, setFrame] = useState<Frame | null>(null),
     [play, playing] = useState(false)
   const [sel, select] = useState<Picked | null>(null),
     [mode, setMode] = useState<'node' | 'element'>('node'),
     [deformed, deform] = useState(true)
+  const [component, setComponent] = useState<Component>('magnitude')
   const [logs, setLogs] = useState(''),
     [logFile, setLogFile] = useState('worker.log')
+  const active = !!job && anyActive([job])
   useEffect(() => {
     const ctrl = new AbortController()
     const poll = () =>
@@ -56,12 +73,14 @@ export function RunView({
           if (!ctrl.signal.aborted) notify(err(e))
         })
     void poll()
-    const t = setInterval(poll, 1200)
+    // Keep watching a live job closely; a finished job only needs an occasional
+    // refresh so a retry started elsewhere still appears.
+    const timer = setInterval(poll, active ? ACTIVE_POLL_MS : IDLE_POLL_MS)
     return () => {
       ctrl.abort()
-      clearInterval(t)
+      clearInterval(timer)
     }
-  }, [id, tick, notify])
+  }, [id, tick, notify, active])
   useEffect(() => {
     if (!resultView || job?.status !== 'Completed') return
     const ac = new AbortController()
@@ -76,7 +95,7 @@ export function RunView({
     if (!index) return
     const ac = new AbortController()
     setFrame(null)
-    request<ResultFrame>(artifact(id, index.frames[n].file), 'GET', undefined, ac.signal)
+    request<Frame>(artifact(id, index.frames[n].file), 'GET', undefined, ac.signal)
       .then(setFrame)
       .catch((e) => {
         if (!ac.signal.aborted) {
@@ -88,12 +107,12 @@ export function RunView({
   }, [index, n, id, notify])
   useEffect(() => {
     if (!play || !frame || !index) return
-    const t = setTimeout(() => {
+    const t2 = setTimeout(() => {
       if (n + 1 === index.frames.length) {
         playing(false)
       } else setN(n + 1)
     }, 220)
-    return () => clearTimeout(t)
+    return () => clearTimeout(t2)
   }, [play, n, index, frame])
   const hasLog = job?.manifest.includes(logFile)
   useEffect(() => {
@@ -109,9 +128,9 @@ export function RunView({
           if (!ac.signal.aborted) notify(err(e))
         })
     void poll()
-    const t = setInterval(poll, 2000)
+    const t2 = setInterval(poll, 2000)
     return () => {
-      clearInterval(t)
+      clearInterval(t2)
       ac.abort()
     }
   }, [resultView, id, hasLog, logFile, notify])
@@ -124,8 +143,7 @@ export function RunView({
   )
   const nearest = (samples: { time: number }[], time: number) =>
     samples.reduce(
-      (best, row, i) =>
-        Math.abs(row.time - time) < Math.abs(samples[best].time - time) ? i : best,
+      (best, row, i) => (Math.abs(row.time - time) < Math.abs(samples[best].time - time) ? i : best),
       0,
     )
   const plotPick = useCallback(
@@ -137,17 +155,38 @@ export function RunView({
     },
     [index],
   )
-  if (!job) return <main className="page">Opening run…</main>
+  if (!job) return <main className="page">{t('run.opening')}</main>
+  const disabled = index?.unavailable ?? []
+  const displacementAvailable = !!frame && !!index && !disabled.includes('U')
   const probe =
     sel?.kind === 'node' &&
     sel.instance &&
     frame?.displacements[sel.instance]?.find((r) => r[0] === sel.label)
+  const probeText = (() => {
+    if (!sel) return t('run.probePrompt')
+    const identity = sel.instance + ' · ' + sel.kind + ' ' + sel.label
+    if (sel.kind !== 'node') return identity
+    if (!probe) return identity + ' · ' + t('run.uUnavailable')
+    if (component === 'magnitude')
+      return identity + ' · |U| ' + Math.hypot(...probe.slice(1)).toPrecision(4) + ' mm'
+    const axis = component === 'U1' ? 1 : component === 'U2' ? 2 : 3
+    return (
+      identity +
+      ' · ' +
+      component +
+      ' ' +
+      (probe[axis] ?? 0).toPrecision(4) +
+      ' mm'
+    )
+  })()
+  const componentLabel = component === 'magnitude' ? t('run.magnitude') : component
+  const legendLabel = t('run.legendTitle', { variable: 'U', component: componentLabel })
   return (
     <main className="page run-view">
       <div className="crumb">
-        <button onClick={() => go('dashboard')}>Dashboard</button>
+        <button onClick={() => go('dashboard')}>{t('nav.dashboard')}</button>
         <ChevronRight />
-        {resultView ? 'Results' : 'Run diagnostics'}
+        {resultView ? t('run.results') : t('run.diagnosticsTitle')}
       </div>
       <div className="page-heading">
         <div>
@@ -157,14 +196,14 @@ export function RunView({
             <i />
             {job.dimension}
             <i />
-            Revision {job.number}
+            {t('workspace.revision', { number: job.number })}
           </div>
         </div>
         <JobActions job={job} notify={notify} refresh={() => refresh((x) => x + 1)} />
       </div>
       <div className="run-banner">
         <Badge value={job.status} />
-        <span>{job.mode === 'DEMO' ? demoNotice : job.mode}</span>
+        <span>{job.mode === 'DEMO' ? t('demo.notice') : job.mode}</span>
         <span className="spacer" />
         <Clock />
         {elapsed(job)}
@@ -174,18 +213,41 @@ export function RunView({
           <section className="card">
             <div className="panel-title">
               <ScanLine />
-              Displacement field
+              {t('run.displacementField')}
               <div className="spacer" />
               <select
-                aria-label="Probe mode"
+                aria-label={t('run.variable')}
+                value="U"
+                onChange={() => undefined}
+                disabled={!displacementAvailable}
+              >
+                <option value="U">U</option>
+              </select>
+              <select
+                aria-label={t('run.component')}
+                value={component}
+                onChange={(e) => {
+                  setComponent(e.target.value as Component)
+                  select(null)
+                }}
+                disabled={!displacementAvailable}
+              >
+                {COMPONENTS.map((option) => (
+                  <option key={option} value={option}>
+                    {option === 'magnitude' ? t('run.magnitude') : '|' + option + '|'}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label={t('run.probeMode')}
                 value={mode}
                 onChange={(e) => {
                   setMode(e.target.value as 'node' | 'element')
                   select(null)
                 }}
               >
-                <option value="node">Probe node</option>
-                <option value="element">Probe element</option>
+                <option value="node">{t('run.probeNode')}</option>
+                <option value="element">{t('run.probeElement')}</option>
               </select>
             </div>
             <div className="result-viewport">
@@ -195,13 +257,15 @@ export function RunView({
                 mode={mode}
                 selection={sel}
                 onSelect={select}
-                results={{ instances: index.instances, frame }}
+                results={displacementAvailable ? { instances: index.instances, frame } : null}
                 deformed={deformed}
+                resultComponent={component}
+                resultLabel={legendLabel}
               />
             </div>
             <div className="playback">
               <button
-                aria-label={play ? 'Pause playback' : 'Play frames'}
+                aria-label={play ? t('run.pausePlayback') : t('run.playFrames')}
                 onClick={() => {
                   if (!play && n === index.frames.length - 1) setN(0)
                   playing(!play)
@@ -210,9 +274,9 @@ export function RunView({
                 {play ? <Pause /> : <Play />}
               </button>
               <label>
-                Frame {n + 1} / {index.frames.length}
+                {t('run.frame', { current: n + 1, total: index.frames.length })}
                 <input
-                  aria-label="Result frame"
+                  aria-label={t('run.frame', { current: n + 1, total: index.frames.length })}
                   type="range"
                   min={0}
                   max={index.frames.length - 1}
@@ -232,56 +296,55 @@ export function RunView({
                   checked={deformed}
                   onChange={(e) => deform(e.target.checked)}
                 />
-                Deformed geometry · 1×
+                {t('run.deformed')}
               </label>
-              <span>
-                {sel
-                  ? sel.instance + ' · ' + sel.kind + ' ' + sel.label
-                  : 'Select a node or element to probe'}
-                {sel?.kind === 'node' &&
-                  (probe
-                    ? ' · |U| ' + Math.hypot(...probe.slice(1)).toPrecision(4) + ' mm'
-                    : ' · U unavailable')}
-              </span>
+              <span>{probeText}</span>
             </div>
           </section>
           <aside className="card">
             <div className="panel-title">
               <Activity />
-              Panel response
+              {t('run.panelResponse')}
             </div>
             <div className="property-body">
-              <h2>Force–displacement</h2>
-              <p>Signed panel reaction along Y. Select a sample to open its nearest frame.</p>
+              <h2>{t('run.forceDisplacement')}</h2>
+              <p>{t('run.plotHelp')}</p>
               {index.history.length ? (
                 <Plot
                   x={xy.x}
                   y={xy.y}
-                  xlabel="Panel U2 (mm)"
-                  ylabel={'Panel RF2 (' + index.force_unit + ')'}
+                  xlabel={t('run.panelU2')}
+                  ylabel={t('run.panelRF2', { unit: index.force_unit })}
                   active={nearest(index.history, index.frames[n].time)}
                   onPick={plotPick}
                 />
               ) : (
-                <p>Panel history unavailable.</p>
+                <p>{t('run.historyUnavailable')}</p>
               )}
               <dl>
                 <div>
-                  <dt>Thickness</dt>
+                  <dt>{t('run.thickness')}</dt>
                   <dd>{index.thickness} mm</dd>
                 </div>
                 <div>
-                  <dt>Force unit</dt>
+                  <dt>{t('run.forceUnit')}</dt>
                   <dd>{index.force_unit}</dd>
+                </div>
+                <div>
+                  <dt>{t('run.provenance')}</dt>
+                  <dd>
+                    {index.mode === 'DEMO' ? t('run.provenanceSynthetic') : t('run.provenanceSolver')}
+                  </dd>
                 </div>
               </dl>
               <a className="button" href={artifact(id, 'history.csv')} download>
                 <Download />
-                Download history CSV
+                {t('run.downloadCsv')}
               </a>
               {index.unavailable.length > 0 && (
                 <>
-                  <h3>Unavailable outputs</h3>
+                  <h3>{t('run.unavailableOutputs')}</h3>
+                  {/* Names stay in their raw contract form; they are engineering identifiers. */}
                   <p>{index.unavailable.join(' · ')}</p>
                 </>
               )}
@@ -293,31 +356,33 @@ export function RunView({
           <section className="card">
             <div className="panel-title">
               <Terminal />
-              Run diagnostics
+              {t('run.diagnosticsTitle')}
             </div>
             <div className="property-body">
-              <h2>{job.phase}</h2>
+              <h2>{labelFrom(t, 'phase', job.phase)}</h2>
               {job.diagnostic && <p className="error-text">{job.diagnostic}</p>}
               <dl>
-                {Object.entries({
-                  Solver: job.solver,
-                  Extraction: job.extraction,
-                  Submitted: date(job.created),
-                  Started: job.started ? date(job.started) : '—',
-                  Finished: job.ended ? date(job.ended) : '—',
-                  Step: job.step ?? '—',
-                  Increment: job.increment ?? '—',
-                  'Step time (s)': job.step_time ?? '—',
-                  'Solver exit': job.exit_code ?? '—',
-                  'Extractor exit': job.extraction_exit ?? '—',
-                  'Process ID': job.pid ?? '—',
-                  'Last heartbeat': job.heartbeat ? date(job.heartbeat) : '—',
-                  'Job ID': id,
-                  'Input SHA-256': job.input_hash ?? 'Preparing',
-                }).map(([k, v]) => (
-                  <div key={k}>
-                    <dt>{k}</dt>
-                    <dd>{v}</dd>
+                {(
+                  [
+                    [t('diag.solver'), labelFrom(t, 'state', job.solver)],
+                    [t('diag.extraction'), labelFrom(t, 'state', job.extraction)],
+                    [t('diag.submitted'), formatDate(job.created)],
+                    [t('diag.started'), job.started ? formatDate(job.started) : '—'],
+                    [t('diag.finished'), job.ended ? formatDate(job.ended) : '—'],
+                    [t('diag.step'), job.step ?? '—'],
+                    [t('diag.increment'), job.increment ?? '—'],
+                    [t('diag.stepTime'), job.step_time ?? '—'],
+                    [t('diag.solverExit'), job.exit_code ?? '—'],
+                    [t('diag.extractorExit'), job.extraction_exit ?? '—'],
+                    [t('diag.processId'), job.pid ?? '—'],
+                    [t('diag.lastHeartbeat'), job.heartbeat ? formatDate(job.heartbeat) : '—'],
+                    [t('diag.jobId'), id],
+                    [t('diag.inputHash'), job.input_hash ?? t('diag.inputHashPending')],
+                  ] as [string, string | number][]
+                ).map(([label, value]) => (
+                  <div key={label}>
+                    <dt>{label}</dt>
+                    <dd>{value}</dd>
                   </div>
                 ))}
               </dl>
@@ -326,7 +391,7 @@ export function RunView({
           <aside className="card">
             <div className="panel-title">
               <Archive />
-              Run artifacts
+              {t('run.runArtifacts')}
             </div>
             <div className="property-body">
               {job.manifest
@@ -338,16 +403,16 @@ export function RunView({
                     <Download />
                   </a>
                 ))}
-              {!job.manifest.length && <p>Artifacts appear as the worker processes this job.</p>}
+              {!job.manifest.length && <p>{t('run.artifactsPending')}</p>}
             </div>
           </aside>
           <div className="card log-card">
             <div className="panel-title">
               <Terminal />
-              Log tail
+              {t('run.logTail')}
               <div className="spacer" />
               <select
-                aria-label="Log file"
+                aria-label={t('run.logFile')}
                 value={logFile}
                 onChange={(e) => setLogFile(e.target.value)}
               >
@@ -361,7 +426,7 @@ export function RunView({
                 ))}
               </select>
             </div>
-            <pre>{logs || 'Waiting for log output…'}</pre>
+            <pre>{logs || t('run.waitingLog')}</pre>
           </div>
         </div>
       )}

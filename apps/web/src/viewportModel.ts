@@ -66,6 +66,10 @@ export interface ViewportProps {
   resetKey?: number
   panelOffset?: number
   lengthUnit?: string
+  /** Nodal displacement quantity used for contouring. */
+  resultComponent?: 'magnitude' | 'U1' | 'U2' | 'U3'
+  /** Localized legend heading supplied by the caller. */
+  resultLabel?: string
 }
 
 export interface Surface {
@@ -121,6 +125,10 @@ function instanceSurfaces(
     source.displacements?.map((row) => [row[0], row.slice(1)])
   )
   const coords = new Map(source.nodes.map((row) => [row[0], row.slice(1)]))
+  // Signed components are contoured by magnitude; the probe still reports the
+  // signed value, so a reader never mistakes the ramp for a signed field.
+  const component = props.resultComponent ?? 'magnitude'
+  const axis = component === 'U1' ? 0 : component === 'U2' ? 1 : component === 'U3' ? 2 : -1
   const groups = new Map<
     string,
     { surface: Surface; indices: Map<number, number> }
@@ -185,7 +193,9 @@ function instanceSurfaces(
             : xyz
         )
         surface.nodeIds!.push(label)
-        surface.magnitudes!.push(u ? Math.hypot(...u) : undefined)
+        surface.magnitudes!.push(
+          u ? (axis < 0 ? Math.hypot(...u) : Math.abs(u[axis] ?? 0)) : undefined
+        )
       }
       return index
     })

@@ -1,12 +1,23 @@
-# SimplifyAbaqus
+# Abaqus QOL
 
-A local engineering workbench for automotive weatherstrip sections. Open a section, select CAD regions and boundaries, assign materials and mounting, generate a conforming mesh and Abaqus input, then inspect a run's saved setup, diagnostics and frame-by-frame results.
+A local engineering workbench for automotive weatherstrip sections. Open a section, select CAD
+regions and boundaries, assign materials and mounting, generate a conforming mesh and Abaqus input,
+then inspect a run's saved setup, diagnostics and frame-by-frame results.
 
-The first milestone targets **Abaqus/Standard 2024**, with plane stress and implicit dynamic panel closing. The same workspace displays straight 3D extrusions for selection and property assignment.
+界面は日本語を既定とし、英語へ切り替えられます。Abaqus QOL is a local, single-user workbench; the
+interface defaults to Japanese and can be switched to English at any time.
+
+The first milestone targets **Abaqus/Standard 2024**, with plane stress and implicit dynamic panel
+closing. The same workspace displays straight 3D extrusions for selection and property assignment.
+
+> Abaqus QOL is an independent internal tool. It is not affiliated with, endorsed by or supported by
+> Dassault Systèmes. "Abaqus" is a trademark of its owner and is used here only to describe the
+> solver format this tool reads and writes.
 
 ## Start on Windows
 
-From the repository root in PowerShell, install into an ordinary Python 3.11 virtual environment. The browser build requires Node.js and npm. Use a browser with WebGL enabled.
+From the repository root in PowerShell, install into a Python 3.11 virtual environment. The browser
+build requires Node.js and npm. Use a browser with WebGL enabled.
 
 ~~~powershell
 py -3.11 -m venv .venv
@@ -16,32 +27,85 @@ npm --prefix apps/web run build
 .\.venv\Scripts\python scripts/serve.py
 ~~~
 
-Open [the local workbench](http://127.0.0.1:8765). The command starts FastAPI, serves the built UI and starts an independent worker. Close the browser freely. Press **Ctrl+C** in the serving terminal to stop the API and let the worker finish its current operation. Queued work resumes at the next start. The default database and artifacts live in `%LOCALAPPDATA%\SimplifyAbaqus`.
+Open [the local workbench](http://127.0.0.1:8765). The command starts FastAPI, serves the built UI
+and starts an independent worker. Close the browser freely. Press **Ctrl+C** in the serving terminal
+to stop the API and let the worker finish its current operation. Queued work resumes at the next
+start. The database and artifacts stay in `%LOCALAPPDATA%\SimplifyAbaqus` — the directory keeps its
+original name so existing installations keep their projects.
+
+A CMD starter is available as well and needs no PowerShell execution-policy change:
+
+~~~bat
+start-abaqus-qol.cmd
+~~~
 
 ## First run
 
-1. The first launch creates **Hollow bulb section**, a fictional two-material seal with a rigid panel and a fixed mounting foot. Use **Dashboard → New project** for another section or extrusion.
-2. In **Materials**, click the bulb wall or mounting foot. **Mounting / Contact** lets you pick edges and fix or release them. **Motion** sets the initial Y offset, signed panel travel and duration. **Save revision** keeps your changes.
-3. In **Mesh**, choose a global size or select an edge for local sizing. Click **Generate mesh & input**. Inspect the section mesh, element counts, initial vertical clearance and the concrete INP. Edits require a fresh build.
-4. In **Review / Run**, select **DEMO** and submit. The demonstration uses the real queue, saved input deck and artifact store. Its field values and force curve are synthetic. The scenario selector also provides a solver failure, a slow run for cancellation and a one-time extraction failure.
-5. Open **Results** from the run or dashboard. Play frames, probe nodes or elements, select a force-curve sample, or download signed panel history. **Setup** opens the submitted revision. **Duplicate setup** creates an independently editable project from that revision.
-6. Switch the viewport to **3D** to inspect section caps and side faces. Side-face material selection maps back to its section region. Length controls the preview. The project stores longitudinal subdivisions for future volume meshing.
+1. The first launch creates **Hollow bulb section**, a fictional two-material seal with a rigid panel
+   and a fixed mounting foot. Use **ダッシュボード → 新規プロジェクト** (Dashboard → New project) for
+   another section or extrusion.
+2. In **材料設定** (Materials), select a region and pick a material card; edit the card's density,
+   elastic constants or hyperfoam test data directly. **固定条件・接触条件** (Mounting / Contact) lets
+   you pick edges and fix or release them. **移動条件** (Motion) sets the initial Y offset, signed
+   panel travel and duration. **リビジョンを保存** (Save revision) keeps your changes.
+3. In **メッシュ** (Mesh), choose a global size or select an edge for local sizing. Click
+   **メッシュと入力を生成** (Generate mesh & input). Review element counts, edge lengths, per-region
+   counts, initial vertical clearance and the concrete INP. Edits require a fresh build.
+4. In **解析条件確認・実行** (Review / Run), select **DEMO** and submit. The demonstration uses the real
+   queue, saved input deck and artifact store, but its field values and force curve are **synthetic**.
+   The scenario selector also provides a solver failure, a slow run for cancellation and a one-time
+   extraction failure.
+5. Open **解析結果** (Results) from the run or dashboard. Play frames, probe nodes or elements, switch
+   the contoured displacement component, select a force-curve sample, or download signed panel
+   history. **設定** (Setup) opens the submitted revision. **設定を複製** (Duplicate setup) creates an
+   independently editable project from that revision.
+6. Switch the viewport to **3D** to inspect section caps and side faces. Side-face material
+   selection maps back to its section region. 3D is a preview only — solving requires a 2D section.
 
-The public drawing in [examples/hollow-section.dxf](examples/hollow-section.dxf) exercises LINE, ARC, CIRCLE and polyline bulges. Under **Import**, confirm millimetres and select the drawing. Assign section and panel roles, materials and a mounting edge before meshing. Empty nested cells can be selected from the assembly tree and explicitly filled. Replacing a drawing creates a revision and resets geometry assignments.
+The public drawing in [examples/hollow-section.dxf](examples/hollow-section.dxf) exercises LINE, ARC,
+CIRCLE and polyline bulges. Under **図面読込** (Import), confirm millimetres and select the drawing.
+Assign section and panel roles, materials and a mounting edge before meshing. Empty nested cells can
+be selected from the assembly tree and explicitly filled. Replacing a drawing creates a revision and
+resets geometry assignments.
+
+## DEMO versus Abaqus
+
+| | DEMO | ABAQUS |
+|---|---|---|
+| Process | Real queue, worker, artifacts and extraction contract | Real licensed Abaqus/Standard run |
+| Field values | Synthetic playback curves | Solver output from the ODB |
+| Labelling | `DEMO — synthetic results, not an Abaqus analysis.` on the dashboard, run banner, result page, legend, CSV and metadata | `ABAQUS` |
+| Use | Workflow, UI and queue verification only | Engineering evaluation |
+
+DEMO output must never be used as engineering evidence or as validation of the material model.
 
 ## Configuration
 
-These optional variables are read from the process environment at startup. A fresh installation defaults to DEMO. Installing Abaqus on the machine does not automatically enable paid submissions.
+Optional variables are read from the process environment at startup. A fresh installation defaults
+to DEMO. Installing Abaqus on the machine does not automatically enable paid submissions.
 
 ~~~powershell
-$env:SEAL_DATA = 'C:\SealWorkbench\data'
+# Data directory. SEAL_DATA wins when both are set (documented precedence).
+$env:SEAL_DATA = 'C:\SealWorkbench\data'          # legacy name, still supported
+$env:ABAQUS_QOL_DATA = 'C:\SealWorkbench\data'    # newer alias
+
+# Abaqus launcher. SIMPLIFY_ABAQUS_LAUNCHER wins when both are set.
 $env:SIMPLIFY_ABAQUS_LAUNCHER = 'C:\SIMULIA\Commands\abq2024.bat'
+$env:ABAQUS_QOL_LAUNCHER = 'C:\SIMULIA\Commands\abq2024.bat'
+
+# DWG converter. SEAL_ODA wins when both are set.
 $env:SEAL_ODA = 'C:\path-to-installed-ODA\ODAFileConverter.exe'
+$env:ABAQUS_QOL_ODA = 'C:\path-to-installed-ODA\ODAFileConverter.exe'
 ~~~
 
-Set only the options you use. The data path must be on a local disk. Select **ABAQUS** and **Submit licensed analysis** to request real solver execution. A missing launcher or converter produces a diagnostic. Direct solver runs use the installation's solver license. [Abaqus adapter and troubleshooting](integrations/abaqus/README.md)
+Set only the options you use. The data path must be on a local disk. Select **ABAQUS** and
+**ライセンス解析を投入** (Submit licensed analysis) to request real solver execution. A missing launcher
+or converter produces a diagnostic. Direct solver runs use the installation's solver license.
+[Abaqus adapter and troubleshooting](integrations/abaqus/README.md) ·
+[configuration and recovery](docs/migration-and-recovery.md)
 
-For frontend development, run the API, worker and Vite in three repository-root terminals. Vite proxies the API through loopback.
+For frontend development, run the API, worker and Vite in three repository-root terminals. Vite
+proxies the API through loopback.
 
 ~~~powershell
 .\.venv\Scripts\python -m uvicorn services.api.main:app --host 127.0.0.1 --port 8765
@@ -53,19 +117,43 @@ npm --prefix apps/web run dev
 
 ~~~powershell
 .\.venv\Scripts\python -m pytest -q
+npm --prefix apps/web run test:i18n
 npm --prefix apps/web run typecheck
 npm --prefix apps/web run build
 npm --prefix apps/web run test:browser
 ~~~
 
-The Playwright suite starts its own API and worker on port 8876 with disposable local data and disabled paid execution. It uses installed Edge, an executable specified with `SEAL_BROWSER`, or Playwright Chromium. If neither browser is installed, run `npx playwright install chromium` from `apps/web`. Regenerate the checked-in TypeScript API contract after schema changes with `.\.venv\Scripts\python scripts/schema.py`.
+The Playwright suite starts its own API and worker on port 8876 with disposable local data and
+disabled paid execution. It uses installed Edge, an executable specified with `SEAL_BROWSER`, or
+Playwright Chromium. If neither browser is installed, run `npx playwright install chromium` from
+`apps/web`. Regenerate the checked-in TypeScript API contract after schema changes with
+`.\.venv\Scripts\python scripts/schema.py`.
 
-For the optional installed-runtime test, set `SIMPLIFY_ABAQUS_TEST_LAUNCHER` to the Abaqus 2024 launcher and run pytest. It creates and reads a manufactured ODB using `abaqus python`. The test includes no solver submission.
+For the optional installed-runtime test, set `SIMPLIFY_ABAQUS_TEST_LAUNCHER` to the Abaqus 2024
+launcher and run pytest. It creates and reads a manufactured ODB using `abaqus python` and submits no
+solver job.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [docs/user-guide-ja.md](docs/user-guide-ja.md) | 日本語ユーザーガイド |
+| [docs/user-guide-en.md](docs/user-guide-en.md) | English user guide |
+| [docs/architecture.md](docs/architecture.md) | Components, data flow, state ownership |
+| [docs/engineering-validation.md](docs/engineering-validation.md) | Supported models, assumptions, benchmark procedure, limitations |
+| [docs/migration-and-recovery.md](docs/migration-and-recovery.md) | Data location, backup, restore, unknown-job recovery, rollback |
+| [docs/release-checklist.md](docs/release-checklist.md) | Release gates and CI checks |
+| [docs/implementation-report.md](docs/implementation-report.md) | Latest hardening report and gate matrix |
+| [docs/engineering.md](docs/engineering.md) | Detailed engineering and operations notes |
 
 ## Milestone status
 
-Real paths include clean-DXF import, analytic CAD reconstruction, Gmsh/OCC meshing, INP generation, immutable revisions, durable jobs and read-only ODB extraction. The Abaqus command adapter was exercised with a Windows batch fixture. Abaqus 2024 Python parsed a generated deck and extracted a manufactured ODB. Physical solution accuracy, contact convergence and production license behavior await an authorized analysis. The installed ODA conversion path also awaits a configured converter.
+Real paths include clean-DXF import, analytic CAD reconstruction, Gmsh/OCC meshing, INP generation,
+immutable revisions, durable jobs and read-only ODB extraction. The Abaqus command adapter was
+exercised with a Windows batch fixture. Abaqus 2024 Python parsed a generated deck and extracted a
+manufactured ODB.
 
-The next engineering milestone is to run one authorized closing case, compare contact onset, mesh convergence, displacement and signed RF2 against a trusted ODB/curve, then establish acceptance tolerances. Representative drawings and reference solver outputs are needed for that comparison.
-
-See [architecture, supported features and operations](docs/engineering.md) for data contracts, failure handling, tested versions, distribution considerations and later 3D work.
+**Not yet verified:** physical solution accuracy, contact convergence, mesh convergence and
+production license behaviour. These require one authorized closing case plus trusted reference
+output. No reference force curve has been compared. DEMO output is not evidence. See
+[docs/engineering-validation.md](docs/engineering-validation.md).

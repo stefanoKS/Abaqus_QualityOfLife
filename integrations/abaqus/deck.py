@@ -192,7 +192,7 @@ def write_inp(project, mesh):
 
     lines = [
         "*Heading",
-        "SimplifyAbaqus 2D plane stress / implicit dynamic closing",
+        "Abaqus QOL 2D plane stress / implicit dynamic closing",
         "** Units: N, mm, s, tonne. Panel RF2 is total reaction for the specified thickness.",
         f"** Initial vertical clearance on the assembled mesh: {scalar(clearance)} mm.",
         f"** Prescribed Y travel: {scalar(project.motion.travel)} mm; measured from initial placement.",
