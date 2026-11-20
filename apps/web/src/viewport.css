@@ -1,0 +1,130 @@
+.seal-viewport {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 320px;
+  height: 100%;
+  background: #eff3f4;
+  color: #334855;
+}
+.seal-vtk-host,
+.seal-vtk-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.seal-vtk-host {
+  touch-action: none;
+  outline: 0;
+  user-select: none;
+}
+.seal-vtk-host:focus-visible {
+  outline: 2px solid #468789;
+  outline-offset: -2px;
+}
+.seal-vtk-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.seal-vtk-overlay {
+  pointer-events: none;
+}
+.seal-vtk-tools {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  display: flex;
+  align-items: center;
+  border: 1px solid #bdcbd0;
+  border-radius: 6px;
+  background: #fcfdfd;
+  overflow: hidden;
+}
+.seal-vtk-tools button {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 33px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  color: #39515b;
+  background: transparent;
+  cursor: pointer;
+}
+.seal-vtk-tools button + button {
+  border-left: 1px solid #d8e0e2;
+}
+.seal-vtk-tools button:hover {
+  background: #e4eff0;
+}
+.seal-vtk-tools button:focus-visible {
+  outline: 2px solid #338388;
+  outline-offset: -2px;
+}
+.seal-vtk-orientation,
+.seal-vtk-tip,
+.seal-vtk-legend {
+  position: absolute;
+  font:
+    500 12px/1.5 ui-monospace,
+    Consolas,
+    monospace;
+  pointer-events: none;
+}
+.seal-vtk-orientation {
+  top: 18px;
+  left: 17px;
+  color: #536975;
+}
+.seal-vtk-tip {
+  bottom: 9px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: #596d76;
+  white-space: nowrap;
+}
+.seal-vtk-legend {
+  left: 16px;
+  top: 49px;
+  width: 148px;
+  color: #334a52;
+}
+.seal-vtk-legend strong {
+  font-size: 11px;
+}
+.seal-vtk-legend i {
+  display: block;
+  height: 6px;
+  margin: 4px 0;
+  border-radius: 2px;
+}
+.seal-vtk-legend span {
+  display: flex;
+  justify-content: space-between;
+}
+.seal-vtk-legend b {
+  font-weight: 500;
+}
+.seal-vtk-empty {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: #f9fbfb;
+  border: 1px solid #c1cfd2;
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 14px;
+}
+@media (max-width: 650px) {
+  .seal-vtk-tip {
+    display: none;
+  }
+}
