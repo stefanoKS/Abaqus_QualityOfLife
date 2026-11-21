@@ -12,10 +12,23 @@ from shapely.geometry.polygon import orient
 
 from .geometry import Builder, example_materials, sample_edges
 from .intersections import validate_intersections
-from .model import Component, Face, Project, Selection, Source
+from .model import Component, Face, Project, Selection, Source, SplineData
 
 PANEL_LAYERS = {"PANEL", "MOVING_PANEL"}
 MAX_DRAWING = 8 * 1024 * 1024
+
+
+def _attribute(ent, name, default):
+    """Read an optional DXF attribute; SPLINE and others do not define every header."""
+    return ent.dxf.get(name, default) if ent.dxf.is_supported(name) else default
+
+
+def _off_plane(ent):
+    if abs(_attribute(ent, "thickness", 0)) > 1e-8:
+        return True
+    return any(
+        abs(x - y) > 1e-8 for x, y in zip(_attribute(ent, "extrusion", (0, 0, 1)), (0, 0, 1))
+    )
 
 
 def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
@@ -40,12 +53,10 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
         kind = ent.dxftype()
         handle = ent.dxf.handle
         layer = ent.dxf.layer
-        if kind not in ("LINE", "ARC", "CIRCLE", "LWPOLYLINE"):
+        if kind not in ("LINE", "ARC", "CIRCLE", "LWPOLYLINE", "SPLINE"):
             unsupported[kind] += 1
             continue
-        if abs(ent.dxf.get("thickness", 0)) > 1e-8 or any(
-            abs(x - y) > 1e-8 for x, y in zip(ent.dxf.get("extrusion", (0, 0, 1)), (0, 0, 1))
-        ):
+        if _off_plane(ent):
             raise ValueError(
                 f"{kind} {handle}: flatten thickness and orient the section in the XY plane."
             )
@@ -79,7 +90,36 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
             ]
             return [add(a, b, center=c, sweep=span / n) for a, b in zip(pts, pts[1:])]
 
-        if kind == "LWPOLYLINE":
+        def read_spline(segment):
+            control = [tuple(p) for p in segment.control_points]
+            fits = [tuple(p) for p in segment.fit_points]
+            if control:
+                fits = []  # the control polygon is authoritative when both are stored
+            elif not fits:
+                raise ValueError(f"SPLINE {handle}: no control points or fit points.")
+            if len(control) > 4096 or len(fits) > 4096:
+                raise ValueError(f"SPLINE {handle}: exceeds the 4096 point limit.")
+            degree = int(segment.dxf.degree)
+            data = SplineData(
+                degree=degree,
+                control_points=control,
+                fit_points=fits,
+                knots=[float(k) for k in (segment.knots or ())],
+                weights=[float(w) for w in (segment.weights or ())],
+                closed=bool(segment.closed),
+                periodic=bool(segment.get_flag_state(segment.PERIODIC)),
+            )
+            return builder.spline(
+                data,
+                component,
+                name=f"Spline {handle}",
+                handle=handle,
+                layer=layer,
+            )
+
+        if kind == "SPLINE":
+            tokens = [read_spline(ent)]
+        elif kind == "LWPOLYLINE":
             if not ent.closed:
                 raise ValueError(
                     f"LWPOLYLINE {handle} is open. Close the contour or explode panel profiles into LINE/ARC."
@@ -107,7 +147,7 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
     if unsupported:
         details = ", ".join(f"{n} {k}" for k, n in sorted(unsupported.items()))
         raise ValueError(
-            f"Unsupported DXF entities ({details}). Explode INSERT blocks and export LINE, ARC, CIRCLE or closed LWPOLYLINE only."
+            f"Unsupported DXF entities ({details}). Explode INSERT blocks and export LINE, ARC, CIRCLE, SPLINE or closed LWPOLYLINE only."
         )
     if not builder.edges:
         raise ValueError("The DXF model space has no supported entities.")

@@ -260,6 +260,180 @@ def test_legacy_edge_fixture_can_be_resolved_inspected_and_saved(client):
     assert store.job(mesh["id"])["fixture"]["labels"] == resolved["labels"]
 
 
+def test_queued_deck_uses_the_fixture_snapshot_at_queue_time(client):
+    """A fixture edit between queueing and claiming must not change the deck."""
+    revision = post(client, "/api/projects", {"name": "Snapshot"})
+    mesh = prepare_mesh(client, revision)
+    model = artifact(mesh, "mesh.json")
+    chain = next(nodes for nodes in model["edge_nodes"].values() if len(nodes) >= 6)
+    first, second = sorted(chain[::2]), sorted(chain[1::2])
+    save_fixture(client, mesh["id"], [f"{SEAL}:{n}" for n in first])
+    deck = post(
+        client, "/api/decks", {"revision": revision["id"], "token": store.new_id(), "mesh": mesh["id"]}
+    )
+    # Change the reviewed fixture before the worker claims the deck.
+    save_fixture(client, mesh["id"], [f"{SEAL}:{n}" for n in second])
+    assert once("test")
+    job = store.job(deck["id"])
+    assert job["status"] == "Completed", job["diagnostic"]
+    text = (store.job_dir(deck["id"]) / "analysis.inp").read_text(encoding="utf-8")
+    assert set(wsfix(text)) == set(first), "the queued deck must use the selection captured at queue time"
+    assert job["fixture_labels"] == [f"{SEAL}:{n}" for n in first]
+    assert job["fixture_hash"] != store.job(mesh["id"])["fixture"]["hash"]
+    # The live fixture is now different, so this deck cannot be submitted.
+    blocked = client.post(
+        "/api/runs",
+        json={
+            "revision": revision["id"],
+            "deck": deck["id"],
+            "token": store.new_id(),
+            "name": "after fixture edit",
+            "mode": "DEMO",
+        },
+    )
+    assert blocked.status_code == 409
+    assert "fixture changed" in blocked.json()["detail"]
+
+
+def test_explicit_remesh_in_the_same_revision_supersedes_mesh_and_deck(client):
+    revision = post(client, "/api/projects", {"name": "Same revision remesh"})
+    first = prepare_mesh(client, revision)
+    labels = legacy_fixture(client, first["id"])["labels"]
+    save_fixture(client, first["id"], labels)
+    deck, _ = deck_and_text(client, revision, first)
+
+    # A second explicit mesh for the same revision, even with identical bytes.
+    second = prepare_mesh(client, revision)
+    assert second["id"] != first["id"]
+    assert second["mesh_digest"] == first["mesh_digest"]
+    assert second["fixture"] is None
+
+    superseded = client.post(
+        "/api/decks",
+        json={"revision": revision["id"], "token": store.new_id(), "mesh": first["id"]},
+    )
+    assert superseded.status_code == 409
+    assert "supersedes" in superseded.json()["detail"]
+    unreviewed = client.post(
+        "/api/decks",
+        json={"revision": revision["id"], "token": store.new_id(), "mesh": second["id"]},
+    )
+    assert unreviewed.status_code == 409
+    assert "fixed weatherstrip nodes" in unreviewed.json()["detail"]
+    stale = client.post(
+        "/api/runs",
+        json={
+            "revision": revision["id"],
+            "deck": deck["id"],
+            "token": store.new_id(),
+            "name": "superseded deck",
+            "mode": "DEMO",
+        },
+    )
+    assert stale.status_code == 409
+    assert "superseded mesh" in stale.json()["detail"]
+
+    # Reviewing the new mesh restores the workflow; the older deck stays rejected.
+    save_fixture(client, second["id"], labels)
+    fresh, _ = deck_and_text(client, revision, second)
+    assert fresh["mesh"] == second["id"]
+    assert (
+        client.post(
+            "/api/runs",
+            json={
+                "revision": revision["id"],
+                "deck": deck["id"],
+                "token": store.new_id(),
+                "name": "older deck",
+                "mode": "DEMO",
+            },
+        ).status_code
+        == 409
+    )
+
+
+def test_submitted_run_replays_its_archived_fixture(client):
+    revision = post(client, "/api/projects", {"name": "Archive"})
+    mesh = prepare_mesh(client, revision)
+    model = artifact(mesh, "mesh.json")
+    chain = next(nodes for nodes in model["edge_nodes"].values() if len(nodes) >= 6)
+    archived = [f"{SEAL}:{n}" for n in sorted(chain[::2])]
+    revised = [f"{SEAL}:{n}" for n in sorted(chain[1::2])]
+    save_fixture(client, mesh["id"], archived)
+    deck, text = deck_and_text(client, revision, mesh)
+    run = post(
+        client,
+        "/api/runs",
+        {
+            "revision": revision["id"],
+            "deck": deck["id"],
+            "token": store.new_id(),
+            "name": "Archived",
+            "mode": "DEMO",
+        },
+    )
+    assert once("test") and once("test")
+    assert set(wsfix(text)) == {int(label.split(":")[1]) for label in archived}
+
+    # Change the live fixture and remesh, then reopen the historical run.
+    save_fixture(client, mesh["id"], revised)
+    prepare_mesh(client, revision)
+    job = store.job(run["id"])
+    assert job["status"] == "Completed"
+    assert job["fixture_labels"] == archived
+    assert store.job(mesh["id"])["fixture"]["labels"] == revised
+    # The archived deck still contains the original selection.
+    assert set(wsfix((store.job_dir(deck["id"]) / "analysis.inp").read_text())) == {
+        int(label.split(":")[1]) for label in archived
+    }
+    # The archived evidence keeps provenance through the extractor's metadata.
+    metadata = json.loads(
+        (store.job_dir(run["id"]) / "result-metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["fixture"] == {
+        "source": "mesh-node-selection",
+        "count": len(archived),
+        "nodes": archived,
+    }
+
+
+def test_legacy_edge_resolution_uses_the_open_revision(client):
+    first = post(client, "/api/projects", {"name": "Open revision"})
+    edges = [e["id"] for e in first["setup"]["edges"] if e["component"] == "seal"]
+    a, b = edges[0], edges[1]
+    setup = first["setup"]
+    setup["selections"][0]["entities"] = [a]
+    saved_a = client.put(
+        "/api/projects/" + first["project"], json={"base": first["id"], "setup": setup}
+    ).raise_for_status().json()
+    mesh = prepare_mesh(client, saved_a)
+
+    other = json.loads(json.dumps(saved_a["setup"]))
+    other["selections"][0]["entities"] = [b]
+    saved_b = client.put(
+        "/api/projects/" + first["project"], json={"base": saved_a["id"], "setup": other}
+    ).raise_for_status().json()
+    assert saved_b["mesh_compat"] == saved_a["mesh_compat"] == mesh["mesh_compat"]
+
+    labels_a = post(
+        client, f"/api/meshes/{mesh['id']}/fixture/edges?revision={saved_a['id']}", {}
+    )["labels"]
+    labels_b = post(
+        client, f"/api/meshes/{mesh['id']}/fixture/edges?revision={saved_b['id']}", {}
+    )["labels"]
+    model = artifact(mesh, "mesh.json")
+    assert {int(l.split(":")[1]) for l in labels_a} == set(model["edge_nodes"][a])
+    assert {int(l.split(":")[1]) for l in labels_b} == set(model["edge_nodes"][b])
+    assert labels_a != labels_b
+
+    stranger = post(client, "/api/projects", {"name": "Stranger"})
+    rejected = client.post(
+        f"/api/meshes/{mesh['id']}/fixture/edges?revision={stranger['id']}", json={}
+    )
+    assert rejected.status_code == 409
+    assert "another model" in rejected.json()["detail"]
+
+
 def test_result_header_carries_the_reviewed_fixture(tmp_path):
     from packages.engineering import generate_mesh, synthetic
     from packages.engineering.fixture import from_edges

@@ -262,7 +262,12 @@ export interface paths {
         put?: never;
         /**
          * Resolve Legacy Fixture
-         * @description Resolve a stored CAD-edge mounting selection to nodes of this known mesh.
+         * @description Resolve the open revision's mounting selection to nodes of this known mesh.
+         *
+         *     ``revision`` is the revision the user is editing; without it the mesh's
+         *     creating revision is used. The revision must belong to the same model and its
+         *     mesh inputs must match, so two compatible revisions can resolve their own,
+         *     different mounting edges.
          */
         post: operations["resolve_legacy_fixture_api_meshes__jid__fixture_edges_post"];
         delete?: never;
@@ -580,7 +585,7 @@ export interface components {
              * @default line
              * @enum {string}
              */
-            kind: "line" | "arc";
+            kind: "line" | "arc" | "spline";
             /** Center */
             center?: [
                 number,
@@ -589,6 +594,7 @@ export interface components {
             ] | null;
             /** Sweep */
             sweep?: number | null;
+            spline?: components["schemas"]["SplineData-Input"] | null;
             /**
              * Source Handle
              * @default
@@ -617,7 +623,7 @@ export interface components {
              * @default line
              * @enum {string}
              */
-            kind: "line" | "arc";
+            kind: "line" | "arc" | "spline";
             /** Center */
             center: [
                 number,
@@ -626,6 +632,7 @@ export interface components {
             ] | null;
             /** Sweep */
             sweep: number | null;
+            spline: components["schemas"]["SplineData-Output"] | null;
             /**
              * Source Handle
              * @default
@@ -795,6 +802,8 @@ export interface components {
             /** Fixture Hash */
             fixture_hash?: string | null;
             fixture?: components["schemas"]["FixtureInfo"] | null;
+            /** Fixture Labels */
+            fixture_labels?: string[] | null;
             /** Diagnostic */
             diagnostic: string;
             /** Manifest */
@@ -1277,6 +1286,110 @@ export interface components {
              * @default millimetres
              */
             drawing_units: string;
+        };
+        /**
+         * SplineData
+         * @description Canonical NURBS: the drawing's engineering curve, not a display chord.
+         *
+         *     Either ``control_points`` (with ``knots``/``weights`` when rational) or
+         *     ``fit_points`` is authoritative. ``tolerance`` is the maximum chord deviation
+         *     allowed for display and meshing in project length units.
+         */
+        "SplineData-Input": {
+            /**
+             * Degree
+             * @default 3
+             */
+            degree: number;
+            /** Control Points */
+            control_points?: [
+                number,
+                number,
+                number
+            ][];
+            /** Fit Points */
+            fit_points?: [
+                number,
+                number,
+                number
+            ][];
+            /** Knots */
+            knots?: number[];
+            /** Weights */
+            weights?: number[];
+            /** Tangents */
+            tangents?: [
+                number,
+                number,
+                number
+            ][];
+            /**
+             * Closed
+             * @default false
+             */
+            closed: boolean;
+            /**
+             * Periodic
+             * @default false
+             */
+            periodic: boolean;
+            /**
+             * Tolerance
+             * @default 0.02
+             */
+            tolerance: number;
+        };
+        /**
+         * SplineData
+         * @description Canonical NURBS: the drawing's engineering curve, not a display chord.
+         *
+         *     Either ``control_points`` (with ``knots``/``weights`` when rational) or
+         *     ``fit_points`` is authoritative. ``tolerance`` is the maximum chord deviation
+         *     allowed for display and meshing in project length units.
+         */
+        "SplineData-Output": {
+            /**
+             * Degree
+             * @default 3
+             */
+            degree: number;
+            /** Control Points */
+            control_points: [
+                number,
+                number,
+                number
+            ][];
+            /** Fit Points */
+            fit_points: [
+                number,
+                number,
+                number
+            ][];
+            /** Knots */
+            knots: number[];
+            /** Weights */
+            weights: number[];
+            /** Tangents */
+            tangents: [
+                number,
+                number,
+                number
+            ][];
+            /**
+             * Closed
+             * @default false
+             */
+            closed: boolean;
+            /**
+             * Periodic
+             * @default false
+             */
+            periodic: boolean;
+            /**
+             * Tolerance
+             * @default 0.02
+             */
+            tolerance: number;
         };
         /** Submit */
         Submit: {
@@ -1866,7 +1979,9 @@ export interface operations {
     };
     resolve_legacy_fixture_api_meshes__jid__fixture_edges_post: {
         parameters: {
-            query?: never;
+            query?: {
+                revision?: string | null;
+            };
             header?: never;
             path: {
                 jid: string;

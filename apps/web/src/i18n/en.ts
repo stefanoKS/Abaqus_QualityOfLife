@@ -233,7 +233,11 @@ export const en: Dictionary = {
   'mesh.fixedNodeCount': 'Selected nodes',
   'mesh.fixtureSource': 'Selection source',
   'mesh.sourceNodes': 'Reviewed mesh nodes',
+  'mesh.sourceArchived': 'Archived in the submitted deck',
   'mesh.sourceNone': 'Not set',
+  'mesh.archivedFixtureHelp':
+    'This setup was submitted. The labels shown are the fixed nodes recorded in the submitted input deck.',
+  'mesh.discard': 'Discard selection',
   'mesh.saveFixture': 'Save fixed nodes',
   'mesh.clear': 'Clear selection',
   'mesh.fixtureUnsaved': '{count} nodes selected. They are not used until you save.',
@@ -312,6 +316,8 @@ export const en: Dictionary = {
   'hint.meshStale': 'The geometry or mesh controls changed. Generate the mesh again.',
   'hint.fixtureRequired':
     'Generate the mesh, then select and save the fixed weatherstrip nodes.',
+  'hint.fixturePending':
+    'The fixed-node selection has unsaved changes. Save or discard them before preparing or submitting.',
   'hint.deckBlockedByMesh': 'A reviewed mesh and fixture are needed before the deck.',
   'hint.deckRequired': 'Prepare the input deck for this revision.',
   'hint.results': 'Submit a run to inspect results.',

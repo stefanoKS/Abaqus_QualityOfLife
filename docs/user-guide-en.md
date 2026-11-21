@@ -40,7 +40,10 @@ Completion is derived from the saved setup, not from whether you opened the step
    history and runs; **Revisions** lists them and **Duplicate model** creates an independent copy in the
    same group.
 3. **Import** a DXF/DWG only after confirming the drawing coordinates are in millimetres. The import
-   runs in the background and creates a new revision when it finishes.
+   runs in the background and creates a new revision when it finishes. `LINE`, `ARC`, `CIRCLE`,
+   closed `LWPOLYLINE` and `SPLINE` entities are supported. A spline is kept as an exact B-spline
+   (control polygon, knots and weights) or, for fit-point splines, as the AutoCAD-compatible cubic
+   through its fit points, so display and meshing follow the drawn curve rather than a chord.
 4. **Components** — assign each component a role: weatherstrip seal, moving panel, and so on.
 5. **Materials** — assign a material card to each region and edit card properties as needed.
 6. **Mounting / Contact** — select the edges to fix and set the friction coefficient.
@@ -120,6 +123,9 @@ entitlement. Never use DEMO output for design decisions or material-model valida
 |---|---|
 | Abaqus launcher not configured | Set the launcher environment variable and restart the application. |
 | DWG converter not configured | Configure the ODA File Converter path, or export DXF instead. |
+| Unsupported DXF entities | Explode blocks and export `LINE`, `ARC`, `CIRCLE`, `SPLINE` or closed `LWPOLYLINE`. |
+| Spline knot vector length must equal control points + degree + 1 | Re-export the curve; the file stores an inconsistent B-spline definition. |
+| Spline endpoints disagree with its vertices | Re-export the drawing so the spline ends meet the adjoining curves exactly. |
 | Every seal edge must belong to a material region | Fix the drawing so every edge belongs to a region. |
 | Assign the seal role and a material to every section region | Resolve unassigned regions in Materials. |
 | Requested mesh exceeds the pilot mesh budget | Increase the global element size. |
@@ -134,6 +140,10 @@ entitlement. Never use DEMO output for design decisions or material-model valida
   travel and per-pair friction overrides are not available yet.
 - The fixed nodes are a mesh-node selection; a mesh-changing edit still requires a new mesh and a
   reviewed fixture, because coincident node numbers are not proof that an old selection is right.
+- Splines are imported exactly, but a spline is meshed through its declared chord tolerance when OCC
+  cannot take the exact B-spline (closed or periodic curves). The default tolerance is 0.02 mm.
+- A DWG needs an installed ODA File Converter. Without it the import reports *DWG converter not
+  configured* and asks for a DXF export.
 - Physical validity (contact onset, reaction magnitude, mesh convergence) is **not validated** against a
   trusted reference. One licensed door-only closing case has been executed and is recorded in
   [engineering-validation.md](engineering-validation.md).

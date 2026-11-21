@@ -39,7 +39,10 @@ Abaqus QOL はローカル PC 上で動作する単独利用の作業環境で�
    独自のリビジョン履歴と実行履歴を持ち、**リビジョン** で一覧、**モデルを複製** で同じグループ内に
    独立したモデルを作成できます。
 3. **図面読込** で DXF / DWG を読み込む場合は、座標が mm であることを確認してから実行します。読み込み
-   はバックグラウンドで処理され、完了すると新しいリビジョンが作成されます。
+   はバックグラウンドで処理され、完了すると新しいリビジョンが作成されます。対応エンティティは
+   `LINE`、`ARC`、`CIRCLE`、閉じた `LWPOLYLINE`、`SPLINE` です。スプラインは制御点・ノット・重みを
+   保った正確な B-スプラインとして、通過点のみのスプラインは AutoCAD 互換の 3 次補間として保持する
+   ため、表示もメッシュも弦ではなく作図された曲線に従います。
 4. **構成部品** で各構成部品に「ウェザーストリップ（シール部）」「可動パネル」などの役割を割り当てます。
 5. **材料設定** で領域ごとに材料カードを割り当て、必要に応じて材料特性を編集します。
 6. **固定条件・接触条件** で固定するエッジを選択し、摩擦係数を設定します。
@@ -118,6 +121,9 @@ Abaqus QOL はローカル PC 上で動作する単独利用の作業環境で�
 |---|---|
 | Abaqus launcher not configured | ランチャーの環境変数を設定し、アプリケーションを再起動します。 |
 | DWG converter not configured | ODA File Converter のパスを設定するか、DXF で出力し直します。 |
+| Unsupported DXF entities | ブロックを分解し、`LINE` / `ARC` / `CIRCLE` / `SPLINE` / 閉じた `LWPOLYLINE` で出力します。 |
+| Spline knot vector length must equal control points + degree + 1 | ノット数と制御点数が矛盾しています。曲線を出力し直します。 |
+| Spline endpoints disagree with its vertices | スプラインの端点が隣接曲線と一致するよう図面を出力し直します。 |
 | Every seal edge must belong to a material region | すべてのエッジが領域に属するよう図面を修正します。 |
 | Assign the seal role and a material to every section region | 材料設定で未割当の領域を解消します。 |
 | Requested mesh exceeds the pilot mesh budget | 全体サイズを大きくして要素数を減らします。 |
@@ -132,6 +138,10 @@ Abaqus QOL はローカル PC 上で動作する単独利用の作業環境で�
   接触面ペアごとの摩擦上書きは未対応です。
 - 固定節点はメッシュ節点の選択です。メッシュが変わる編集では新しいメッシュと固定節点の再確認が必要
   です。節点番号が一致していても、以前の選択が正しいとはみなしません。
+- スプラインは正確に読み込みますが、閉曲線・周期曲線など OCC が正確な B-スプラインを受け取れない
+  場合は、宣言した弦誤差（既定 0.02 mm）でメッシュ化します。
+- DWG の読み込みには ODA File Converter のインストールが必要です。無い場合は
+  *DWG converter not configured* と表示され、DXF 出力を求めます。
 - 物理的な妥当性（接触開始位置、反力の大きさ、メッシュ収束）は信頼できる参照値との比較では未検証で
   す。ライセンスを使用したドア単独の閉じ解析を 1 件実行しており、結果は
   [engineering-validation.md](engineering-validation.md) に記録しています。

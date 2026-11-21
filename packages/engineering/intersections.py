@@ -12,7 +12,9 @@ from shapely.geometry import LineString, box
 TOL = 1e-7
 
 
-def invalid_pair(a, b, coordinates):
+def invalid_pair(a, b, coordinates, samples=None):
+    if samples is not None and (a.kind == "spline" or b.kind == "spline"):
+        return _sampled_invalid(a, b, coordinates, samples)
     a0, a1 = coordinates[a.start][:2], coordinates[a.end][:2]
     b0, b1 = coordinates[b.start][:2], coordinates[b.end][:2]
     common = [coordinates[v][:2] for v in {a.start, a.end} & {b.start, b.end}]
@@ -80,6 +82,32 @@ def invalid_pair(a, b, coordinates):
     return any(on_arc(pt, a, a0) and not allowed(pt) for pt in candidates)
 
 
+def _sampled_invalid(a, b, coordinates, samples):
+    """Spline proximity check on the canonical tessellation.
+
+    A spline has no closed-form intersection here, so the check runs on samples
+    within the curve's own chord tolerance and reports only intersections that
+    are not shared CAD vertices. Treat a hit as a warning to split the curve.
+    """
+    common = [coordinates[v][:2] for v in {a.start, a.end} & {b.start, b.end}]
+    pad = max(TOL, *[e.spline.tolerance for e in (a, b) if e.kind == "spline"])
+
+    def allowed(point):
+        return any(math.dist(point, q) <= pad for q in common)
+
+    first = LineString([p[:2] for p in samples[a.id]])
+    second = LineString([p[:2] for p in samples[b.id]])
+    crossing = first.intersection(second)
+    if crossing.is_empty:
+        return False
+    pieces = (
+        list(crossing.geoms) if crossing.geom_type.startswith("Multi") else [crossing]
+    )
+    return any(
+        not (piece.geom_type == "Point" and allowed(piece.coords[0])) for piece in pieces
+    )
+
+
 def validate_intersections(project, samples):
     coordinates = {v.id: v.xyz for v in project.vertices}
     boxes = []
@@ -99,7 +127,7 @@ def validate_intersections(project, samples):
             if j <= i:
                 continue
             b = project.edges[j]
-            if invalid_pair(a, b, coordinates):
+            if invalid_pair(a, b, coordinates, samples):
                 raise ValueError(
                     f"Edges from handles {a.source_handle} and {b.source_handle} cross or overlap. Split curves at shared endpoints."
                 )

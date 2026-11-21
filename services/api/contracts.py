@@ -139,6 +139,7 @@ class Job(BaseModel):
     mesh_compat: str | None = None
     fixture_hash: str | None = None
     fixture: FixtureInfo | None = None
+    fixture_labels: list[str] | None = None
     diagnostic: str
     manifest: list[str]
     input_hash: str | None

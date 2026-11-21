@@ -234,7 +234,11 @@ export const ja = {
   'mesh.fixedNodeCount': '選択節点数',
   'mesh.fixtureSource': '選択の由来',
   'mesh.sourceNodes': 'メッシュ節点を確認済み',
+  'mesh.sourceArchived': '投入済みデッキの記録',
   'mesh.sourceNone': '未設定',
+  'mesh.archivedFixtureHelp':
+    'この設定は投入済みです。表示しているのは提出した入力デッキに記録された固定節点です。',
+  'mesh.discard': '選択を破棄',
   'mesh.saveFixture': '固定節点を保存',
   'mesh.clear': '選択をクリア',
   'mesh.fixtureUnsaved': '{count} 節点を選択中です。保存するまで解析には使われません。',
@@ -310,6 +314,8 @@ export const ja = {
   'hint.meshRequired': '先にメッシュを生成してください。',
   'hint.meshStale': '形状または分割条件が変わりました。メッシュを再生成してください。',
   'hint.fixtureRequired': 'メッシュを生成した後、固定節点を選択して保存してください。',
+  'hint.fixturePending':
+    '固定節点の変更が未保存です。保存するか破棄するまで入力デッキの作成・投入はできません。',
   'hint.deckBlockedByMesh': 'メッシュと固定節点がそろうと入力デッキを作成できます。',
   'hint.deckRequired': 'このリビジョンの入力デッキを作成してください。',
   'hint.results': '解析を投入すると結果を確認できます。',

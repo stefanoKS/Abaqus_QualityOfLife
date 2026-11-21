@@ -109,7 +109,7 @@ def initialize():
         # the digest of the inputs that decide reuse; a deck job records the mesh
         # it consumed and the fixture revision it was prepared against.
         jobs_columns = {row["name"] for row in db.execute("PRAGMA table_info(jobs)")}
-        for name in ("mesh", "mesh_digest", "mesh_compat", "fixture_hash"):
+        for name in ("mesh", "mesh_digest", "mesh_compat", "fixture_hash", "fixture_labels"):
             if name not in jobs_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
 
@@ -273,21 +273,25 @@ def public(row):
     result = dict(row)
     result["status"] = status(result)
     result["manifest"] = json.loads(result["manifest"])
-    labels = result.pop("fixture_labels", None)
-    labels_hash = result.pop("fixture_labels_hash", None)
+    # ``review_labels`` is the live fixture on a mesh job; ``fixture_labels`` is the
+    # immutable snapshot a deck job was prepared from.
+    labels = result.pop("review_labels", None)
+    labels_hash = result.pop("review_labels_hash", None)
     result["fixture"] = (
         None
         if labels is None
         else {"labels": json.loads(labels), "count": len(json.loads(labels)), "hash": labels_hash}
     )
+    snapshot = result.pop("fixture_labels", None)
+    result["fixture_labels"] = None if snapshot is None else json.loads(snapshot)
     result.pop("token", None)
     return result
 
 
 JOB_SELECT = """SELECT j.*,r.project,r.number,
  json_extract(r.setup,'$.dimension') AS dimension,json_extract(r.setup,'$.name') AS project_name,
- (SELECT labels FROM fixtures f WHERE f.job=j.id) AS fixture_labels,
- (SELECT labels_hash FROM fixtures f WHERE f.job=j.id) AS fixture_labels_hash
+ (SELECT labels FROM fixtures f WHERE f.job=j.id) AS review_labels,
+ (SELECT labels_hash FROM fixtures f WHERE f.job=j.id) AS review_labels_hash
  FROM jobs j JOIN revisions r ON j.revision=r.id"""
 
 
@@ -322,6 +326,36 @@ def set_fixture(jid, mesh_digest, labels_hash, labels):
     return job(jid)
 
 
+def project_of(db, rev):
+    row = db.execute("SELECT project FROM revisions WHERE id=?", (str(rev),)).fetchone()
+    if row is None:
+        raise KeyError("Revision not found")
+    return row["project"]
+
+
+def active_mesh(db, project, compat):
+    """Newest completed mesh for these mesh inputs.
+
+    An explicit remesh therefore supersedes an older mesh with the same bytes:
+    new deck preparation and submission must use this one, which starts without a
+    reviewed fixture.
+    """
+    rows = db.execute(
+        """SELECT j.* FROM jobs j JOIN revisions r ON j.revision=r.id
+           WHERE r.project=? AND j.mode='MESH' AND j.mesh_compat=?
+           ORDER BY j.created DESC""",
+        (project, compat),
+    ).fetchall()
+    return next((row for row in rows if status(row) == "Completed"), None)
+
+
+def newest_deck(db, rev):
+    rows = db.execute(
+        "SELECT * FROM jobs WHERE revision=? AND mode='DECK' ORDER BY created DESC", (str(rev),)
+    ).fetchall()
+    return next((row for row in rows if status(row) == "Completed"), None)
+
+
 def submit(
     rev,
     name,
@@ -352,6 +386,7 @@ def submit(
             input_hash = None
             mesh_digest = None
             fixture_hash = None
+            fixture_labels = None
             if mode == "MESH":
                 if not compat:
                     raise Conflict("Generate the mesh from a saved 2D revision.")
@@ -359,16 +394,19 @@ def submit(
                 record = db.execute("SELECT * FROM jobs WHERE id=?", (mesh,)).fetchone()
                 if not record or record["mode"] != "MESH" or status(record) != "Completed":
                     raise Conflict("Generate the mesh for this model before preparing the input.")
-                same_model = db.execute(
-                    "SELECT 1 FROM revisions a, revisions b WHERE a.id=? AND b.id=? "
-                    "AND a.project=b.project",
-                    (record["revision"], rev),
-                ).fetchone()
+                project = project_of(db, rev)
+                same_model = project_of(db, record["revision"]) == project
                 if not same_model:
                     raise Conflict("The mesh belongs to another model. Generate the mesh again.")
                 if record["mesh_compat"] != compat:
                     raise Conflict(
                         "The mesh was generated for different mesh inputs. Generate the mesh again."
+                    )
+                current = active_mesh(db, project, compat)
+                if current is None or current["id"] != record["id"]:
+                    raise Conflict(
+                        "A newer mesh supersedes this one. Review the fixed nodes on the "
+                        "current mesh before preparing the input."
                     )
                 fixture = db.execute("SELECT * FROM fixtures WHERE job=?", (mesh,)).fetchone()
                 if not fixture or not json.loads(fixture["labels"]):
@@ -379,7 +417,11 @@ def submit(
                     raise Conflict(
                         "The fixed-node selection belongs to another mesh. Review the fixture."
                     )
-                mesh_digest, fixture_hash = record["mesh_digest"], fixture["labels_hash"]
+                # Capture the reviewed selection atomically with the queue entry: a
+                # later fixture edit must not change this deck.
+                mesh_digest = record["mesh_digest"]
+                fixture_hash = fixture["labels_hash"]
+                fixture_labels = fixture["labels"]
             elif mode in {"DEMO", "ABAQUS"}:
                 record = db.execute("SELECT * FROM jobs WHERE id=?", (deck,)).fetchone()
                 if (
@@ -392,6 +434,19 @@ def submit(
                         "Prepare and review the input deck for this saved revision first."
                     )
                 if record["mesh"]:
+                    mesh_row = db.execute(
+                        "SELECT * FROM jobs WHERE id=?", (record["mesh"],)
+                    ).fetchone()
+                    current = (
+                        active_mesh(db, project_of(db, rev), mesh_row["mesh_compat"])
+                        if mesh_row
+                        else None
+                    )
+                    if current is None or current["id"] != record["mesh"]:
+                        raise Conflict(
+                            "This input deck uses a superseded mesh. Review the fixed nodes on "
+                            "the current mesh and prepare the input deck again."
+                        )
                     fixture = db.execute(
                         "SELECT * FROM fixtures WHERE job=?", (record["mesh"],)
                     ).fetchone()
@@ -400,13 +455,20 @@ def submit(
                             "The fixed-node fixture changed after the deck was prepared. "
                             "Prepare the input deck again."
                         )
+                latest = newest_deck(db, rev)
+                if latest is None or latest["id"] != record["id"]:
+                    raise Conflict(
+                        "A newer input deck exists for this revision. Prepare and review the "
+                        "current deck before submitting."
+                    )
                 input_hash = record["input_hash"]
                 mesh_digest = record["mesh_digest"]
                 fixture_hash = record["fixture_hash"]
+                fixture_labels = record["fixture_labels"]
             db.execute(
                 """INSERT INTO jobs(id,revision,name,mode,scenario,cpus,token,build,mesh,created,
-                       input_hash,mesh_digest,mesh_compat,fixture_hash)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       input_hash,mesh_digest,mesh_compat,fixture_hash,fixture_labels)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     jid,
                     rev,
@@ -422,6 +484,7 @@ def submit(
                     mesh_digest,
                     compat,
                     fixture_hash,
+                    fixture_labels,
                 ),
             )
     return job(jid)

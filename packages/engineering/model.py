@@ -5,6 +5,8 @@ import math
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .spline import endpoint_points as spline_endpoints
+
 Id = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,79}$")]
 Name = Annotated[str, Field(min_length=1, max_length=160)]
 Positive = Annotated[float, Field(gt=0, le=1e9)]
@@ -24,15 +26,63 @@ class Vertex(Model):
     xyz: XYZ
 
 
+class SplineData(Model):
+    """Canonical NURBS: the drawing's engineering curve, not a display chord.
+
+    Either ``control_points`` (with ``knots``/``weights`` when rational) or
+    ``fit_points`` is authoritative. ``tolerance`` is the maximum chord deviation
+    allowed for display and meshing in project length units.
+    """
+
+    degree: Annotated[int, Field(ge=1, le=9)] = 3
+    control_points: list[XYZ] = Field(default_factory=list, max_length=4096)
+    fit_points: list[XYZ] = Field(default_factory=list, max_length=4096)
+    knots: list[float] = Field(default_factory=list, max_length=8192)
+    weights: list[float] = Field(default_factory=list, max_length=4096)
+    tangents: list[XYZ] = Field(default_factory=list, max_length=2)
+    closed: bool = False
+    periodic: bool = False
+    tolerance: BoundedSize = 0.02
+
+    @model_validator(mode="after")
+    def check_definition(self):
+        if bool(self.control_points) == bool(self.fit_points):
+            raise ValueError(
+                "A spline needs exactly one of control points or fit points; import both from the drawing header."
+            )
+        poles = len(self.control_points)
+        if self.control_points:
+            if poles < self.degree + 1:
+                raise ValueError(
+                    f"Spline has {poles} control points; a degree {self.degree} spline needs at least {self.degree + 1}."
+                )
+            if self.knots and len(self.knots) != poles + self.degree + 1:
+                raise ValueError(
+                    "Spline knot vector length must equal control points + degree + 1."
+                )
+            if self.knots and any(b < a for a, b in zip(self.knots, self.knots[1:])):
+                raise ValueError("Spline knots must be non-decreasing.")
+            if self.weights and (
+                len(self.weights) != poles or any(w <= 0 or not math.isfinite(w) for w in self.weights)
+            ):
+                raise ValueError("Spline weights must be one positive finite value per control point.")
+        elif len(self.fit_points) < 2:
+            raise ValueError("A fit-point spline needs at least two points.")
+        if any(abs(p[2]) > 1e-8 for p in [*self.control_points, *self.fit_points]):
+            raise ValueError("Spline points must be in the XY plane at Z = 0.")
+        return self
+
+
 class Edge(Model):
     id: Id
     name: Name
     component: Id
     start: Id
     end: Id
-    kind: Literal["line", "arc"] = "line"
+    kind: Literal["line", "arc", "spline"] = "line"
     center: XYZ | None = None
     sweep: Annotated[float, Field(gt=0, le=math.pi + 1e-8)] | None = None  # CCW radians
+    spline: SplineData | None = None
     source_handle: str = Field(default="", max_length=96)
     layer: str = Field(default="", max_length=255)
 
@@ -194,7 +244,10 @@ class Project(Model):
             if e.component not in components or e.start not in vertices or e.end not in vertices:
                 raise ValueError(f"{e.name}: unresolved vertex or component.")
             a, b = vertices[e.start], vertices[e.end]
-            if abs(a[2]) > 1e-8 or abs(b[2]) > 1e-8 or math.dist(a, b) < 1e-7:
+            closed_spline = e.kind == "spline" and e.spline is not None and e.spline.closed
+            if abs(a[2]) > 1e-8 or abs(b[2]) > 1e-8 or (
+                math.dist(a, b) < 1e-7 and not closed_spline
+            ):
                 raise ValueError(f"{e.name}: section edges must be nonzero and in the XY plane.")
             if e.kind == "arc":
                 if e.center is None or e.sweep is None or abs(e.center[2]) > 1e-8:
@@ -208,6 +261,15 @@ class Project(Model):
                 )
                 if math.dist(b, reconstructed) > max(1e-7, 1e-9 * r):
                     raise ValueError(f"{e.name}: arc endpoints and sweep disagree.")
+            if e.kind == "spline":
+                if e.spline is None:
+                    raise ValueError(f"{e.name}: missing spline definition.")
+                first, last = spline_endpoints(e.spline)
+                tolerance = max(1e-7, 1e-6 * max(1.0, math.dist(a, b)))
+                if math.dist(a, first) > tolerance or math.dist(b, last) > tolerance:
+                    raise ValueError(
+                        f"{e.name}: spline endpoints disagree with its vertices. Re-import the curve."
+                    )
         for f in self.faces:
             if f.component not in components or f.material and f.material not in materials:
                 raise ValueError(f"{f.name}: unresolved component or material.")

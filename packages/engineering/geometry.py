@@ -8,6 +8,8 @@ from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
 from .model import Component, Edge, Face, Material, Project, Selection, Source, Vertex
+from .spline import endpoint_points as spline_endpoints
+from .spline import tessellate
 
 
 class Builder:
@@ -19,13 +21,20 @@ class Builder:
         self.edges = []
         self.points = {}
         self.curves = {}
+        self.splines = {}
 
-    def vertex(self, xyz):
+    def vertex(self, xyz, tolerance=0.0):
         x, y, z = xyz
         if not all(math.isfinite(n) for n in (x, y, z)) or abs(z) > 1e-8:
             raise ValueError("Move all section entities to the XY plane at Z = 0.")
         xyz = (x, y, 0)
         key = tuple(round(float(k), 8) for k in xyz)
+        if key not in self.points and tolerance > 0:
+            # Only splines snap: a converted B-spline endpoint can differ from the
+            # adjoining line's endpoint by a sub-micron rounding amount.
+            for existing, vertex_id in self.points.items():
+                if math.dist(existing[:2], key[:2]) <= tolerance:
+                    return vertex_id
         if key not in self.points:
             vertex = Vertex(id=f"v{self.prefix}{len(self.vertices) + 1}", xyz=xyz)
             self.points[key] = vertex.id
@@ -58,6 +67,31 @@ class Builder:
         )
         self.edges.append(edge)
         self.curves[key] = edge
+        if len(self.edges) > 4096:
+            raise ValueError("Section exceeds the 4096 analytic edge limit. Simplify the drawing.")
+        return edge.id
+
+    def spline(self, data, component, *, name="", handle="", layer=""):
+        """Add the canonical spline curve; vertices come from its true endpoints."""
+        if handle and handle in self.splines:
+            return self.splines[handle]
+        start_xyz, end_xyz = spline_endpoints(data)
+        start, end = self.vertex(start_xyz, 1e-6), self.vertex(end_xyz, 1e-6)
+        index = len(self.edges) + 1
+        edge = Edge(
+            id=f"e{self.prefix}{index}",
+            name=name or f"Spline {index}",
+            component=component,
+            start=start,
+            end=end,
+            kind="spline",
+            spline=data,
+            source_handle=handle,
+            layer=layer,
+        )
+        self.edges.append(edge)
+        if handle:
+            self.splines[handle] = edge.id
         if len(self.edges) > 4096:
             raise ValueError("Section exceeds the 4096 analytic edge limit. Simplify the drawing.")
         return edge.id
@@ -150,7 +184,11 @@ def synthetic(name="Hollow bulb section"):
 
 
 def sample_edges(p):
-    """Fixed angular engineering tessellation. Neither mesh nor screen zoom changes CAD."""
+    """Fixed engineering tessellation. Neither mesh nor screen zoom changes CAD.
+
+    Arcs use a fixed angular step; splines adapt to their declared chord
+    deviation, so refinement never changes the analytic curve it samples.
+    """
     vertices = {v.id: v.xyz for v in p.vertices}
     result = {}
     for edge in p.edges:
@@ -166,6 +204,8 @@ def sample_edges(p):
                 points.append(
                     (center[0] + radius * math.cos(t), center[1] + radius * math.sin(t), 0)
                 )
+        elif edge.kind == "spline":
+            points.extend(tessellate(edge.spline)[1:-1])
         result[edge.id] = points + [b]
     return result
 

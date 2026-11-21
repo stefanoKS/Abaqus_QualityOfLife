@@ -184,15 +184,19 @@ def perform(row, owner):
                 raise ValueError(
                     "The mesh was generated for different mesh inputs. Generate the mesh again."
                 )
-            review = mesh_row["fixture"]
-            if not review or not review["labels"]:
+            # Use the selection captured when the deck was queued, never the live
+            # fixture: a later edit to the nodes must not change this deck.
+            review = row["fixture_labels"]
+            if not review:
                 raise ValueError(
                     "Select the fixed weatherstrip nodes before preparing the input deck."
                 )
+            if engineering.fixture.labels_hash(review) != row["fixture_hash"]:
+                raise ValueError("The queued fixed-node snapshot no longer matches its hash.")
             mesh = json.loads((directory / "mesh.json").read_text(encoding="utf-8"))
-            inp = deck.write_inp(setup, mesh, review["labels"])
+            inp = deck.write_inp(setup, mesh, review)
             (directory / "analysis.inp").write_text(inp, encoding="utf-8")
-            results.write_metadata(setup, mesh, directory, review["labels"])
+            results.write_metadata(setup, mesh, directory, review)
             checkpoint(jid)
             fields.update(
                 solver="Succeeded",
@@ -200,7 +204,6 @@ def perform(row, owner):
                 phase="Input ready",
                 input_hash=store.digest(directory / "analysis.inp"),
                 mesh_digest=mesh_digest,
-                fixture_hash=review["hash"],
             )
         elif not extracting:
             prepared = store.job_dir(row["build"])
@@ -252,8 +255,8 @@ def perform(row, owner):
                 previous_index.rename(directory / ("prior-index-" + store.new_id() + ".json"))
             mesh = json.loads((directory / "mesh.json").read_text(encoding="utf-8"))
             metadata_path = directory / "result-metadata.json"
-            fixture_labels = None
-            if metadata_path.is_file():
+            fixture_labels = row["fixture_labels"]
+            if fixture_labels is None and metadata_path.is_file():
                 fixture_labels = (
                     json.loads(metadata_path.read_text(encoding="utf-8")).get("fixture") or {}
                 ).get("nodes")

@@ -189,9 +189,19 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // motion value must reuse the mesh, editing geometry or mesh controls must not.
   const completedMeshes = meshJobs.filter((j) => j.mode === 'MESH' && j.status === 'Completed')
   const meshJob = completedMeshes[0] ?? null
-  const compatibleMesh = meshJob && meshJob.mesh_compat === rev.mesh_compat ? meshJob : null
+  // The active mesh is the newest completed mesh with the saved revision's mesh
+  // inputs. An explicit remesh (same bytes or not) therefore becomes active and
+  // starts without a reviewed fixture.
+  const compatibleMesh = completedMeshes.find((j) => j.mesh_compat === rev.mesh_compat) ?? null
   const fixture = compatibleMesh?.fixture ?? null
   const fixtureReviewed = !!fixture && fixture.count > 0
+  // A submitted setup replays the fixture archived with its deck, never the live
+  // selection for the current mesh.
+  const archivedFixture = locked?.fixture_labels ?? null
+  const shownFixture = archivedFixture ?? pendingFixture ?? fixture?.labels ?? []
+  // A changed or cleared selection must block preparation and submission until
+  // it is saved or discarded.
+  const fixturePending = pendingFixture !== null
   const motionValid = p.motion.travel < 0 && p.motion.duration > 0
   const deck =
     deckJobs.find(
@@ -200,6 +210,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // A deck prepared before the fixture changed is stale even for the same mesh.
   const deckReady = !!deck && !!fixture && deck.fixture_hash === fixture.hash
   useEffect(() => {
+    // Only a change of the active mesh resets the review, never a poll or a save.
     setPendingFixture(null)
     setFixtureMode(false)
     if (!compatibleMesh) {
@@ -216,7 +227,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
         }
       })
     return () => ac.abort()
-  }, [compatibleMesh?.id, generation, problem])
+  }, [compatibleMesh?.id, problem])
   useEffect(() => {
     setPlacement(null)
     if (!deck?.manifest.includes('result-metadata.json')) return
@@ -367,7 +378,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
   async function resolveLegacyFixture() {
     if (!compatibleMesh) return
     const resolved = await request<FixtureInfo>(
-      '/api/meshes/' + compatibleMesh.id + '/fixture/edges',
+      '/api/meshes/' + compatibleMesh.id + '/fixture/edges?revision=' + rev.id,
       'POST',
       {},
     )
@@ -636,7 +647,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
               panelOffset={p.motion.offset}
               boxSelect={fixtureMode && !!compatibleMesh}
               boxOperation={boxOperation}
-              selectedNodes={pendingFixture ?? fixture?.labels ?? []}
+              selectedNodes={shownFixture}
               nodeInstances={['WS-1']}
               onBoxSelect={boxSelect}
             />
@@ -1150,7 +1161,19 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {stage === 5 && !dimension && compatibleMesh && !dirty && (
+              {locked && archivedFixture && (
+                <>
+                  <h3>{t('mesh.fixedNodes')}</h3>
+                  <p>{t('mesh.archivedFixtureHelp')}</p>
+                  <Facts
+                    rows={[
+                      [t('mesh.fixedNodeCount'), archivedFixture.length],
+                      [t('mesh.fixtureSource'), t('mesh.sourceArchived')],
+                    ]}
+                  />
+                </>
+              )}
+              {stage === 5 && !dimension && !locked && compatibleMesh && !dirty && (
                 <>
                   <h3>{t('mesh.fixedNodes')}</h3>
                   <p>{t('mesh.fixedNodesHelp')}</p>
@@ -1181,33 +1204,41 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </label>
                   <Facts
                     rows={[
+                      [t('mesh.fixedNodeCount'), shownFixture.length],
                       [
-                        t('mesh.fixedNodeCount'),
-                        (pendingFixture ?? fixture?.labels ?? []).length,
+                        t('mesh.fixtureSource'),
+                        archivedFixture
+                          ? t('mesh.sourceArchived')
+                          : fixture
+                            ? t('mesh.sourceNodes')
+                            : t('mesh.sourceNone'),
                       ],
-                      [t('mesh.fixtureSource'), fixture ? t('mesh.sourceNodes') : t('mesh.sourceNone')],
                     ]}
                   />
                   <div className="fixture-actions">
                     <button
                       className="primary"
-                      disabled={!pendingFixture}
+                      disabled={!fixturePending}
                       onClick={() => execute(() => saveFixture(pendingFixture ?? []))}
                     >
                       <CheckCheck />
                       {t('mesh.saveFixture')}
                     </button>
-                    <button
-                      disabled={!(pendingFixture ?? fixture?.labels ?? []).length}
-                      onClick={() => setPendingFixture([])}
-                    >
-                      {t('mesh.clear')}
+                    <button disabled={!fixturePending} onClick={() => setPendingFixture(null)}>
+                      {t('mesh.discard')}
                     </button>
                   </div>
-                  {pendingFixture && (
+                  <button
+                    className="wide"
+                    disabled={!shownFixture.length && !pendingFixture}
+                    onClick={() => setPendingFixture([])}
+                  >
+                    {t('mesh.clear')}
+                  </button>
+                  {fixturePending && (
                     <small>{t('mesh.fixtureUnsaved', { count: pendingFixture.length })}</small>
                   )}
-                  {!fixture && mount.entities.length > 0 && (
+                  {!fixture && !archivedFixture && mount.entities.length > 0 && (
                     <button
                       className="wide"
                       disabled={busy}
@@ -1224,8 +1255,16 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <h3>{t('mesh.deckSection')}</h3>
                   <button
                     className="primary wide"
-                    disabled={busy || !fixtureReviewed || !motionValid}
-                    title={!fixtureReviewed ? t('hint.fixtureRequired') : !motionValid ? t('hint.motion') : undefined}
+                    disabled={busy || !fixtureReviewed || !motionValid || fixturePending}
+                    title={
+                      fixturePending
+                        ? t('hint.fixturePending')
+                        : !fixtureReviewed
+                          ? t('hint.fixtureRequired')
+                          : !motionValid
+                            ? t('hint.motion')
+                            : undefined
+                    }
                     onClick={() => execute(prepareDeck)}
                   >
                     <FileText />
@@ -1303,15 +1342,18 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       !deckReady ||
                       dirty ||
                       busy ||
+                      fixturePending ||
                       !runName.trim() ||
                       (execution === 'ABAQUS' && cap.abaqus !== 'Configured')
                     }
                     title={
-                      !deckReady
-                        ? t('hint.deckRequired')
-                        : execution === 'ABAQUS' && cap.abaqus !== 'Configured'
-                          ? cap.abaqus
-                          : undefined
+                      fixturePending
+                        ? t('hint.fixturePending')
+                        : !deckReady
+                          ? t('hint.deckRequired')
+                          : execution === 'ABAQUS' && cap.abaqus !== 'Configured'
+                            ? cap.abaqus
+                            : undefined
                     }
                     onClick={() => execute(submit)}
                   >
@@ -1367,7 +1409,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
               ? t('status.working')
               : fixtureMode
                 ? t('status.fixtureSelection', {
-                    count: (pendingFixture ?? fixture?.labels ?? []).length,
+                    count: shownFixture.length,
                   })
                 : selectionName
                   ? t('status.selected', { name: selectionName })

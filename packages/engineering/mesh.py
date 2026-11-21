@@ -7,6 +7,7 @@ from threading import Lock
 import gmsh
 
 from .geometry import face_polygon, sample_edges
+from .spline import occ_descriptor
 
 _GMSH = Lock()  # Gmsh holds a process-global kernel and options.
 
@@ -84,37 +85,69 @@ def _build(p, faces_at_edge):
     occ = gmsh.model.occ
     nodes = {v.id: occ.addPoint(*v.xyz, meshSize=p.mesh.size) for v in p.vertices}
     xyz = {v.id: v.xyz for v in p.vertices}
-    curves = {}
-    lengths = {}
+    samples = sample_edges(p)
+    curves = {}  # edge id -> OCC curve tags in start -> end order
+    lengths = {}  # edge id -> per-tag lengths
     for e in p.edges:
         a, b = xyz[e.start], xyz[e.end]
         if e.kind == "line":
-            tag = occ.addLine(nodes[e.start], nodes[e.end])
-            length = math.dist(a, b)
-        else:
+            tags = [occ.addLine(nodes[e.start], nodes[e.end])]
+            sizes = [math.dist(a, b)]
+        elif e.kind == "arc":
             radius = math.dist(a, e.center)
             angle = math.atan2(a[1] - e.center[1], a[0] - e.center[0]) + e.sweep / 2
             mid = occ.addPoint(
                 e.center[0] + radius * math.cos(angle), e.center[1] + radius * math.sin(angle), 0
             )
-            tag = occ.addCircleArc(nodes[e.start], mid, nodes[e.end], center=False)
-            length = radius * e.sweep
-        curves[e.id] = tag
-        lengths[e.id] = length
+            tags = [occ.addCircleArc(nodes[e.start], mid, nodes[e.end], center=False)]
+            sizes = [radius * e.sweep]
+        elif occ_descriptor(e.spline):
+            spec = occ_descriptor(e.spline)
+            # The end control points must be the shared CAD vertices, otherwise
+            # OCC silently stitches the wire with duplicate points and the
+            # surface no longer shares nodes with the boundary curve.
+            poles = [nodes[e.start]]
+            poles.extend(occ.addPoint(*pt) for pt in spec["poles"][1:-1])
+            poles.append(nodes[e.end])
+            tags = [
+                occ.addBSpline(
+                    poles,
+                    degree=spec["degree"],
+                    weights=spec["weights"],
+                    knots=spec["knots"],
+                    multiplicities=spec["multiplicities"],
+                )
+            ]
+            sizes = [sum(math.dist(u, v) for u, v in zip(samples[e.id], samples[e.id][1:]))]
+        else:
+            # Approximation keeps the analytic spline canonical and the chord
+            # within its declared deviation; the tag chain is meshed as one edge.
+            pts = [nodes[e.start]]
+            for point in samples[e.id][1:-1]:
+                pts.append(occ.addPoint(*point, meshSize=p.mesh.size))
+            pts.append(nodes[e.end])
+            tags = [occ.addLine(u, v) for u, v in zip(pts, pts[1:])]
+            sizes = [math.dist(u, v) for u, v in zip(samples[e.id], samples[e.id][1:])]
+        curves[e.id] = tags
+        lengths[e.id] = sizes
     surfaces = {}
     for face in p.material_regions:
         loops = []
         for loop in face.loops:
-            tags = [-curves[t[1:]] if t.startswith("-") else curves[t] for t in loop]
+            tags = []
+            for token in loop:
+                chain = curves[token.lstrip("-")]
+                tags.extend([-tag for tag in reversed(chain)] if token.startswith("-") else chain)
             loops.append(occ.addCurveLoop(tags))
         surfaces[face.id] = occ.addPlaneSurface(loops)
     occ.synchronize()
     gmsh.option.setNumber("Mesh.MeshSizeMax", p.mesh.size)
     gmsh.option.setNumber("Mesh.MeshSizeMin", min([p.mesh.size, *p.mesh.local.values()]) / 4)
     for edge_id, size in p.mesh.local.items():
-        gmsh.model.mesh.setTransfiniteCurve(
-            curves[edge_id], max(2, 1 + math.ceil(lengths[edge_id] / min(size, p.mesh.size)))
-        )
+        for tag, length in zip(curves[edge_id], lengths[edge_id]):
+            gmsh.model.mesh.setTransfiniteCurve(
+                tag, max(2, 1 + math.ceil(length / min(size, p.mesh.size)))
+            )
     for face in p.material_regions:
         surface = surfaces[face.id]
         if p.mesh.recombine:
@@ -151,31 +184,36 @@ def _build(p, faces_at_edge):
             raise ValueError(f"No mesh generated for {face.name}.")
     roles = {c.id: c.role for c in p.components}
     for edge in p.edges:
-        tag = curves[edge.id]
-        node_ids, _, _ = gmsh.model.mesh.getNodes(1, tag, includeBoundary=True)
-        # Sort against the stored analytic definition, independent of OCC wire orientation.
-        a = xyz[edge.start]
-
-        def distance(n):
-            pt = coords[int(n)]
-            return math.dist(a, pt)  # monotonic along a line or arc <= pi
-
-        ordered = sorted(map(int, node_ids), key=distance)
+        tags = curves[edge.id]
+        collected = set()
+        for tag in tags:
+            node_ids, _, _ = gmsh.model.mesh.getNodes(1, tag, includeBoundary=True)
+            collected.update(int(n) for n in node_ids)
+        # Order against the stored analytic definition, independent of OCC wire orientation.
+        ordered = _along(sorted(collected), coords, samples[edge.id])
         if len(ordered) < 2:
             raise ValueError(f"No boundary discretization for {edge.name}.")
         edge_nodes[edge.id] = ordered
         for face_id in faces_at_edge[edge.id]:
-            if not set(ordered).issubset(face_nodes[face_id]):
-                raise ValueError(f"Disconnected mesh interface at {edge.name}.")
+            missing = set(ordered) - face_nodes[face_id]
+            if missing:
+                raise ValueError(
+                    f"Disconnected mesh interface at {edge.name}: {len(missing)} of "
+                    f"{len(ordered)} boundary nodes are absent from {face_id}."
+                )
         if roles[edge.component] == "moving_panel":
-            types, groups, conns = gmsh.model.mesh.getElements(1, tag)
-            if list(types) != [1]:
-                raise ValueError(f"Expected linear panel segments on {edge.name}.")
-            for eid, row in zip(groups[0], conns[0].reshape(-1, 2)):
-                pair = sorted(map(int, row), key=distance)
+            line_ids, conns = [], []
+            for tag in tags:
+                types, groups, connectivity = gmsh.model.mesh.getElements(1, tag)
+                if list(types) != [1]:
+                    raise ValueError(f"Expected linear panel segments on {edge.name}.")
+                line_ids.extend(int(eid) for eid in groups[0])
+                conns.extend(connectivity[0].reshape(-1, 2))
+            for eid, row in zip(line_ids, conns):
+                pair = _along(sorted(map(int, row)), coords, samples[edge.id])
                 elements.append(
                     dict(
-                        id=int(eid),
+                        id=eid,
                         type="R2D2",
                         nodes=pair,
                         entity=edge.id,
@@ -190,6 +228,34 @@ def _build(p, faces_at_edge):
         face_elements=face_elements,
         counts=dict(Counter(e["type"] for e in elements)),
     )
+
+
+def _along(node_ids, coords, polyline):
+    """Sort nodes by their arc-length position along the analytic curve.
+
+    Distance from the start point is only monotonic for lines and arcs up to pi,
+    so splines and re-entrant curves are ordered by projection on the samples.
+    """
+    steps = [0.0]
+    for a, b in zip(polyline, polyline[1:]):
+        steps.append(steps[-1] + math.dist(a, b))
+
+    def position(node):
+        px, py = coords[node][0], coords[node][1]
+        best_distance, best_length = math.inf, 0.0
+        for index, (a, b) in enumerate(zip(polyline, polyline[1:])):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            squared = dx * dx + dy * dy
+            t = 0.0
+            if squared > 1e-18:
+                t = max(0.0, min(1.0, ((px - a[0]) * dx + (py - a[1]) * dy) / squared))
+            distance = math.hypot(px - (a[0] + t * dx), py - (a[1] + t * dy))
+            if distance < best_distance:
+                best_distance = distance
+                best_length = steps[index] + t * math.sqrt(squared)
+        return best_length
+
+    return sorted(node_ids, key=position)
 
 
 def _check_element(eid, conn, coords):

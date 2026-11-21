@@ -1,4 +1,5 @@
 import { expect, test, type Page } from './fixtures'
+import { randomUUID } from 'node:crypto'
 import type { Display, ViewMesh } from '../src/viewportModel'
 import type { Job, Revision } from '../src/api'
 
@@ -233,6 +234,138 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
   await expect(page.getByText('Fixed nodes (WSFIX)')).toBeVisible()
   expect(await count(page)).toBe(0)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+})
+
+test('a pending selection blocks preparation until it is saved or discarded', async ({
+  page,
+  request,
+}) => {
+  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: 'Pending selection' } })
+  ).json()
+  const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
+  await openMeshStage(page, revision)
+  await generateMesh(page)
+  await page.getByLabel('Fixed-node box mode').check()
+  await page.getByRole('button', { name: 'Fit and reset view' }).click()
+  const at = projector(bounds.bounds)
+  await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
+  const selected = await count(page)
+  expect(selected).toBeGreaterThan(0)
+
+  const prepare = page.getByRole('button', { name: 'Prepare input deck' })
+  // Nothing is saved yet, so the deck cannot be prepared or submitted.
+  await expect(prepare).toBeDisabled()
+  // The pending count survives polling and a camera change.
+  await page.getByRole('button', { name: 'Zoom in' }).click()
+  await page.waitForTimeout(1600)
+  expect(await count(page)).toBe(selected)
+  await expect(prepare).toBeDisabled()
+
+  await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await expect(prepare).toBeEnabled()
+
+  // A changed selection blocks again until it is discarded.
+  await page.getByRole('button', { name: 'Fit and reset view' }).click()
+  await dragBox(page, await at(page, -10, 1.4), await at(page, 10, 3.3))
+  await expect(prepare).toBeDisabled()
+  await page.getByRole('button', { name: 'Discard selection' }).click()
+  await expect(prepare).toBeEnabled()
+  expect(await count(page)).toBe(selected)
+
+  // The pending state also survives a language switch.
+  await dragBox(page, await at(page, -10, 1.4), await at(page, 10, 3.3))
+  await expect(prepare).toBeDisabled()
+  await page.locator('.lang-picker select').selectOption('ja')
+  await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeDisabled()
+  await expect(page.getByText(/節点を選択中です。保存するまで解析には使われません。/)).toBeVisible()
+})
+
+test('an explicit remesh in the same revision starts a fresh review', async ({ page, request }) => {
+  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: 'Remesh review' } })
+  ).json()
+  const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
+  await openMeshStage(page, revision)
+  await generateMesh(page)
+  await page.getByLabel('Fixed-node box mode').check()
+  await page.getByRole('button', { name: 'Fit and reset view' }).click()
+  const at = projector(bounds.bounds)
+  await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
+  await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await page.getByRole('button', { name: 'Prepare input deck' }).click()
+  await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
+
+  // Remesh the same revision without touching any mesh input. The mesh bytes are
+  // identical, but the reviewed fixture belongs to the superseded mesh.
+  const jobs = async () =>
+    ((await (await request.get('/api/meshes')).json()) as Job[]).filter(
+      (j) => j.revision === revision.id,
+    ).length
+  const before = await jobs()
+  await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
+  await expect.poll(jobs, { timeout: 60000 }).toBe(before + 1)
+  await expect.poll(async () => count(page), { timeout: 60000 }).toBe(0)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await expect(page.getByTestId('deck-status')).toHaveCount(0)
+
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Review / Run' })
+    .click()
+  await expect(page.getByRole('button', { name: 'Submit demo run' })).toBeDisabled()
+})
+
+test('a submitted setup replays the fixed nodes archived in its deck', async ({ page, request }) => {
+  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: 'Archived fixture' } })
+  ).json()
+  const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
+  await openMeshStage(page, revision)
+  await generateMesh(page)
+  await page.getByLabel('Fixed-node box mode').check()
+  await page.getByRole('button', { name: 'Fit and reset view' }).click()
+  const at = projector(bounds.bounds)
+  await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
+  const archived = await count(page)
+  await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await page.getByRole('button', { name: 'Prepare input deck' }).click()
+  await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Review / Run' })
+    .click()
+  await page.getByLabel('Run name').fill('Archived fixture run')
+  await page.getByRole('button', { name: 'Submit demo run' }).click()
+  await page.waitForURL('**/#diagnostics/*')
+  const runId = page.url().split('/').pop()!
+  await expect
+    .poll(async () => ((await (await request.get('/api/jobs/' + runId)).json()) as Job).status, {
+      timeout: 60000,
+    })
+    .toBe('Completed')
+
+  // Change the live fixture and add a new mesh, then reopen the submitted setup.
+  const meshes: Job[] = await (await request.get('/api/meshes')).json()
+  const mesh = meshes.find((j) => j.revision === revision.id && j.status === 'Completed')!
+  const next = await (
+    await request.put('/api/meshes/' + mesh.id + '/fixture', {
+      data: { labels: ['WS-1:1', 'WS-1:2'] },
+    })
+  ).json()
+  expect(next.fixture.count).toBe(2)
+  await request.post('/api/meshes', { data: { revision: revision.id, token: randomUUID() } })
+
+  await page.goto('/#setup/' + runId)
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Mesh' })
+    .click()
+  await expect(page.getByText('Archived in the submitted deck').first()).toBeVisible()
+  expect(await count(page)).toBe(archived)
+  await expect(page.getByRole('button', { name: 'Save fixed nodes' })).toHaveCount(0)
+  const job: Job = await (await request.get('/api/jobs/' + runId)).json()
+  expect(job.fixture_labels).toHaveLength(archived)
 })
 
 test.describe('high-DPI selection', () => {

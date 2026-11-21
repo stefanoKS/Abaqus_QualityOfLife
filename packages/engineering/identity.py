@@ -42,6 +42,19 @@ def mesh_inputs(project: Project):
                 "kind": e.kind,
                 "center": list(e.center) if e.center else None,
                 "sweep": e.sweep,
+                "spline": {
+                    "degree": e.spline.degree,
+                    "control_points": [list(p) for p in e.spline.control_points],
+                    "fit_points": [list(p) for p in e.spline.fit_points],
+                    "knots": list(e.spline.knots),
+                    "weights": list(e.spline.weights),
+                    "tangents": [list(p) for p in e.spline.tangents],
+                    "closed": e.spline.closed,
+                    "periodic": e.spline.periodic,
+                    "tolerance": e.spline.tolerance,
+                }
+                if e.spline
+                else None,
                 "component": e.component,
             }
             for e in project.edges

@@ -18,6 +18,7 @@ comparison passed.
 | Motion | Single moving panel, prescribed displacement along Y, one closing step |
 | Fixture | Reviewed mesh-node selection (`WSFIX`); legacy CAD-edge mounting resolved to nodes |
 | Mesh reuse | A new mesh is required only when geometry, roles, region fill or mesh controls change |
+| Drawing curves | Exact B-spline (`SPLINE`) with control points/knots/weights, or the AutoCAD-compatible cubic through fit points; chord tolerance 0.02 mm for display and approximation |
 | History output | `U1, U2, RF1, RF2` at the panel reference point |
 | Field output | `U`, `RF` (nodal), `LE`, `S` (element), `CSTRESS` (contact) requests |
 | Units | N, mm, s, tonne (density in tonne/mm³, stress in MPa) |
@@ -69,6 +70,7 @@ and the client-side "Export displayed curve" CSV.
 | ODB extraction round trip (`abaqus python`, manufactured ODB) | PASS (optional) | gated by `SIMPLIFY_ABAQUS_TEST_LAUNCHER` |
 | **Real licensed Abaqus/Standard closing analysis** | **PASS** | below |
 | Mesh-first fixture: exact `WSFIX` from a saved node selection | PASS | `tests/test_fixture.py`, `apps/web/tests/fixture.spec.ts` |
+| Spline import, tessellation and meshing follow the drawn curve | PASS | `tests/test_spline.py` |
 | Licensed closing case through the mesh → fixture → deck path | **PASS** | below |
 | Contact onset compared with a reference curve | **BLOCKED** | No trusted reference supplied |
 | Force–displacement compared with a reference curve | **BLOCKED** | No trusted reference supplied |
@@ -153,6 +155,30 @@ Checks and tolerances used:
   threshold; there is still no trusted reference.
 - **Provenance.** `result-metadata.json` records `fixture.source = mesh-node-selection`, the 18 labels
   and the count; `results.json` carries the same block.
+- **Provenance re-extraction (2026-11-21, after this record was first written).** The originally
+  retained `results.json` was produced by an extractor build that predated the `fixture` header block,
+  so only `result-metadata.json` carried the labels. The same ODB was re-extracted with the current
+  extractor into `.local/licensed-evidence/54b7be8c-reextract/` (launcher exit 0). In that output both
+  `result-metadata.json` and `results.json` carry the same 18 labels, and both sets equal the deck's
+  `WSFIX`. The original run directory was left untouched; the run ID, mesh digest, deck hash and
+  solver results above are unchanged.
+
+## Drawing-curve evidence (synthetic, no license needed)
+
+`tests/test_spline.py` measures the imported curve rather than the control values:
+
+| Check | Measurement |
+|---|---|
+| Display/approximation promise | Adaptive tessellation deviation from the true curve ≤ the declared `tolerance` (0.02 mm), measured by sampling the curve at 257 parameters and projecting onto the polyline |
+| Exact meshing path | For an open, clamped B-spline boundary at 1.0 mm global size, every boundary mesh node is within **0.012 mm** of the true curve; a straight chord between its endpoints would be **0.577 mm** away |
+| Approximation path | A closed spline region (descriptor unavailable to OCC) meshes through its sampled chain; every boundary mesh node stays within the declared tolerance |
+| DXF round trip | Control points, degree, knots and the source handle survive import; the spline's ends snap onto the adjoining line's vertices so the contour closes |
+| Fit-point splines | An entity that stores only fit points is rebuilt with the AutoCAD-compatible cubic and passes through every fit point (test tolerance 0.05 mm) |
+| Mesh identity | Renaming the edge keeps the mesh compatibility digest; changing the spline (including its tolerance) changes it, so the mesh is re-reviewed |
+| API → worker path | An uploaded spline DXF goes through `/api/projects/{id}/drawing` → role assignment → `/api/meshes` → `PUT /api/meshes/{id}/fixture` → `/api/decks`, and the produced `analysis.inp` contains `WSFIX` with the saved labels |
+
+The DWG that this increment was asked to reproduce could not be converted (see Remaining blockers), so
+no claim is made about how that specific drawing stores its curves.
 
 ## Benchmark procedure (to be executed by the responsible engineer)
 
@@ -179,9 +205,10 @@ The harness must not substitute synthetic DEMO output for any of these steps.
 
 | Area | Blocker |
 |---|---|
-| DWG conversion | No ODA-compatible converter is installed on this machine, so no genuine DWG was converted. DXF is exercised end to end. |
+| DWG conversion | No ODA-compatible converter is installed on this machine, so the supplied `examples/hollow-section_2.dwg` (AutoCAD 2018, SHA-256 `8592C3C2…AAC771`) could not be converted and no genuine DWG was exercised. DXF is exercised end to end, including `SPLINE`. |
 | Licensed execution breadth | Door-only closing is executed. Body-then-door, oblique motion and reversed profiles are not implemented yet, so they cannot be executed. |
 | Friction assignment | One global coefficient; per-pair overrides are not implemented. |
+| Drawing role review | Roles are assigned per connected component after import; a staged linework review with per-chain confirmation before regions are built is not implemented. |
 | Physical correlation | No trusted reference curve and no agreed engineering tolerance exist. |
 | Mesh/time convergence | Not studied; two mesh sizes were exercised only as an invalidation test, not as a convergence study. |
 

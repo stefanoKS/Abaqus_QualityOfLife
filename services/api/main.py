@@ -300,12 +300,25 @@ def save_fixture(jid: UUID, body: Fixture):
 
 
 @app.post("/api/meshes/{jid}/fixture/edges", response_model=FixtureInfo)
-def resolve_legacy_fixture(jid: UUID):
-    """Resolve a stored CAD-edge mounting selection to nodes of this known mesh."""
+def resolve_legacy_fixture(jid: UUID, revision: UUID | None = None):
+    """Resolve the open revision's mounting selection to nodes of this known mesh.
+
+    ``revision`` is the revision the user is editing; without it the mesh's
+    creating revision is used. The revision must belong to the same model and its
+    mesh inputs must match, so two compatible revisions can resolve their own,
+    different mounting edges.
+    """
     row = store.job(jid)
     if row["mode"] != "MESH" or row["status"] != "Completed":
         raise store.Conflict("Generate the mesh before resolving a mounting selection.")
-    setup = store.revision(row["revision"])["setup"]
+    target = store.revision(revision or row["revision"])
+    if target["project"] != row["project"]:
+        raise store.Conflict("The mesh belongs to another model.")
+    if engineering.mesh_compat(Project.model_validate(target["setup"])) != row["mesh_compat"]:
+        raise store.Conflict(
+            "The mesh was generated for different mesh inputs. Generate the mesh again."
+        )
+    setup = target["setup"]
     selection = next(
         (s for s in setup["selections"] if s["id"] == setup["mounting"]["selection"]), None
     )

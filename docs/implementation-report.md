@@ -63,6 +63,9 @@ two-panel motion, friction overrides and 3D solving remain separate milestones.
 | Browser end to end | `npm --prefix apps/web run test:browser` | **19 passed** |
 | API contract | `scripts/schema.py` | regenerated (`/api/meshes`, `/api/decks`, fixture, `deck` field) |
 
+Totals moved on with the next increment: see the A1 table for the current 66 Python / 22 browser tests
+and 395 translation keys.
+
 New automated coverage:
 
 - `tests/test_fixture.py` (9): deck blocked until nodes are selected; unknown/rigid/foreign/malformed
@@ -93,6 +96,74 @@ hashes and tolerances are in
   direction does not depend on `U2`/`RF2`.
 - An empty history no longer crashes the results view's sample matching.
 
+## A1. Delivered increment — fixture correctness, provenance and spline import
+
+Delivered after A0. Two of the four engineering items in this brief are complete and verified:
+the fixture-correctness repairs with a provenance re-extraction, and spline import that preserves the
+drawn geometry. Drawing-role review and body-then-door two-panel loading are **not** implemented; they
+are reported as open in section E rather than half-built.
+
+### Fixture correctness (five defects found by adversarial review of A0)
+
+| Defect | Repair |
+|---|---|
+| A deck could be prepared from an older mesh of the same revision | `store.active_mesh` must be the newest completed mesh whose compatibility digest matches the saved revision, both for `POST /api/decks` and for run submission. An explicit remesh supersedes the previous mesh even when its bytes are identical |
+| The worker read the *live* fixture row, so a fixture edited after queueing changed the deck | `jobs.fixture_labels` snapshots the label set at queue time; the worker consumes the snapshot, re-verifies its hash and never reads the live row |
+| A fixture edited between deck preparation and submission could ride along | Run submission requires the fixture hash recorded on the deck, the deck's mesh to be the active mesh, and the deck to be the newest completed deck for that revision |
+| Reopening an old setup lost its archived labels | The deck copies its labels to the run (`locked.fixture_labels`); the workspace and the result header replay them, and the interactive selection is hidden for a locked setup |
+| Legacy edge resolution could cross models | `POST /api/meshes/{id}/fixture/edges?revision=` validates project ownership and mesh compatibility before resolving CAD edges to nodes |
+
+Browser behaviour added: a pending (unsaved) rectangle selection disables **Prepare input deck** and
+**Run**, survives polling, pan, zoom and language switches, and has an explicit **Discard** button.
+
+### Provenance re-extraction
+
+The retained licensed run's `results.json` was written by an extractor build that predated the
+`fixture` header block, so only `result-metadata.json` carried the selected labels. The same ODB was
+re-extracted with the current extractor into `.local/licensed-evidence/54b7be8c-reextract/`; both files
+now carry the 18 labels and both sets equal the deck's `WSFIX`. The original evidence directory was not
+modified and the run/metrics in A0 stand.
+
+### Spline import
+
+- `packages/engineering/spline.py` is the only place a spline is evaluated. It builds the exact
+  B-spline from control points/knots/weights, reconstructs fit-point splines with ezdxf's
+  AutoCAD-compatible cubic, and tessellates adaptively so the chord deviation never exceeds the
+  declared tolerance (default 0.02 mm).
+- `model.py` gained `SplineData` (degree, control points, fit points, knots, weights, tangents,
+  closed/periodic, tolerance) with validation: exactly one point set, knot count
+  `n + degree + 1`, positive weights, planar, and evaluated endpoints that agree with the edge's
+  vertices. A closed spline may be a zero-length edge, which is the one permitted exception.
+- `dxf.py` now imports `SPLINE` (no longer reports it as unsupported), keeps the source handle, layer
+  and exact definition, and snaps the curve's endpoints onto an adjoining vertex within 1 µm so the
+  contour closes.
+- `geometry.py` samples splines from the canonical curve, `mesh.py` meshes the exact B-spline with
+  `occ.addBSpline` when OCC can take it and otherwise meshes the sampled chain within tolerance, and
+  orders boundary nodes by arc-length projection (distance from the start point is only monotonic for
+  lines and arcs ≤ π).
+- `identity.py` includes the spline definition in the mesh compatibility digest, so a curve edit
+  invalidates the mesh while renaming the edge does not.
+
+Two mesher defects were introduced and caught while wiring splines in, both now covered by the spline
+tests: the B-spline's end control points must be the shared CAD vertices (otherwise OCC silently
+re-stitches the wire with duplicate points and the surface no longer shares nodes with the boundary),
+and the loop-token handling had to strip a leading `-` with `lstrip("-")` rather than a fixed slice so
+that reversed chains work.
+
+### Verification
+
+| Gate | Command | Result |
+|---|---|---|
+| Python tests | `.\.venv\Scripts\python.exe -m pytest tests -q` | **66 passed**, 1 skipped (opt-in ODB fixture) |
+| Translation completeness | `node scripts/check-translations.mjs` | **395 keys** in ja and en |
+| TypeScript | `npm run typecheck` (inside `apps/web`) | pass |
+| Production build | `npm run build` | pass |
+| Browser end to end | `npm run test:browser` | **22 passed** |
+| API contract | `scripts/schema.py` | regenerated (spline payload in the project schema) |
+
+Test counts for this increment: `tests/test_spline.py` (8) is new; `tests/test_fixture.py` grew from 9
+to 13; `apps/web/tests/fixture.spec.ts` grew from 4 to 7.
+
 ## A. Scope actually completed
 
 The milestone brief lists nine items. This increment deliberately completes and verifies
@@ -101,7 +172,6 @@ half-implemented. Item 5 was subsequently delivered in section A0. The blockers 
 in section E. The [working-tree handoff](../agent.md) maps those items to code, acceptance checks and follow-up defects found during review.
 
 ### 1. Windows entry point and product logo — DONE
-
 - `start-abaqus-qol.cmd` is now a bootstrap that locates Python 3.11+ and delegates to
   `scripts/serve.py`. It never requires an execution-policy change, quotes every path (spaces are
   supported), and inherits `SEAL_DATA`, `SEAL_ODA`, `SIMPLIFY_ABAQUS_LAUNCHER` and their
@@ -288,15 +358,21 @@ Removed: nothing.
 | 6. Role-aware arbitrary in-plane panel motion | Not started. Requires a per-panel motion schema, a new mesher/deck path and a two-step analysis with orientation checks |
 | 7. Friction on contact-surface pairs | Not started. Depends on 6 for multiple panels; also needs per-edge exterior surface construction and overlap conflict detection |
 
+Delivered from the *later* brief (fixture correctness and splines): the five fixture-correctness
+repairs, the provenance re-extraction and `SPLINE` import, all described in A1. Still open from that
+brief: drawing-role review, body-then-door two-panel loading, per-panel travel/duration, the two-step
+deck and the two-panel result plot. The supplied `examples/hollow-section_2.dwg` could not be converted
+(no converter installed), so the acceptance case for that drawing has not been run.
+
 ## F. Readiness decision
 
 **Selected level: 2 — INTERNAL DEMO READY**, with two verified licensed door-only cases (edge-based
 and mesh-node-selected fixtures).
 
-- The internal path is fully exercised: create a project group, add 2D/3D models, import a DXF, assign
-  roles/materials/motion, save revisions, generate a mesh, box-select the fixed WS nodes, prepare the
-  deck, run DEMO or ABAQUS, inspect diagnostics, read the projected door response, export the displayed
-  curve, reopen historical runs.
+- The internal path is fully exercised: create a project group, add 2D/3D models, import a DXF
+  (including spline boundaries), assign roles/materials/motion, save revisions, generate a mesh,
+  box-select the fixed WS nodes, prepare the deck, run DEMO or ABAQUS, inspect diagnostics, read the
+  projected door response, export the displayed curve, reopen historical runs.
 - Level 3 (controlled pilot) is still withheld: drawing-role review, partitioning, two-panel motion and
   per-pair friction are not implemented, no reference correlation exists, and no tolerance has been
   agreed.

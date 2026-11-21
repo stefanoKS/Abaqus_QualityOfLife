@@ -1,14 +1,20 @@
 # Abaqus QOL implementation handoff
 
-**Snapshot · 2026-11-21 (second pass).** The local branch reference was `main` at `b250789`. The
-working files contain the 2D milestone plus the mesh-first fixture increment (brief item 5). Preserve
-them when resuming; a checkout of the baseline commit alone misses this work.
+**Snapshot · 2026-11-21 (third pass).** The local branch reference was `main` at `b250789`. The
+working files contain the 2D milestone, the mesh-first fixture increment (brief item 5 of the first
+brief) and a third increment that repaired five fixture-correctness defects and added exact `SPLINE`
+import. Preserve them when resuming; a checkout of the baseline commit alone misses this work.
 
-**Brief item 5 is delivered** — mesh generation is now separate from deck preparation, and the fixed
-nodes are a reviewed mesh-node selection. The next executable slice is **brief item 3** (drawing-role
-review before region construction), then **item 6** (role-aware motion), which **item 7** (pair
-friction) depends on, then **item 4** (partition tool). Account for the result-data follow-ups below
-before extending motion to two dimensions.
+**Delivered since the last snapshot:** the fixture-correctness repairs (active-mesh rule, queue-time
+fixture snapshot, deck/run binding, archived fixture replay, cross-model legacy resolution), the
+provenance re-extraction of run `54b7be8c…`, and spline import/meshing with a declared chord
+tolerance. The next executable slice is still **brief item 3** (drawing-role review before region
+construction), then **item 6** (role-aware two-panel motion), which **item 7** (pair friction) depends
+on, then **item 4** (partition tool).
+
+**DWG is still blocked.** `examples/hollow-section_2.dwg` (AutoCAD 2018, SHA-256 `8592C3C2…AAC771`)
+could not be converted because no ODA File Converter is installed, so the acceptance case for that
+drawing has not been run and nothing is claimed about how it stores its curves.
 
 ## Baseline to preserve
 
@@ -18,7 +24,8 @@ before extending motion to two dimensions.
 | 2 · Project grouping | `groups` owns model histories through `projects.group_id`. Creation, sibling duplication, revision browsing, additive migration and legacy links exist. The existing [group migration tests](tests/test_grouping.py) and [browser tests](apps/web/tests/groups.spec.ts) are regression assets. |
 | 8 · Door curve | The shipped negative-Y, single-step door template requests U1/U2/RF1/RF2. A displayed-curve transform supports reversing either sign, with a separate raw artifact download. Keep the existing displacement contours, signed probes and legacy U2/RF2 interpretation. Multi-panel, missing-history and CSV caveats are below. |
 | 5 · Mesh-first fixture | `POST /api/meshes` and `POST /api/decks` are separate durable operations. The worker records `mesh.json`'s digest and the mesh-compatibility digest; `PUT /api/meshes/{id}/fixture` stores validated `WS-1:n` labels bound to that digest. The viewport has a rectangular node-selection mode, and the deck writer writes `WSFIX` from exactly the saved set. Tests: [fixture API tests](tests/test_fixture.py), [fixture browser tests](apps/web/tests/fixture.spec.ts). |
-| 9 · Verification | The [delivery report](docs/implementation-report.md) records 54 Python tests passed, one opt-in test skipped, 19 browser tests passed, 391 translation keys checked, typecheck and build passed. These are historical counts. |
+| 9 · Verification | The [delivery report](docs/implementation-report.md) records 54 Python tests passed, one opt-in test skipped, 19 browser tests passed, 391 translation keys checked, typecheck and build passed. These are historical counts; the current totals are 66 Python tests, 22 browser tests and 395 keys (section A1). |
+| · Fixture correctness and splines | `store.active_mesh` makes the newest compatible mesh authoritative for both deck preparation and submission; `jobs.fixture_labels` snapshots the label set at queue time; a run requires the deck's mesh to be active and the deck to be the newest for that revision; a locked setup replays `locked.fixture_labels`. `SPLINE` is imported as canonical NURBS ([spline.py](packages/engineering/spline.py)), tessellated within a declared chord tolerance, meshed exactly with `occ.addBSpline` where OCC accepts it, and included in the mesh-compatibility digest. Tests: [spline tests](tests/test_spline.py), [fixture API tests](tests/test_fixture.py), [fixture browser tests](apps/web/tests/fixture.spec.ts). |
 
 **Licensed regression anchors.** Synthetic runs `39f696ee-c757-44ba-bb42-9e8f9671bfe6` (13-node edge
 fixture, `RF2` −0.33351448 N) and `54b7be8c-d260-4a65-adcf-0205263032f3` (18-node box-selected patch,
@@ -55,4 +62,4 @@ on another machine. The fixture patch changes the force curve, so neither value 
 
 Use the [repository instructions](AGENTS.md) for normal commands and the [recovery guide](docs/migration-and-recovery.md) before investigating an unknown worker. Preserve the current licensed door-only runs as regression comparisons. Use an isolated data directory for new cases. For each completed slice, record the new API/schema behavior, historical compatibility, browser action exercised, test results, and any licensed run ID in the [implementation report](docs/implementation-report.md) and [validation record](docs/engineering-validation.md).
 
-Last verified on this machine: `python -m pytest -q` → 54 passed, 1 skipped; `npm --prefix apps/web run test:i18n` → 391 keys; `typecheck` and `build` → pass; `playwright test` → 19 passed; one licensed Abaqus/Standard 2024 case through the mesh → fixture → deck path → solver and extraction succeeded (run `54b7be8c-d260-4a65-adcf-0205263032f3`).
+Last verified on this machine: `python -m pytest tests -q` → 66 passed, 1 skipped; `node scripts/check-translations.mjs` → 395 keys; `typecheck` and `build` → pass; `playwright test` → 22 passed; one licensed Abaqus/Standard 2024 case through the mesh → fixture → deck path → solver and extraction succeeded (run `54b7be8c-d260-4a65-adcf-0205263032f3`), and its ODB was re-extracted with the current extractor into `.local/licensed-evidence/54b7be8c-reextract/` so both result files carry the 18 fixture labels.
