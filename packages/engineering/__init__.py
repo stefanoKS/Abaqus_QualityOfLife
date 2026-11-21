@@ -1,3 +1,4 @@
+from . import dwg
 from .dxf import import_dxf
 from .geometry import display, synthetic
 from .identity import mesh_compat, mesh_inputs
@@ -8,6 +9,7 @@ from . import fixture
 __all__ = [
     "Project",
     "display",
+    "dwg",
     "fixture",
     "generate_mesh",
     "import_dxf",

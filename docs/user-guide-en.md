@@ -39,11 +39,14 @@ Completion is derived from the saved setup, not from whether you opened the step
 2. **Add more models** with **New model** inside the group header. Each model keeps its own revision
    history and runs; **Revisions** lists them and **Duplicate model** creates an independent copy in the
    same group.
-3. **Import** a DXF/DWG only after confirming the drawing coordinates are in millimetres. The import
-   runs in the background and creates a new revision when it finishes. `LINE`, `ARC`, `CIRCLE`,
-   closed `LWPOLYLINE` and `SPLINE` entities are supported. A spline is kept as an exact B-spline
+3. **Import** a DXF/DWG after confirming the drawing coordinates are in millimetres. DWG files are read
+   **natively** — no CAD converter, no ODA configuration, no upload to a third party. The import runs in
+   the background and creates a new revision when it finishes. `LINE`, `ARC`, `CIRCLE`, closed
+   `LWPOLYLINE` and `SPLINE` entities are supported. A spline is kept as an exact B-spline
    (control polygon, knots and weights) or, for fit-point splines, as the AutoCAD-compatible cubic
    through its fit points, so display and meshing follow the drawn curve rather than a chord.
+   After the import, open the **Import** step's report to see every entity accounted for, and assign
+   roles to the components it found (weatherstrip, one moving panel, optional body profile).
 4. **Components** — assign each component a role: weatherstrip seal, moving panel, and so on.
 5. **Materials** — assign a material card to each region and edit card properties as needed.
 6. **Mounting / Contact** — select the edges to fix and set the friction coefficient.
@@ -122,7 +125,9 @@ entitlement. Never use DEMO output for design decisions or material-model valida
 | Message | Action |
 |---|---|
 | Abaqus launcher not configured | Set the launcher environment variable and restart the application. |
-| DWG converter not configured | Configure the ODA File Converter path, or export DXF instead. |
+| DWG reader unavailable | Restore `integrations/dwg/bin` from the repository. No CAD converter is required. |
+| This DWG version is not supported by the installed reader | Export the drawing as DXF, or open and re-save it in a supported AutoCAD version. |
+| The drawing declares … instead of millimetres | Set `$INSUNITS` to millimetres in the CAD file, or scale the drawing to mm before importing. |
 | Unsupported DXF entities | Explode blocks and export `LINE`, `ARC`, `CIRCLE`, `SPLINE` or closed `LWPOLYLINE`. |
 | Spline knot vector length must equal control points + degree + 1 | Re-export the curve; the file stores an inconsistent B-spline definition. |
 | Spline endpoints disagree with its vertices | Re-export the drawing so the spline ends meet the adjoining curves exactly. |

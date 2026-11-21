@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from integrations import drawings
+from integrations import dwg, drawings
 from packages import engineering
 from packages.engineering.model import Project
 from services import store
@@ -102,15 +102,18 @@ def health():
 
 @app.get("/api/capabilities")
 def capabilities():
+    from integrations import dwg
     from integrations.abaqus.launcher import configured_launcher
 
     result = {}
-    for name, fn in [("abaqus", configured_launcher), ("dwg", drawings.oda)]:
+    for name, fn in [("abaqus", configured_launcher), ("dwg", dwg.helper)]:
         try:
             fn()
             result[name] = "Configured"
         except (ValueError, OSError) as exc:
             result[name] = str(exc)
+    result["dwgReader"] = "ACadSharp 3.8.35 (native, MIT)"
+    result["odaRequired"] = False
     return result
 
 
@@ -212,7 +215,7 @@ def drawing(
     if ext not in {".dwg", ".dxf"} or units != "N-mm-s-tonne":
         raise ValueError("Select a DXF or DWG and confirm millimetre input units.")
     if ext == ".dwg":
-        drawings.oda()
+        dwg.helper()
     sid = store.new_id()
     directory = store.root() / "drawings" / sid
     directory.mkdir(parents=True)

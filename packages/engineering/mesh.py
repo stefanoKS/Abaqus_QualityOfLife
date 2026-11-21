@@ -24,18 +24,33 @@ def generate_mesh(project):
         raise ValueError(
             "Assign the seal role and a material to every section region before meshing."
         )
-    if any(c.role not in ("seal", "moving_panel") for c in project.components):
+    if any(c.role not in ("seal", "moving_panel", "vehicle_body") for c in project.components):
         raise ValueError(
-            "The initial mesh supports a seal and a moving panel. Assign supported component roles."
+            "The mesh supports a seal, one moving panel and an optional body profile. "
+            "Assign a supported component role."
         )
     panels = [c for c in project.components if c.role == "moving_panel"]
     if len(panels) != 1:
         raise ValueError("Assign exactly one open rigid profile as the moving panel.")
+    body = [c.id for c in project.components if c.role == "vehicle_body"]
+    excluded = [
+        {
+            "component": c.id,
+            "name": c.name,
+            "reason": "rigid body profile reviewed but not analysed in this revision",
+        }
+        for c in project.components
+        if c.role == "vehicle_body"
+    ]
     faces_at_edge = defaultdict(list)
     for face in project.material_regions:
         for loop in face.loops:
             for token in loop:
                 faces_at_edge[token.lstrip("-")].append(face.id)
+    if body and any(e.component in body and e.id in faces_at_edge for e in project.edges):
+        raise ValueError(
+            "A body profile cannot be part of a material region. Assign it to a separate component."
+        )
     if any(len(ids) > 2 for ids in faces_at_edge.values()):
         raise ValueError("Non-manifold interface. At most two regions may use a section edge.")
     if any(e.id not in faces_at_edge for e in project.edges if roles[e.component] == "seal"):
@@ -71,7 +86,7 @@ def generate_mesh(project):
         try:
             gmsh.option.setNumber("General.Terminal", 0)
             gmsh.option.setNumber("General.NumThreads", 1)
-            return _build(project, faces_at_edge)
+            return _build(project, faces_at_edge, excluded)
         except ValueError:
             raise
         except Exception as exc:
@@ -80,7 +95,7 @@ def generate_mesh(project):
             gmsh.finalize()
 
 
-def _build(p, faces_at_edge):
+def _build(p, faces_at_edge, excluded=()):
     gmsh.model.add("section")
     occ = gmsh.model.occ
     nodes = {v.id: occ.addPoint(*v.xyz, meshSize=p.mesh.size) for v in p.vertices}
@@ -184,6 +199,8 @@ def _build(p, faces_at_edge):
             raise ValueError(f"No mesh generated for {face.name}.")
     roles = {c.id: c.role for c in p.components}
     for edge in p.edges:
+        if roles[edge.component] == "vehicle_body":
+            continue  # reviewed but not part of the analysed model
         tags = curves[edge.id]
         collected = set()
         for tag in tags:
@@ -226,6 +243,7 @@ def _build(p, faces_at_edge):
         elements=elements,
         edge_nodes=edge_nodes,
         face_elements=face_elements,
+        excluded=excluded,
         counts=dict(Counter(e["type"] for e in elements)),
     )
 

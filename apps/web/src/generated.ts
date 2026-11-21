@@ -1253,7 +1253,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "synthetic" | "dxf";
+            kind: "synthetic" | "dxf" | "dwg";
             /** Filename */
             filename: string;
             /**
@@ -1273,7 +1273,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "synthetic" | "dxf";
+            kind: "synthetic" | "dxf" | "dwg";
             /** Filename */
             filename: string;
             /**

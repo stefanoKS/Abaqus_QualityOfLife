@@ -62,7 +62,11 @@ def evaluate(data, fraction):
 def tessellate(data, tolerance=None):
     """Adaptive polyline whose chord deviation is within ``tolerance`` (mm).
 
-    Independent of any mesh so display and meshing cannot share a coarse chord.
+    Each span is tested at the quarter, middle and three-quarter parameters, not
+    only at the midpoint: an S-curve whose midpoint lies on the chord still
+    departs from it at 0.25 and 0.75, so a midpoint-only test would accept a
+    single chord for a visibly curved span. Independent of any mesh so display
+    and meshing cannot share a coarse chord.
     """
     spline = curve(data)
     tol = float(tolerance if tolerance is not None else getattr(data, "tolerance", DEFAULT_TOLERANCE))
@@ -70,19 +74,35 @@ def tessellate(data, tolerance=None):
         raise SplineError("Spline tolerance must be a positive length in millimetres.")
     max_t = spline.max_t
     points = [spline.point(0.0)]
+    limit = int(16)
+
+    def flat(t0, p0, t1, p1):
+        for fraction in (0.25, 0.5, 0.75):
+            middle = spline.point(t0 + (t1 - t0) * fraction)
+            on_chord = (
+                p0.x + (p1.x - p0.x) * fraction,
+                p0.y + (p1.y - p0.y) * fraction,
+                p0.z + (p1.z - p0.z) * fraction,
+            )
+            if math.dist(tuple(middle), on_chord) > tol:
+                return False
+        return True
 
     def refine(t0, p0, t1, p1, depth):
-        tm = (t0 + t1) / 2
-        pm = spline.point(tm)
-        chord = ((p0.x + p1.x) / 2, (p0.y + p1.y) / 2, (p0.z + p1.z) / 2)
-        deviation = math.dist(tuple(pm), chord)
-        if deviation <= tol or depth <= 0:
+        if flat(t0, p0, t1, p1):
             points.append(tuple(p1))
             return
+        if depth <= 0:
+            raise SplineError(
+                f"Spline does not reach {tol} mm within {limit} subdivision levels. "
+                "Check the curve for a fold, a cusp or a degenerate knot span."
+            )
+        tm = (t0 + t1) / 2
+        pm = spline.point(tm)
         refine(t0, p0, tm, pm, depth - 1)
         refine(tm, pm, t1, p1, depth - 1)
 
-    refine(0.0, points[0], max_t, spline.point(max_t), int(12))
+    refine(0.0, points[0], max_t, spline.point(max_t), limit)
     if len(points) > MAX_POINTS:
         raise SplineError(
             f"Spline needs more than {MAX_POINTS} display points at {tol} mm. "

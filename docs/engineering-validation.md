@@ -163,12 +163,49 @@ Checks and tolerances used:
   `WSFIX`. The original run directory was left untouched; the run ID, mesh digest, deck hash and
   solver results above are unchanged.
 
+## Native DWG evidence on the original drawing
+
+Executed on the reviewed machine with `SEAL_ODA` and `ABAQUS_QOL_ODA` unset and the ODA entry
+points replaced by functions that raise if called. `tests/test_dwg.py::test_original_drawing_reaches_a_deck_without_any_converter`
+asserts that the converter is never reached, and the acceptance harness below runs the whole path.
+
+| Item | Value |
+|---|---|
+| Drawing | `examples/hollow-section_2.dwg`, 14 503 bytes, header `AC1032`, SHA-256 `8592c3c2aa59530e7b937d58f6354f6beeb24b6bc56cfcb6d37945e483aac771` (matches the expected value) |
+| Units | header `$INSUNITS = 4` (millimetres), confirmed by the reader |
+| Reader | ACadSharp 3.8.35 (MIT), `integrations/dwg/bin/dwg-inventory.exe` → `DwgReader.Read`; no DXF, ODA, AutoCAD automation or network |
+| Model space | 5 entities on one layer (`0`): 1 `LINE` (handle CC), 1 `LWPOLYLINE` (D7, 8 vertices with 4 bulges), 3 `SPLINE` (CD 21 fit points, 11D 13 fit points closing on itself, 120 6 fit points) |
+| Spline provenance | All three are **fit-point** splines (`controlPoints` empty, `knots` empty) and were reconstructed with the AutoCAD-compatible cubic; recorded in `import-report.json` as `{"fit_points": 3}` |
+| Accounting | 0 unknown entities, 0 skipped entities; reader warnings: one unlisted `SUN` object, one unresolved `CellStyle` table reference, three `knot count does not match control points` notes that reflect the fit-point-only storage |
+| Canonical model | 11 analytic edges, 13 vertices, 3 components: seal loop (LINE CC + SPLINE CD + cavity SPLINE 11D), body profile (D7), door profile (SPLINE 120) |
+| Regions | 1 filled region with 2 loops (outer + cavity) and 1 cavity; filled area 98.29 mm²; 2 open chains excluded and offered as rigid profiles |
+| Mesh | 83 CPS3 + 291 CPS4R (WS) + 38 R2D2 (door), 453 nodes; the 128.32 mm² cavity contains **0** material elements; the body component is reported as excluded, not silently dropped |
+| Fixture | 15 nodes `WS-1:{1, 2, 98–110}` on the mounting foot; `WSFIX` parsed from the deck equals that set exactly |
+| Deck | job `bd6ec609-01b5-4ea8-a422-ff9bb79592bb`, SHA-256 `ff0de2ec50b3c9a5ac3570f99c3bfcc5df9b7974d0c94d1510377945a9afb827`, one step `Closing`, one rigid body (`PANEL_RP`), travel −6.5 mm, duration 1.3 s, thickness 1.0 mm |
+| Run | `8a0cefa3-6bef-4eaf-97d6-94d3712c33b1`, solver and extraction `Succeeded`, evidence under `.local/dwg-acceptance-contact/` (ignored) |
+| Solver | `THE ANALYSIS HAS COMPLETED SUCCESSFULLY`, 84 increments, 66 ODB frames |
+| Held nodes | all 15 labels present in every frame; worst \|U\| over all frames = 8.40e-39 mm |
+| Panel RP | `U2` 0 → −6.5 mm (prescribed travel attained), `U1` 2.66e-40 mm, final `RF2` −0.018122 N |
+| Contact | first non-zero `RF2` at travel 5.70 mm against a reported geometric clearance of 5.66153 mm, i.e. inside one 0.1 mm output interval |
+| Projected closing force | +0.018122 N at 6.5 mm travel (resisting seal ⇒ positive) |
+| CSV vs ODB | `history.csv` equals the extracted history exactly for `panel_U2_mm`, `panel_RF2_N` and `closing_force_N` at the final sample |
+
+Interpretation:
+
+- This is a **door-only** closing case on the real drawing. The body profile is imported, reviewed and
+  reported as excluded; it is not meshed and it does not move. Body seating followed by door closing
+  (two panels, two steps) is **not implemented**, so no two-panel table can be evidenced.
+- The material card is the illustrative hyperfoam card carried by the repository; it is not a measured
+  compound. The force value is therefore an execution result, not a correlation result.
+- No engineering tolerance has been agreed, so the closing force is recorded, not judged.
+
 ## Drawing-curve evidence (synthetic, no license needed)
 
 `tests/test_spline.py` measures the imported curve rather than the control values:
 
 | Check | Measurement |
 |---|---|
+| S-curve regression (brief-specified) | Clamped cubic Bézier `(0,0),(1,1),(2,−1),(3,0)`: the midpoint lies on the endpoint chord, `y(0.25) = 0.28125`, a single chord is 0.2887 away, and the adaptive tessellation reaches 0.0127 ≤ 0.02 mm |
 | Display/approximation promise | Adaptive tessellation deviation from the true curve ≤ the declared `tolerance` (0.02 mm), measured by sampling the curve at 257 parameters and projecting onto the polyline |
 | Exact meshing path | For an open, clamped B-spline boundary at 1.0 mm global size, every boundary mesh node is within **0.012 mm** of the true curve; a straight chord between its endpoints would be **0.577 mm** away |
 | Approximation path | A closed spline region (descriptor unavailable to OCC) meshes through its sampled chain; every boundary mesh node stays within the declared tolerance |
@@ -205,10 +242,11 @@ The harness must not substitute synthetic DEMO output for any of these steps.
 
 | Area | Blocker |
 |---|---|
-| DWG conversion | No ODA-compatible converter is installed on this machine, so the supplied `examples/hollow-section_2.dwg` (AutoCAD 2018, SHA-256 `8592C3C2…AAC771`) could not be converted and no genuine DWG was exercised. DXF is exercised end to end, including `SPLINE`. |
-| Licensed execution breadth | Door-only closing is executed. Body-then-door, oblique motion and reversed profiles are not implemented yet, so they cannot be executed. |
+| DWG conversion | **Resolved for reading.** The original `examples/hollow-section_2.dwg` (AutoCAD 2018, `AC1032`, SHA-256 `8592c3c2…aac771`) is read natively by ACadSharp 3.8.35 (MIT); no ODA converter, DXF intermediate or CAD automation takes part. Reading is proven for this drawing and for the entity types it contains (`LINE`, `LWPOLYLINE` with bulges, `SPLINE` with fit points). Other DWG versions are accepted by the reader but were not exercised. |
+| Licensed execution breadth | Door-only closing is executed, including on the original drawing. Body-then-door two-step closing is still not implemented, so it cannot be executed. |
 | Friction assignment | One global coefficient; per-pair overrides are not implemented. |
-| Drawing role review | Roles are assigned per connected component after import; a staged linework review with per-chain confirmation before regions are built is not implemented. |
+| Drawing role review | Roles are assigned per connected component after import; an in-viewport chain review with per-chain WS/Door/Body confirmation is not implemented. |
+| Fixture history view | The archived labels of an old run can still be shown against the newest compatible mesh instead of that run's own mesh; duplication does not verify mesh identity. |
 | Physical correlation | No trusted reference curve and no agreed engineering tolerance exist. |
 | Mesh/time convergence | Not studied; two mesh sizes were exercised only as an invalidation test, not as a convergence study. |
 

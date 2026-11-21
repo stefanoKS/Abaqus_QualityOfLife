@@ -15,7 +15,7 @@ import traceback
 
 import psutil
 
-from integrations import drawings
+from integrations import drawings, dwg
 from packages import engineering
 from packages.engineering.model import Project
 from integrations.abaqus import deck, launcher, results
@@ -143,8 +143,23 @@ def perform(row, owner):
             ext = Path(metadata["filename"]).suffix.lower()
             source = upload / ("drawing" + ext)
             if ext == ".dwg":
-                source = drawings.convert(source)
-            imported = engineering.import_dxf(source, setup.name, metadata["units"])
+                # Native path: the DWG bytes go straight to the reader helper.
+                # No ODA converter and no DXF intermediate take part.
+                inventory = dwg.read(source)
+                (directory / "dwg-inventory.json").write_text(
+                    json.dumps(inventory, indent=2, sort_keys=True), encoding="utf-8"
+                )
+                imported, report = engineering.dwg.import_inventory(
+                    inventory,
+                    setup.name,
+                    metadata["units"],
+                    digest=store.digest(source),
+                )
+                (directory / "import-report.json").write_text(
+                    json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
+                )
+            else:
+                imported = engineering.import_dxf(source, setup.name, metadata["units"])
             imported.source.filename = metadata["filename"]
             fields.update(solver="Succeeded", extraction="Succeeded", phase="Drawing imported")
         elif row["mode"] == "MESH":

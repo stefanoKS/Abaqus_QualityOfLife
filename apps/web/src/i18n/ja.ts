@@ -126,7 +126,7 @@ export const ja = {
     '閉じた領域とパネル形状をもつ平面断面を読み込んでください。図面を差し替えると新しいリビジョンが作成され、選択内容は初期化されます。',
   'import.confirmUnits': '図面座標は mm です',
   'import.action': 'DXF / DWG を読み込む',
-  'import.odaConfigured': 'ODA コンバータ設定済み',
+  'import.odaConfigured': 'DWG ネイティブ読込を使用',
   'import.queued': '図面読込をキューに登録しました。',
   'import.needsUnits': '図面座標がミリメートルであることを確認してください。',
   'import.done': '図面を読み込みました。構成部品・材料・固定条件を確認してください。',

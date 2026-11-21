@@ -125,7 +125,7 @@ export const en: Dictionary = {
     'Import a clean planar section with closed regions and a panel profile. A replacement drawing starts a new revision with fresh selections.',
   'import.confirmUnits': 'Drawing coordinates are in mm',
   'import.action': 'Import DXF / DWG',
-  'import.odaConfigured': 'ODA converter configured',
+  'import.odaConfigured': 'Native DWG reader ready',
   'import.queued': 'Drawing import queued.',
   'import.needsUnits': 'Confirm that the drawing coordinates are in millimetres.',
   'import.done': 'Drawing imported. Review roles, materials, and mounting.',

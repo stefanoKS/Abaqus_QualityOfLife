@@ -101,7 +101,7 @@ test('clean DXF upload appears in the workspace and clears assignments', async (
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Import' })
     .click()
-  await expect(page.getByText('DWG converter not configured')).toBeVisible()
+  await expect(page.getByText('Native DWG reader ready')).toBeVisible()
   await page.getByLabel('Drawing coordinates are in mm').check()
   await page.locator('input[type=file]').setInputFiles(resolve('../../examples/hollow-section.dxf'))
   await expect(page.locator('.subtitle')).toContainText('hollow-section.dxf')

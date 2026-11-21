@@ -179,7 +179,7 @@ class Plane(Model):
 
 
 class Source(Model):
-    kind: Literal["synthetic", "dxf"]
+    kind: Literal["synthetic", "dxf", "dwg"]
     filename: str = Field(max_length=255)
     digest: str = Field(default="", max_length=64)
     drawing_units: str = Field(default="millimetres", max_length=128)

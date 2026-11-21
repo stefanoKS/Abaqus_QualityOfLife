@@ -70,8 +70,10 @@ def mesh_parts(project, mesh):
     faces = {f.id: f for f in project.faces}
     if sum(role == "moving_panel" for role in roles.values()) != 1:
         raise ValueError("Select exactly one moving panel.")
-    if any(role not in ("seal", "moving_panel") for role in roles.values()):
-        raise ValueError("This solver template supports seal regions and one moving panel.")
+    if any(role not in ("seal", "moving_panel", "vehicle_body") for role in roles.values()):
+        raise ValueError(
+            "This solver template supports seal regions, one moving panel and an excluded body profile."
+        )
     ws, panel = [], []
     element_ids = set()
     for e in mesh["elements"]:

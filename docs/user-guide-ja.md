@@ -38,11 +38,12 @@ Abaqus QOL はローカル PC 上で動作する単独利用の作業環境で�
 2. グループ見出しの **モデルを追加** で同じプロジェクトに 2D / 3D のモデルを追加できます。各モデルは
    独自のリビジョン履歴と実行履歴を持ち、**リビジョン** で一覧、**モデルを複製** で同じグループ内に
    独立したモデルを作成できます。
-3. **図面読込** で DXF / DWG を読み込む場合は、座標が mm であることを確認してから実行します。読み込み
-   はバックグラウンドで処理され、完了すると新しいリビジョンが作成されます。対応エンティティは
-   `LINE`、`ARC`、`CIRCLE`、閉じた `LWPOLYLINE`、`SPLINE` です。スプラインは制御点・ノット・重みを
-   保った正確な B-スプラインとして、通過点のみのスプラインは AutoCAD 互換の 3 次補間として保持する
-   ため、表示もメッシュも弦ではなく作図された曲線に従います。
+- DWG は **ネイティブ読込** です。CAD コンバータのインストール、ODA の設定、外部サービスへの送信は不要です。
+  対応エンティティは `LINE`、`ARC`、`CIRCLE`、閉じた `LWPOLYLINE`、`SPLINE` です。スプラインは制御点・
+  ノット・重みを保った正確な B-スプラインとして、通過点のみのスプラインは AutoCAD 互換の 3 次補間として
+  保持するため、表示もメッシュも弦ではなく作図された曲線に従います。読み込み後は **図面読込** の
+  レポートで全エンティティの取り扱いを確認し、検出された構成部品（ウェザーストリップ、可動パネル 1 枚、
+  任意のボディ）に役割を割り当てます。
 4. **構成部品** で各構成部品に「ウェザーストリップ（シール部）」「可動パネル」などの役割を割り当てます。
 5. **材料設定** で領域ごとに材料カードを割り当て、必要に応じて材料特性を編集します。
 6. **固定条件・接触条件** で固定するエッジを選択し、摩擦係数を設定します。
@@ -120,7 +121,9 @@ Abaqus QOL はローカル PC 上で動作する単独利用の作業環境で�
 | 表示 | 対処 |
 |---|---|
 | Abaqus launcher not configured | ランチャーの環境変数を設定し、アプリケーションを再起動します。 |
-| DWG converter not configured | ODA File Converter のパスを設定するか、DXF で出力し直します。 |
+| DWG reader unavailable | リポジトリの `integrations/dwg/bin` を復元します。CAD コンバータは不要です。 |
+| This DWG version is not supported by the installed reader | DXF で出力するか、対応バージョンの AutoCAD で開き直して保存します。 |
+| The drawing declares … instead of millimetres | CAD 側で `$INSUNITS` をミリメートルにするか、mm に換算してから読み込みます。 |
 | Unsupported DXF entities | ブロックを分解し、`LINE` / `ARC` / `CIRCLE` / `SPLINE` / 閉じた `LWPOLYLINE` で出力します。 |
 | Spline knot vector length must equal control points + degree + 1 | ノット数と制御点数が矛盾しています。曲線を出力し直します。 |
 | Spline endpoints disagree with its vertices | スプラインの端点が隣接曲線と一致するよう図面を出力し直します。 |

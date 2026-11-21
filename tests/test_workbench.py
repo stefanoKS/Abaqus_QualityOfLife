@@ -152,13 +152,23 @@ def test_upload_confined_and_capability_diagnostics(client):
     r = post(client, "/api/projects", {"name": "Drawing"})
     url = "/api/projects/" + r["project"] + "/drawing"
     fields = {"base": r["id"], "units": "N-mm-s-tonne"}
-    assert "DWG converter not configured" in client.get("/api/capabilities").json()["dwg"]
-    for name in ["example.dwg", "../escape.dxf", "bad.step"]:
+    assert client.get("/api/capabilities").json()["dwg"] == "Configured"
+    assert client.get("/api/capabilities").json()["odaRequired"] is False
+    for name in ["../escape.dxf", "bad.step"]:
         response = client.post(url, data=fields, files={"file": (name, b"bad content")})
         assert response.status_code == 422, response.text
+    # A corrupt DWG is accepted for decoding and then fails as a job with a clear
+    # message; it must never damage the revisions that already exist.
+    corrupt_dwg = client.post(url, data=fields, files={"file": ("corrupt.dwg", b"AC1032 rubbish")})
+    assert corrupt_dwg.is_success, corrupt_dwg.text
     broken = client.post(url, data=fields, files={"file": ("broken.dxf", b"bad content")}).json()
-    assert once("import-test")
+    for _ in range(3):
+        once("import-test")
     assert store.job(broken["id"])["status"] == "Failed"
+    corrupt = store.job(corrupt_dwg.json()["id"])
+    assert corrupt["status"] == "Failed"
+    assert "DWG" in corrupt["diagnostic"] or "drawing" in corrupt["diagnostic"].lower()
+    assert client.get("/api/revisions/" + r["id"]).is_success
     path = Path(__file__).resolve().parents[1] / "examples/hollow-section.dxf"
     response = client.post(url, data=fields, files={"file": ("new.dxf", path.read_bytes())})
     assert response.is_success, response.text

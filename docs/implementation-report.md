@@ -96,12 +96,67 @@ hashes and tolerances are in
   direction does not depend on `U2`/`RF2`.
 - An empty history no longer crashes the results view's sample matching.
 
+## A2. Delivered increment — native DWG import (this brief, seven gates)
+
+The original drawing is now read **natively**: `examples/hollow-section_2.dwg` → `integrations/dwg/bin/dwg-inventory.exe`
+(ACadSharp 3.8.35, MIT) → `packages/engineering/dwg.py` → the same canonical model, mesh, fixture and
+deck the DXF path uses. No converter, no DXF intermediate, no network.
+
+### Gate status
+
+| Gate | Status | Evidence | Remaining issue |
+|---|---|---|---|
+| 1 · Native reader on the original file | **PASS** | `tests/test_dwg.py::test_original_drawing_inventory_accounts_for_every_entity`; hash/header match; 5 model-space entities, all on layer `0`, 0 unknown, 0 skipped; warnings captured in `dwg-inventory.json` | The reader emits three `knot count does not match control points` notes because the file stores fit points only; they are reported, not hidden |
+| 2 · Spline shape and hollow section | **PASS** | S-curve regression (0.28125 / 0.2887 / 0.0127 mm), quarter-point flatness test, refusal to exceed the subdivision limit; real drawing keeps 1 filled region + 1 cavity through save, reopen, mesh and hashing | Closed/periodic splines are meshed through their sampled chain at the declared 0.02 mm tolerance, not as exact OCC curves |
+| 3 · Drawing-role review before regions | **BLOCKED** | Import reports the chain inventory (3 components: seal loop, body D7, door 120), excludes open profiles with handles, keeps fill/void review data and shows per-component roles in the existing Components panel | There is **no** in-viewport chain picking with add/remove and a WS/Door/Body confirmation step; roles are still assigned per connected component after import |
+| 4 · Fixture traceability | **PARTIAL** | Queue-time snapshot, stale-deck rejection and archived-label replay from `dabffe3` stay in force; the new acceptance harness saves a fixture and proves `WSFIX` equality; corrupt DWG imports fail as jobs without touching existing revisions | The historical-view defect called out in the brief (archived labels combined with the *latest* compatible mesh) is **not** fixed yet, and duplication does not verify mesh identity |
+| 5 · Two-panel analysis | **BLOCKED** | Roles allow a reviewed `vehicle_body` profile that is excluded and reported; the deck still writes one rigid body and one step | No per-panel instance/reference point/step, no body-then-door sequence, no two-panel plot |
+| 6 · Licensed acceptance on the drawing | **PASS (door-only)** | Run `8a0cefa3-6bef-4eaf-97d6-94d3712c33b1`: completed, 84 increments, 15/15 fixture nodes held at ≤ 8.4e-39 mm, RP `U2` 0 → −6.5 mm, contact at 5.70 mm vs 5.66 mm clearance, projected force +0.018122 N, CSV = ODB | The brief's two-panel table (body seating then door closing) cannot be evidenced; the body does not move |
+| 7 · Regression, packaging, handover | **PARTIAL** | 75 Python tests, 22 browser tests, 395 translation keys, typecheck and build pass; helper ships prebuilt in `integrations/dwg/bin` so no SDK or converter is needed; two copy-paste commands below | No independently authored binary DWG fixture is committed (the mapping is tested against a synthetic inventory; the original file is read only when it is present locally) |
+
+### What changed in the code
+
+- `integrations/dwg/src/DwgInventory.cs` + `bin/` — the helper. Reads DWG bytes, expands `INSERT`
+  instances with their transform and instance identity, emits deterministic JSON (entities, layers,
+  blocks, counts, unknown handles, warnings). Built with the .NET Framework 4.8 compiler, so it needs
+  no SDK, no runtime install and no converter on any Windows machine.
+- `integrations/dwg/__init__.py` — runs the helper with `SEAL_ODA`/`ABAQUS_QOL_ODA` removed from its
+  environment and maps failures to actionable messages (missing helper, corrupt file, unsupported
+  version, timeout, oversized drawing).
+- `packages/engineering/section.py` — one assembler shared by both readers: connectivity chains,
+  closed-versus-open classification (degree-1 test, so reversed/reordered body lines still join), region
+  polygonization, cavity detection, component labelling and the import report.
+- `packages/engineering/dwg.py` — entity mapping (LINE, ARC, CIRCLE, LWPOLYLINE with bulges, SPLINE
+  with control or fit points, POINT/INSERT diagnostics), millimetre-only unit gate, spline provenance.
+- `packages/engineering/spline.py` — quarter/mid/three-quarter flatness test and a diagnostic when the
+  subdivision limit is reached.
+- `packages/engineering/mesh.py`, `integrations/abaqus/deck.py` — a `vehicle_body` profile is accepted,
+  excluded from the analysis and recorded in `mesh.json.excluded`; its edges contribute no fixtures.
+- `services/worker/__main__.py`, `services/api/main.py` — the IMPORT stage uses the native reader for
+  `.dwg` and writes `dwg-inventory.json` + `import-report.json` artifacts; capabilities report the
+  native reader and `odaRequired: false`.
+- `scripts/acceptance_dwg.py` — the reproducible acceptance harness (zero-token and licensed modes).
+
+### Commands
+
+```powershell
+.\.venv\Scripts\python.exe scripts\acceptance_dwg.py
+```
+Native read, import, roles, mesh, fixture and deck on `examples/hollow-section_2.dwg`. Evidence in
+`.local/dwg-acceptance/`. Consumes **zero solver tokens**.
+
+```powershell
+$env:SIMPLIFY_ABAQUS_LAUNCHER = "C:\SIMULIA\Commands\abq2024.bat"; .\.venv\Scripts\python.exe scripts\acceptance_dwg.py --licensed --travel -6.5 --evidence .local\dwg-acceptance-contact
+```
+The licensed door-only acceptance run; needs one CPU token, writes the ODB, extraction and history into
+`.local/dwg-acceptance-contact/`.
+
 ## A1. Delivered increment — fixture correctness, provenance and spline import
 
-Delivered after A0. Two of the four engineering items in this brief are complete and verified:
-the fixture-correctness repairs with a provenance re-extraction, and spline import that preserves the
-drawn geometry. Drawing-role review and body-then-door two-panel loading are **not** implemented; they
-are reported as open in section E rather than half-built.
+Delivered after A0, before A2. Two of the four engineering items in that brief were completed and
+verified: the fixture-correctness repairs with a provenance re-extraction, and spline import that
+preserves the drawn geometry. Drawing-role review and body-then-door two-panel loading were reported as
+open rather than half-built; A2 records their current state.
 
 ### Fixture correctness (five defects found by adversarial review of A0)
 
