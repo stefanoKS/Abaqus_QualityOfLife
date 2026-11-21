@@ -83,10 +83,13 @@ export function Viewport(props: ViewportProps) {
         pointer: number
         startX: number
         startY: number
+        startLocalX: number
+        startLocalY: number
         x: number
         y: number
         moved: boolean
         pan: boolean
+        box: boolean
         button: number
       } | null = null
       const local = (e: PointerEvent) => {
@@ -111,14 +114,26 @@ export function Viewport(props: ViewportProps) {
           if (drag || e.button > 2) return
           el.focus({ preventScroll: true })
           el.setPointerCapture(e.pointerId)
+          const [lx, ly] = local(e)
+          // In fixed-node mode a plain left drag is a selection rectangle; Shift
+          // and the secondary buttons keep panning, so camera gestures stay
+          // distinct from selection gestures.
+          const box =
+            !!latest.current.boxSelect &&
+            latest.current.mode === 'node' &&
+            e.button === 0 &&
+            !e.shiftKey
           drag = {
             pointer: e.pointerId,
             startX: e.clientX,
             startY: e.clientY,
+            startLocalX: lx,
+            startLocalY: ly,
             x: e.clientX,
             y: e.clientY,
             moved: false,
             pan: e.shiftKey || e.button > 0,
+            box,
             button: e.button,
           }
         },
@@ -136,7 +151,15 @@ export function Viewport(props: ViewportProps) {
             }
             if (drag.moved) {
               setHover(null)
-              view!.drag(e.clientX - drag.x, e.clientY - drag.y, drag.pan)
+              if (drag.box) {
+                const [bx, by] = local(e)
+                view!.setBox({
+                  x0: drag.startLocalX,
+                  y0: drag.startLocalY,
+                  x1: bx,
+                  y1: by,
+                })
+              } else view!.drag(e.clientX - drag.x, e.clientY - drag.y, drag.pan)
             }
             drag.x = e.clientX
             drag.y = e.clientY
@@ -159,8 +182,25 @@ export function Viewport(props: ViewportProps) {
         'pointerup',
         (e) => {
           if (drag?.pointer !== e.pointerId) return
-          if (!drag.moved && drag.button === 0)
-            latest.current.onSelect(view!.pick(latest.current.mode, ...local(e)))
+          const [lx, ly] = local(e)
+          if (drag.box) {
+            view!.setBox(null)
+            if (drag.moved) {
+              latest.current.onBoxSelect?.(
+                view!.nodesInBox(
+                  drag.startLocalX,
+                  drag.startLocalY,
+                  lx,
+                  ly,
+                  latest.current.nodeInstances,
+                ),
+              )
+            } else {
+              latest.current.onSelect(view!.pick(latest.current.mode, lx, ly))
+            }
+          } else if (!drag.moved && drag.button === 0) {
+            latest.current.onSelect(view!.pick(latest.current.mode, lx, ly))
+          }
           drag = null
           setGrabbing(false)
           if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
@@ -229,6 +269,11 @@ export function Viewport(props: ViewportProps) {
     setHoverLabel('')
     controller.current?.highlight(props.selection, null)
   }, [props.selection, props.mode])
+
+  const fixtureKey = (props.selectedNodes ?? []).join(',')
+  useEffect(() => {
+    controller.current?.setSelection(props.selectedNodes ?? [])
+  }, [fixtureKey, props.selectedNodes])
 
   return (
     <div className="seal-viewport" data-testid="vtk-viewport" data-dimension={props.dimension}>

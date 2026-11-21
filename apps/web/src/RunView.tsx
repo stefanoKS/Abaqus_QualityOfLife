@@ -19,16 +19,40 @@ import { Plot } from './Plot'
 import { labelFrom, useI18n } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 
+interface HistoryRow {
+  time: number
+  step?: string | null
+  displacement: number
+  force: number
+  total_force_N?: number
+  u1?: number
+  u2?: number
+  rf1?: number
+  rf2?: number
+}
+
+interface Closing {
+  panel?: string
+  instance?: string
+  direction?: number[]
+  distance_mm?: number
+  measure_from_step_start?: boolean
+  steps?: { name: string; role: string }[]
+}
+
 interface Index {
   notice: string
   mode: string
-  frames: { time: number; file: string }[]
-  history: { time: number; displacement: number; force: number }[]
+  frames: { time: number; step?: string; file: string }[]
+  history: HistoryRow[]
   force_unit: string
   instances: ResultInstance[]
   unavailable: string[]
   thickness: number
   averaging?: string
+  force_normalization?: 'total' | 'per_mm'
+  closing?: Closing | null
+  history_components?: string[]
 }
 
 /** Fields the extractor may publish in addition to displacements. */
@@ -40,6 +64,51 @@ interface Frame extends ResultFrame {
 type Component = 'magnitude' | 'U1' | 'U2' | 'U3'
 
 const COMPONENTS: Component[] = ['magnitude', 'U1', 'U2', 'U3']
+
+/**
+ * Display-only sign controls. They transform the projected curve for reading
+ * and for the exported CSV; the stored result artifacts are never rewritten.
+ */
+function displayedCurve(history: HistoryRow[], reverseX: boolean, reverseY: boolean) {
+  return {
+    x: history.map((row) => (reverseX ? -row.displacement : row.displacement)),
+    y: history.map((row) => (reverseY ? -row.force : row.force)),
+  }
+}
+
+function csvCell(value: unknown) {
+  const text = value === undefined || value === null ? '' : String(value)
+  return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text
+}
+
+function download(name: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = name
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+/** Nearest sample in the same step: a curve point must match its own step, not just a time. */
+function nearestIndex<T extends { time: number; step?: string | null }>(
+  samples: T[],
+  time: number,
+  step?: string | null,
+) {
+  if (!samples.length) return 0
+  const eligible = samples
+    .map((sample, index) => ({ sample, index }))
+    .filter(({ sample }) => !step || !sample.step || sample.step === step)
+  const pool = eligible.length
+    ? eligible
+    : samples.map((sample, index) => ({ sample, index }))
+  return pool.reduce(
+    (best, entry) =>
+      Math.abs(entry.sample.time - time) < Math.abs(best.sample.time - time) ? entry : best,
+    pool[0],
+  ).index
+}
 
 export function RunView({
   id,
@@ -63,6 +132,9 @@ export function RunView({
   const [component, setComponent] = useState<Component>('magnitude')
   const [logs, setLogs] = useState(''),
     [logFile, setLogFile] = useState('worker.log')
+  // Display-only sign controls; the artifacts on disk keep their signed values.
+  const [reverseX, setReverseX] = useState(false),
+    [reverseY, setReverseY] = useState(false)
   const active = !!job && anyActive([job])
   useEffect(() => {
     const ctrl = new AbortController()
@@ -134,27 +206,81 @@ export function RunView({
       ac.abort()
     }
   }, [resultView, id, hasLog, logFile, notify])
-  const xy = useMemo(
-    () => ({
-      x: index?.history.map((h) => h.displacement) ?? [],
-      y: index?.history.map((h) => h.force) ?? [],
-    }),
-    [index],
+  const closingStep = index?.closing?.steps?.[0]?.name ?? null
+  // Open on the door-closing step by default in both modes.
+  useEffect(() => {
+    if (!index) return
+    const first = index.frames.findIndex((frame) => !closingStep || frame.step === closingStep)
+    setN(Math.max(0, first))
+  }, [index, closingStep])
+  const curve = useMemo(
+    () => displayedCurve(index?.history ?? [], reverseX, reverseY),
+    [index, reverseX, reverseY],
   )
-  const nearest = (samples: { time: number }[], time: number) =>
-    samples.reduce(
-      (best, row, i) => (Math.abs(row.time - time) < Math.abs(samples[best].time - time) ? i : best),
-      0,
-    )
+  const frameStep = index?.frames[n]?.step
+  const activeSample =
+    index && index.frames.length ? nearestIndex(index.history, index.frames[n].time, frameStep) : undefined
   const plotPick = useCallback(
     (i: number) => {
       if (index) {
         playing(false)
-        setN(nearest(index.frames, index.history[i].time))
+        setN(nearestIndex(index.frames, index.history[i].time, index.history[i].step))
       }
     },
     [index],
   )
+  function exportCurve() {
+    if (!index) return
+    const direction = index.closing?.direction ?? [0, -1]
+    const provenance = index.mode === 'DEMO' ? 'DEMO synthetic' : 'ABAQUS solver'
+    const header = [
+      ['# Abaqus QOL displayed door response'],
+      ['# panel', index.closing?.panel ?? 'panel'],
+      ['# instance', index.closing?.instance ?? 'PANEL-1'],
+      ['# closing_step', closingStep ?? 'all steps'],
+      ['# direction', direction.join(' ')],
+      ['# length_unit', 'mm'],
+      ['# force_unit', index.force_unit],
+      ['# x_sign', reverseX ? '-1' : '1'],
+      ['# y_sign', reverseY ? '-1' : '1'],
+      ['# normalization', index.force_normalization ?? 'total'],
+      ['# provenance', provenance],
+      ['# note', 'Displayed values only. Raw signed components follow; artifacts are unchanged.'],
+    ].map((row) => row.map(csvCell).join(','))
+    header.push(
+      [
+        'displayed_displacement_mm',
+        'displayed_force_' + index.force_unit,
+        'time_s',
+        'step',
+        'raw_u1_mm',
+        'raw_u2_mm',
+        'raw_rf1_N',
+        'raw_rf2_N',
+        'normalization',
+        'provenance',
+      ].join(','),
+    )
+    index.history.forEach((row, i) => {
+      header.push(
+        [
+          curve.x[i],
+          curve.y[i],
+          row.time,
+          row.step ?? '',
+          row.u1 ?? '',
+          row.u2 ?? '',
+          row.rf1 ?? '',
+          row.rf2 ?? '',
+          index.force_normalization ?? 'total',
+          provenance,
+        ]
+          .map(csvCell)
+          .join(','),
+      )
+    })
+    download('door-response-' + id.slice(0, 8) + '.csv', header.join('\r\n') + '\r\n')
+  }
   if (!job) return <main className="page">{t('run.opening')}</main>
   const disabled = index?.unavailable ?? []
   const displacementAvailable = !!frame && !!index && !disabled.includes('U')
@@ -304,20 +430,49 @@ export function RunView({
           <aside className="card">
             <div className="panel-title">
               <Activity />
-              {t('run.panelResponse')}
+              {t('run.doorResponse')}
             </div>
             <div className="property-body">
               <h2>{t('run.forceDisplacement')}</h2>
-              <p>{t('run.plotHelp')}</p>
+              <p>{index.closing ? t('run.plotHelp') : t('run.plotHelpLegacy')}</p>
               {index.history.length ? (
-                <Plot
-                  x={xy.x}
-                  y={xy.y}
-                  xlabel={t('run.panelU2')}
-                  ylabel={t('run.panelRF2', { unit: index.force_unit })}
-                  active={nearest(index.history, index.frames[n].time)}
-                  onPick={plotPick}
-                />
+                <>
+                  <Plot
+                    x={curve.x}
+                    y={curve.y}
+                    xlabel={index.closing ? t('run.doorTravel') : t('run.panelU2')}
+                    ylabel={
+                      index.closing
+                        ? t('run.doorReaction', { unit: index.force_unit })
+                        : t('run.panelRF2', { unit: index.force_unit })
+                    }
+                    active={activeSample}
+                    onPick={plotPick}
+                  />
+                  <fieldset className="sign-controls">
+                    <legend>{t('run.displaySigns')}</legend>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={reverseX}
+                        onChange={(e) => setReverseX(e.target.checked)}
+                      />
+                      {t('run.reverseX')}
+                    </label>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={reverseY}
+                        onChange={(e) => setReverseY(e.target.checked)}
+                      />
+                      {t('run.reverseY')}
+                    </label>
+                  </fieldset>
+                  <button className="wide" onClick={exportCurve}>
+                    <Download />
+                    {t('run.exportCurve')}
+                  </button>
+                </>
               ) : (
                 <p>{t('run.historyUnavailable')}</p>
               )}
@@ -330,6 +485,12 @@ export function RunView({
                   <dt>{t('run.forceUnit')}</dt>
                   <dd>{index.force_unit}</dd>
                 </div>
+                {index.closing?.direction && (
+                  <div>
+                    <dt>{t('run.closingDirection')}</dt>
+                    <dd>{index.closing.direction.map((v) => Number(v).toFixed(3)).join(', ')}</dd>
+                  </div>
+                )}
                 <div>
                   <dt>{t('run.provenance')}</dt>
                   <dd>

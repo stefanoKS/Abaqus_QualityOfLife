@@ -29,7 +29,7 @@ def test_deck_sections_history_mesh_and_motion(model_mesh):
     assert "*Elastic" in deck and "*Rigid Body, ref node=PANEL_RP" in deck
     assert "*Contact Inclusions, all exterior" in deck and "*Dynamic\n" in deck
     assert "type=CPS4R" in deck and "type=R2D2" in deck and "CPE" not in deck
-    assert "*Node Output, nset=PANEL_RP\nU2, RF2" in deck
+    assert "*Node Output, nset=PANEL_RP\nU1, U2, RF1, RF2" in deck
     assert "*Solid Section, elset=REGION_2" in deck
     assert f"PANEL_RP, 2, 2, {project.motion.travel}" in deck
     assert deck.count("*End Step") == 1
@@ -51,17 +51,42 @@ def test_deck_rejects_invalid_mount_and_degenerate_mesh(model_mesh):
 
 def test_histories_align_in_time_and_normalize():
     rows = align_histories(
-        [(0, 0), (1, -2), (3, -6)],
-        [(0.5, -10), (2, -40)],
-        {"force_normalization": "per_mm", "thickness": 2},
+        {
+            "U1": {0: 0, 1: 0, 3: 0},
+            "U2": {0: 0, 1: -2, 3: -6},
+            "RF1": {0.5: 0, 2: 0},
+            "RF2": {0.5: 10, 2: 40},
+        },
+        {
+            "force_normalization": "per_mm",
+            "thickness": 2,
+            "closing": {"direction": [0, -1]},
+        },
         3,
+        step="Closing",
     )
     assert [(r["time"], r["displacement"], r["force"]) for r in rows] == [
-        (3.5, -1, -5),
-        (4, -2, -10),
-        (5, -4, -20),
+        (3.5, 1, -5),
+        (4, 2, -10),
+        (5, 4, -20),
     ]
-    assert not align_histories([(1, 0)], [(2, 0)], {"force_normalization": "total"})
+    # Raw signed global components and the step identity stay available.
+    assert (rows[0]["u2"], rows[0]["rf2"], rows[0]["rf1"], rows[0]["step"]) == (
+        -1,
+        10,
+        0,
+        "Closing",
+    )
+    assert not align_histories({"U2": {1: 0}}, {"force_normalization": "total"})
+    # Closing travel is measured from this step's first sample, not from assembly.
+    later = align_histories(
+        {"U2": {0: -4, 1: -6}, "RF2": {0: 20, 1: 30}},
+        {"force_normalization": "total", "thickness": 1, "closing": {"direction": [0, -1]}},
+        start_time=2,
+        step="Closing",
+    )
+    assert [(r["time"], r["displacement"]) for r in later] == [(2, 0), (3, 2)]
+    assert later[1]["u2"] == -6 and later[1]["force"] == -30
 
 
 def test_demo_reproducibility_and_labels(tmp_path, model_mesh):
@@ -73,9 +98,35 @@ def test_demo_reproducibility_and_labels(tmp_path, model_mesh):
     assert last["notice"] == DEMO_NOTICE == results["notice"]
     assert last["displacements"]["PANEL-1"][0][2] == project.motion.travel
     assert set(results["unavailable"]) >= {"LE", "S"}
+    # Measured solver convention (docs/engineering-validation.md): the raw RF2 is
+    # negative while the seal resists, so the projected closing force is positive.
+    assert results["history"][-1]["rf2"] < 0
+    assert results["history"][-1]["force"] > 0
+    assert results["closing"]["direction"] == [0.0, -1.0]
+    assert results["closing"]["steps"] == [{"name": "Closing", "role": "door"}]
     assert DEMO_NOTICE in (tmp_path / "history.csv").read_text(encoding="utf-8-sig")
     write_demo(project, mesh, tmp_path)
     assert (tmp_path / "results.json").read_bytes() == index
+
+
+def test_demo_csv_keeps_signed_rf2_and_separates_the_projected_total(tmp_path, model_mesh):
+    import csv
+
+    project, mesh = model_mesh
+    project = project.model_copy(deep=True)
+    project.analysis.thickness = 2.0
+    project.analysis.force_normalization = "per_mm"
+    write_demo(project, mesh, tmp_path)
+    with (tmp_path / "history.csv").open(encoding="utf-8-sig", newline="") as stream:
+        rows = list(csv.DictReader(stream))
+    last = rows[-1]
+    raw = float(last["panel_RF2_N"])
+    # The logged defect: this column used to receive the projected total.
+    assert raw < 0
+    assert float(last["panel_total_RF2_N"]) == pytest.approx(raw)
+    assert float(last["closing_total_force_N"]) == pytest.approx(-raw)
+    projected = last["closing_force_N/mm"]
+    assert float(projected) == pytest.approx(-raw / 2.0)
 
 
 def test_raw_integration_point_with_precision_and_position():
@@ -192,7 +243,8 @@ def test_installed_runtime_roundtrip(tmp_path, model_mesh):
     assert hashlib.sha256(odb.read_bytes()).hexdigest() == before
     results = json.loads((tmp_path / "results.json").read_bytes())
     assert results["mode"] == "ABAQUS"
-    assert results["history"][1]["displacement"] == -1
+    assert results["history"][1]["displacement"] == 1
+    assert results["history"][1]["u2"] == -2
     assert set(results["unavailable"]) >= {"CPRESS", "LE"}
     frame = json.loads((tmp_path / results["frames"][-1]["file"]).read_bytes())
     assert frame["displacements"]["PANEL-1"][0] == [1, 0, -2, 0]

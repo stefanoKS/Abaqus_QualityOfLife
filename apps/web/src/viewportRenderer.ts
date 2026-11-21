@@ -99,6 +99,8 @@ export class ViewportRenderer {
   private projected: Projected[] = []
   private selected: Picked | null = null
   private hovered: Picked | null = null
+  private fixture: Set<string> = new Set()
+  private box: { x0: number; y0: number; x1: number; y1: number } | null = null
   private dimension: '2D' | '3D' = '2D'
   private ctx: CanvasRenderingContext2D
   private width = 1
@@ -263,6 +265,32 @@ export class ViewportRenderer {
   pick(mode: SelectionMode, x: number, y: number) {
     return pickAt(this.projected, mode, x, y)
   }
+  /** Instance-qualified labels whose projected node lies inside the rectangle. */
+  nodesInBox(x0: number, y0: number, x1: number, y1: number, instances?: string[]) {
+    const left = Math.min(x0, x1),
+      right = Math.max(x0, x1),
+      top = Math.min(y0, y1),
+      bottom = Math.max(y0, y1)
+    const found = new Set<string>()
+    for (const { surface, points } of this.projected) {
+      if (!surface.nodeIds || !surface.instance) continue
+      if (instances && !instances.includes(surface.instance)) continue
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i]
+        if (p[0] >= left && p[0] <= right && p[1] >= top && p[1] <= bottom)
+          found.add(surface.instance + ':' + surface.nodeIds[i])
+      }
+    }
+    return [...found]
+  }
+  setSelection(labels: string[]) {
+    this.fixture = new Set(labels)
+    this.drawOverlay()
+  }
+  setBox(rect: { x0: number; y0: number; x1: number; y1: number } | null) {
+    this.box = rect
+    this.drawOverlay()
+  }
   highlight(selection: Picked | null, hover: Picked | null) {
     this.selected = selection
     this.hovered = hover
@@ -279,6 +307,8 @@ export class ViewportRenderer {
         this.hovered.kind !== this.selected?.kind)
     )
       outline(ctx, this.projected, this.hovered, true)
+    this.drawFixture(ctx)
+    this.drawBox(ctx)
     if (!this.axes.length || !this.scene.surfaces.length) return
     const scale =
       this.height / (2 * this.renderer.getActiveCamera().getParallelScale())
@@ -320,6 +350,38 @@ export class ViewportRenderer {
       bottom - 7
     )
     ctx.textAlign = 'left'
+  }
+  private drawFixture(ctx: CanvasRenderingContext2D) {
+    if (!this.fixture.size) return
+    ctx.save()
+    ctx.fillStyle = '#d77514'
+    ctx.strokeStyle = '#fff'
+    ctx.lineWidth = 1.2
+    for (const { surface, points } of this.projected) {
+      if (!surface.nodeIds || !surface.instance) continue
+      for (let i = 0; i < points.length; i++) {
+        if (!this.fixture.has(surface.instance + ':' + surface.nodeIds[i])) continue
+        ctx.beginPath()
+        ctx.arc(points[i][0], points[i][1], 3.4, 0, 2 * Math.PI)
+        ctx.fill()
+        ctx.stroke()
+      }
+    }
+    ctx.restore()
+  }
+  private drawBox(ctx: CanvasRenderingContext2D) {
+    if (!this.box) return
+    const { x0, y0, x1, y1 } = this.box
+    ctx.save()
+    ctx.strokeStyle = '#147d9a'
+    ctx.fillStyle = 'rgba(20,125,154,0.12)'
+    ctx.lineWidth = 1.2
+    ctx.setLineDash([4, 3])
+    const left = Math.min(x0, x1),
+      top = Math.min(y0, y1)
+    ctx.fillRect(left, top, Math.abs(x1 - x0), Math.abs(y1 - y0))
+    ctx.strokeRect(left, top, Math.abs(x1 - x0), Math.abs(y1 - y0))
+    ctx.restore()
   }
   dispose() {
     this.clear()

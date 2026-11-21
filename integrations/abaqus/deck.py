@@ -4,6 +4,8 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from math import isfinite
 
+from packages.engineering import fixture as fixtures
+
 ELEMENT_SIZES = {"CPS3": 3, "CPS4": 4, "CPS4R": 4, "R2D2": 2}
 
 
@@ -173,22 +175,56 @@ def material_cards(material, name):
     return lines
 
 
-def write_inp(project, mesh):
+def fixed_nodes(project, mesh, fixture):
+    """Return the fixed seal node labels from a reviewed mesh node set.
+
+    ``fixture`` is the list of instance-qualified labels reviewed on this exact
+    mesh. ``None`` keeps the editable legacy path: the stored CAD-edge mounting
+    selection is resolved to nodes of the known mesh.
+    """
+    if fixture is None:
+        selection = next(
+            (s for s in project.selections if s.id == project.mounting.selection), None
+        )
+        if not selection or not selection.entities:
+            raise ValueError(
+                "Select the fixed weatherstrip nodes, or a mounting boundary, "
+                "before generating the input."
+            )
+        try:
+            labels = fixtures.from_edges(mesh, selection.entities)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        nodes = [int(label.split(":")[1]) for label in labels]
+    else:
+        labels = fixtures.normalize(fixture, mesh)
+        if not labels:
+            raise ValueError(
+                "Select at least one fixed weatherstrip node before preparing the input deck."
+            )
+        nodes = [int(label.split(":")[1]) for label in labels]
+    deformable = fixtures.deformable_nodes(mesh)
+    stray = sorted(set(nodes) - deformable)
+    if stray:
+        raise ValueError(
+            "Fixed nodes must belong to the deformable weatherstrip: "
+            + ", ".join(map(str, stray[:8]))
+            + "."
+        )
+    return nodes
+
+
+def write_inp(project, mesh, fixture=None):
     nodes, ws, panel = mesh_parts(project, mesh)
     boundary = exterior(ws)
     clearance = vertical_gap(nodes, boundary, panel, project.motion.offset)
     seal_nodes = sorted({n for e in ws for n in e["nodes"]})
     panel_nodes = sorted({n for e in panel for n in e["nodes"]})
-    selection = next((s for s in project.selections if s.id == project.mounting.selection), None)
-    if not selection or not selection.entities:
-        raise ValueError("Select a seal mounting boundary before generating the input.")
-    fixed = set()
     seal_node_set = set(seal_nodes)
-    for edge in selection.entities:
-        edge_nodes = mesh["edge_nodes"].get(edge)
-        if not edge_nodes or not set(edge_nodes) <= seal_node_set:
-            raise ValueError("A mounting edge is missing from the seal mesh. Review the selection.")
-        fixed.update(edge_nodes)
+    fixed = set(fixed_nodes(project, mesh, fixture))
+    if not fixed <= seal_node_set:
+        raise ValueError("A fixed node is missing from the seal mesh. Review the fixture.")
+    source = "reviewed mesh nodes" if fixture is not None else "legacy mounting edges"
 
     lines = [
         "*Heading",
@@ -196,6 +232,7 @@ def write_inp(project, mesh):
         "** Units: N, mm, s, tonne. Panel RF2 is total reaction for the specified thickness.",
         f"** Initial vertical clearance on the assembled mesh: {scalar(clearance)} mm.",
         f"** Prescribed Y travel: {scalar(project.motion.travel)} mm; measured from initial placement.",
+        f"** Fixed weatherstrip nodes: {len(fixed)} from {source}.",
         "*Part, name=WS",
         "*Node",
     ]
@@ -298,6 +335,8 @@ def output_cards(project):
     lines += [
         f"*Output, history, time interval={interval}",
         "*Node Output, nset=PANEL_RP",
-        "U2, RF2",
+        # Signed global components are retained; the chart projects them onto
+        # the configured closing direction without altering this raw history.
+        "U1, U2, RF1, RF2",
     ]
     return lines

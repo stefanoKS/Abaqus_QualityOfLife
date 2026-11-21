@@ -70,6 +70,16 @@ export interface ViewportProps {
   resultComponent?: 'magnitude' | 'U1' | 'U2' | 'U3'
   /** Localized legend heading supplied by the caller. */
   resultLabel?: string
+  /** Rectangular node selection is armed (fixed-node fixture review). */
+  boxSelect?: boolean
+  /** How a completed rectangle combines with the current fixture. */
+  boxOperation?: 'replace' | 'add' | 'subtract'
+  /** Instance-qualified labels drawn as a persistent fixture highlight. */
+  selectedNodes?: string[]
+  /** Instances whose nodes may be box-selected; others are ignored. */
+  nodeInstances?: string[]
+  /** Receives the instance-qualified labels inside the drawn rectangle. */
+  onBoxSelect?: (labels: string[]) => void
 }
 
 export interface Surface {

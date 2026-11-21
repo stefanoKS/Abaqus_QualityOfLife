@@ -48,10 +48,39 @@ without further tooling.
 
 ## Database schema
 
-Schema version 1 is unchanged by this release. `services/store.py::initialize()` uses
-`CREATE TABLE IF NOT EXISTS`, so a fresh installation and an existing database take the same path and
-repeated initialization is a no-op. There is no destructive migration and therefore no rollback step
-beyond restoring the previous directory copy.
+Schema version 1 is unchanged by this release; project grouping is additive.
+
+`services/store.py::initialize()` uses `CREATE TABLE IF NOT EXISTS`, so a fresh installation and an
+existing database take the same path and repeated initialization is a no-op.
+
+### Project-grouping migration (additive, idempotent)
+
+1. `groups(id, name, created)` is created if missing.
+2. `projects.group_id` is added with `ALTER TABLE` when the column is absent.
+3. Every project whose `group_id` is `NULL` is assigned to a single `Imported projects` group created
+   on demand.
+
+The mesh-first workflow adds more additive schema in the same transaction style:
+
+4. `jobs.mesh`, `jobs.mesh_digest`, `jobs.mesh_compat` and `jobs.fixture_hash` are added when absent.
+5. `fixtures(job, mesh_digest, labels_hash, labels, updated)` is created if missing.
+
+No existing row is rewritten. Legacy `BUILD` jobs remain readable through `GET /api/jobs/{id}` and their
+artifacts stay downloadable; only new work uses `MESH` and `DECK`. Runs created before this change keep
+pointing at their old build job in `jobs.build` and reopen normally, without remeshing.
+
+Steps 2 and 3 run inside one `BEGIN IMMEDIATE` transaction, so an interrupted upgrade leaves the
+database exactly as it was. Running the application again completes the migration. No revision row, run
+row, artifact directory, drawing directory or file name changes, so:
+
+- existing revision URLs keep working;
+- existing run URLs, result links and artifact downloads keep working;
+- the original drawing of an imported revision still resolves;
+- editing one model in a group cannot touch a sibling model or its history.
+
+Rollback: the column and table are additive. Restoring the previous directory copy, or simply running
+the previous build against the same database (it ignores the extra table and column), both work. That
+is covered by `tests/test_grouping.py::test_populated_legacy_database_migrates_once_without_moving_identities`.
 
 ## Unknown worker state
 

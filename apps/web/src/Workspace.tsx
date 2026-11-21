@@ -24,7 +24,7 @@ import {
 import Viewport from './Viewport'
 import type { Display, ViewMesh, Picked, SelectionMode } from './viewportModel'
 import { Plot } from './Plot'
-import { artifact, err, go, request, type Job, type Project, type Revision } from './api'
+import { artifact, err, go, request, type FixtureInfo, type Job, type Project, type Revision } from './api'
 import { useI18n, labelFrom } from './i18n'
 import type { TranslationKey } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
@@ -57,9 +57,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
   })
   const [hidden, hide] = useState<string[]>([]),
     [display, setDisplay] = useState<Display | null>(null)
-  const [build, setBuild] = useState<Job | null>(null),
-    [mesh, setMesh] = useState<Mesh | null>(null),
+  const [meshJobs, setMeshJobs] = useState<Job[]>([]),
+    [deckJobs, setDeckJobs] = useState<Job[]>([]),
+    [meshFile, setMeshFile] = useState<Mesh | null>(null),
     [showMesh, setShowMesh] = useState(false)
+  // Fixed-node fixture review: a pending selection is shown but not stored until
+  // Save, so a rectangle can be corrected before it becomes WSFIX.
+  const [fixtureMode, setFixtureMode] = useState(false),
+    [pendingFixture, setPendingFixture] = useState<string[] | null>(null),
+    [boxOperation, setBoxOperation] = useState<'replace' | 'add' | 'subtract'>('replace')
   const [working, setBusy] = useState(false),
     [info, message] = useState(''),
     [issue, setIssue] = useState(''),
@@ -116,8 +122,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
           setActiveMaterial(next.setup.materials[0]?.id ?? null)
           select(null)
           hide([])
-          setBuild(null)
-          setMesh(null)
+          setMeshFile(null)
+          setPendingFixture(null)
           message(t('import.done'))
           setStage(1)
         } else if (['Cancelled', 'Failed', 'Unknown / worker disconnected'].includes(job.status)) {
@@ -151,17 +157,19 @@ export default function Workspace({ initial, locked, notify }: Props) {
       })
     return () => ac.abort()
   }, [p, problem])
-  const active = anyActive([...(build ? [build] : []), ...related])
+  const active = anyActive([...meshJobs, ...deckJobs, ...related])
   useEffect(() => {
     let live = true
     async function poll() {
       try {
-        const [bs, rs] = await Promise.all([
-          request<Job[]>('/api/builds'),
+        const [ms, ds, rs] = await Promise.all([
+          request<Job[]>('/api/meshes'),
+          request<Job[]>('/api/decks'),
           request<Job[]>('/api/runs'),
         ])
         if (live) {
-          setBuild(bs.find((b) => b.revision === rev.id) ?? null)
+          setMeshJobs(ms.filter((j) => j.project === rev.project))
+          setDeckJobs(ds.filter((j) => j.project === rev.project))
           setRelated(rs.filter((r) => r.revision === rev.id))
         }
       } catch (e) {
@@ -176,31 +184,55 @@ export default function Workspace({ initial, locked, notify }: Props) {
       live = false
       clearInterval(timer)
     }
-  }, [rev.id, generation, problem, active])
-  const ready = build?.status === 'Completed' && !dirty
+  }, [rev.id, rev.project, generation, problem, active])
+  // Mesh identity is decided by the saved revision, never by the draft: editing a
+  // motion value must reuse the mesh, editing geometry or mesh controls must not.
+  const completedMeshes = meshJobs.filter((j) => j.mode === 'MESH' && j.status === 'Completed')
+  const meshJob = completedMeshes[0] ?? null
+  const compatibleMesh = meshJob && meshJob.mesh_compat === rev.mesh_compat ? meshJob : null
+  const fixture = compatibleMesh?.fixture ?? null
+  const fixtureReviewed = !!fixture && fixture.count > 0
+  const motionValid = p.motion.travel < 0 && p.motion.duration > 0
+  const deck =
+    deckJobs.find(
+      (j) => j.revision === rev.id && j.mesh === compatibleMesh?.id && j.status === 'Completed',
+    ) ?? null
+  // A deck prepared before the fixture changed is stale even for the same mesh.
+  const deckReady = !!deck && !!fixture && deck.fixture_hash === fixture.hash
   useEffect(() => {
-    setMesh(null)
-    setPlacement(null)
-    if (!build?.manifest.includes('mesh.json') || dirty) return
+    setPendingFixture(null)
+    setFixtureMode(false)
+    if (!compatibleMesh) {
+      setMeshFile(null)
+      return
+    }
     const ac = new AbortController()
-    if (build.manifest.includes('result-metadata.json'))
-      request<{ placement: { initial_vertical_mesh_clearance_mm: number } }>(
-        artifact(build.id, 'result-metadata.json'),
-        'GET',
-        undefined,
-        ac.signal,
-      )
-        .then((meta) => setPlacement(meta.placement))
-        .catch((e) => {
-          if (!ac.signal.aborted) problem(e)
-        })
-    request<Mesh>(artifact(build.id, 'mesh.json'), 'GET', undefined, ac.signal)
-      .then(setMesh)
+    request<Mesh>(artifact(compatibleMesh.id, 'mesh.json'), 'GET', undefined, ac.signal)
+      .then(setMeshFile)
+      .catch((e) => {
+        if (!ac.signal.aborted) {
+          setMeshFile(null)
+          problem(e)
+        }
+      })
+    return () => ac.abort()
+  }, [compatibleMesh?.id, generation, problem])
+  useEffect(() => {
+    setPlacement(null)
+    if (!deck?.manifest.includes('result-metadata.json')) return
+    const ac = new AbortController()
+    request<{ placement: { initial_vertical_mesh_clearance_mm: number } }>(
+      artifact(deck.id, 'result-metadata.json'),
+      'GET',
+      undefined,
+      ac.signal,
+    )
+      .then((meta) => setPlacement(meta.placement))
       .catch((e) => {
         if (!ac.signal.aborted) problem(e)
       })
     return () => ac.abort()
-  }, [build?.id, build?.status, dirty, problem])
+  }, [deck?.id, problem])
   useEffect(() => {
     if (!dirty) return
     const guard = (e: BeforeUnloadEvent) => {
@@ -239,7 +271,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
       ),
     [p],
   )
-  const quality = useMemo(() => (mesh ? meshQuality(mesh, p) : null), [mesh, p])
+  const quality = useMemo(() => (meshFile ? meshQuality(meshFile, p) : null), [meshFile, p])
   const invalidMaterials = useMemo(
     () => p.materials.filter((material) => materialIssues(material).errors.length > 0),
     [p.materials],
@@ -248,7 +280,18 @@ export default function Workspace({ initial, locked, notify }: Props) {
     () => WORKFLOW_STEPS.map((step) => t(step.nameKey)),
     [t],
   )
-  const states = useMemo(() => workflowStates(p, build, related), [p, build, related])
+  const states = useMemo(
+    () =>
+      workflowStates({
+        project: p,
+        mesh: meshJob,
+        compatibleMesh,
+        fixture,
+        deck: deckReady ? deck : null,
+        runs: related,
+      }),
+    [p, meshJob, compatibleMesh, fixture, deck, deckReady, related],
+  )
   function target(next: SelectionMode) {
     setMode(next)
     if (next === 'component') {
@@ -276,8 +319,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     history.replaceState(null, '', '#workspace/' + saved.id)
     setRev(saved)
     setP(saved.setup)
-    setBuild(null)
-    setMesh(null)
+    // The mesh is not cleared: its identity decides whether it is still reusable.
     message(t('status.revisionSaved', { number: saved.number }))
     return saved
   }
@@ -295,21 +337,63 @@ export default function Workspace({ initial, locked, notify }: Props) {
   }
   async function generate() {
     const r = await save()
-    const b = await request<Job>('/api/builds', 'POST', {
+    await request<Job>('/api/meshes', 'POST', {
       revision: r.id,
       token: crypto.randomUUID(),
     })
-    setBuild(b)
     setShowMesh(true)
+    setFixtureMode(false)
+    setPendingFixture(null)
     refresh((g) => g + 1)
     message('')
   }
+  async function prepareDeck() {
+    if (!compatibleMesh || !fixtureReviewed) return
+    await request<Job>('/api/decks', 'POST', {
+      revision: rev.id,
+      token: crypto.randomUUID(),
+      mesh: compatibleMesh.id,
+    })
+    refresh((g) => g + 1)
+    message('')
+  }
+  async function saveFixture(labels: string[]) {
+    if (!compatibleMesh) return
+    await request<Job>('/api/meshes/' + compatibleMesh.id + '/fixture', 'PUT', { labels })
+    setPendingFixture(null)
+    refresh((g) => g + 1)
+    message(t('mesh.fixtureSaved', { count: labels.length }))
+  }
+  async function resolveLegacyFixture() {
+    if (!compatibleMesh) return
+    const resolved = await request<FixtureInfo>(
+      '/api/meshes/' + compatibleMesh.id + '/fixture/edges',
+      'POST',
+      {},
+    )
+    setPendingFixture(resolved.labels)
+    setFixtureMode(true)
+    setShowMesh(true)
+    target('node')
+    message(t('mesh.fixtureResolved', { count: resolved.count }))
+  }
+  function boxSelect(labels: string[]) {
+    setPendingFixture((old) => {
+      const base = old ?? fixture?.labels ?? []
+      if (boxOperation === 'replace') return labels
+      const merged =
+        boxOperation === 'add' ? [...new Set([...base, ...labels])] : base.filter((l) => !labels.includes(l))
+      return merged.sort(
+        (a, b) => Number(a.split(':')[1]) - Number(b.split(':')[1]),
+      )
+    })
+  }
   async function submit() {
-    if (!ready || !build) return
+    if (!deckReady || !deck) return
     const r = await request<Job>('/api/runs', 'POST', {
       name: runName,
       revision: rev.id,
-      build: build.id,
+      deck: deck.id,
       token: token.current,
       cpus,
       mode: execution,
@@ -359,6 +443,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
         <span>{t('workspace.workbench')}</span>
         <ChevronRight />
         <button onClick={() => go('dashboard')}>{t('workspace.projects')}</button>
+        {rev.group_name && (
+          <>
+            <ChevronRight />
+            <span className="crumb-group">{rev.group_name}</span>
+          </>
+        )}
+        <ChevronRight />
+        <span className="crumb-model">{p.name}</span>
         <ChevronRight />
         {t('workspace.revision', { number: String(rev.number).padStart(2, '0') })}
       </div>
@@ -489,7 +581,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 <option value="component">{t('sel.component')}</option>
                 <option value="face">{dimension ? t('sel.face') : t('sel.region')}</option>
                 <option value="edge">{t('sel.edge')}</option>
-                {mesh && showMesh && (
+                {meshFile && showMesh && (
                   <>
                     <option value="element">{t('sel.element')}</option>
                     <option value="node">{t('sel.node')}</option>
@@ -498,7 +590,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
               </select>
             </label>
             <div className="spacer" />
-            {mesh && (
+            {meshFile && compatibleMesh && (
+              <button
+                className={'icon ' + (fixtureMode ? 'active' : '')}
+                title={t('mesh.fixedNodesMode')}
+                aria-label={t('mesh.fixedNodesMode')}
+                aria-pressed={fixtureMode}
+                onClick={() => {
+                  const next = !fixtureMode
+                  setFixtureMode(next)
+                  setShowMesh(true)
+                  if (next) target('node')
+                }}
+              >
+                <CircleDot />
+              </button>
+            )}
+            {meshFile && (
               <button
                 className={'icon ' + (showMesh ? 'active' : '')}
                 title={t('workspace.toggleMesh')}
@@ -524,8 +632,13 @@ export default function Workspace({ initial, locked, notify }: Props) {
               }}
               colors={colors}
               hidden={hidden}
-              mesh={showMesh ? mesh : null}
+              mesh={showMesh ? meshFile : null}
               panelOffset={p.motion.offset}
+              boxSelect={fixtureMode && !!compatibleMesh}
+              boxOperation={boxOperation}
+              selectedNodes={pendingFixture ?? fixture?.labels ?? []}
+              nodeInstances={['WS-1']}
+              onBoxSelect={boxSelect}
             />
           </div>
           <div className="legend">
@@ -1005,49 +1118,131 @@ export default function Workspace({ initial, locked, notify }: Props) {
               )}
               {(stage === 5 || stage === 6) && !dimension && (
                 <>
+                  <h3>{t('mesh.meshSection')}</h3>
                   <button
                     className="primary wide"
-                    disabled={
-                      busy ||
-                      !!blockedReason ||
-                      !!(
-                        build &&
-                        !['Failed', 'Completed', 'Cancelled'].includes(build.status) &&
-                        !dirty
-                      )
-                    }
+                    disabled={busy || !!blockedReason}
                     title={blockedReason || undefined}
                     onClick={() => execute(generate)}
                   >
                     <Grid2X2 />
                     {t('mesh.generate')}
                   </button>
-                  {build && !dirty && (
-                    <div className="build-info">
+                  {meshJob && !dirty && (
+                    <div className="build-info" data-testid="mesh-status">
                       <strong>
-                        {build.status === 'Completed'
-                          ? t('mesh.inputReady')
-                          : labelFrom(t, 'state', build.status)}
+                        {compatibleMesh ? t('mesh.meshReady') : t('mesh.meshStale')}
                       </strong>
-                      {build.diagnostic && <p className="error-text">{build.diagnostic}</p>}
-                      {ready && (
-                        <a
-                          href={artifact(build.id, 'analysis.inp')}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <FileText />
-                          {t('mesh.inspectDeck')}
-                        </a>
+                      {meshJob.diagnostic && <p className="error-text">{meshJob.diagnostic}</p>}
+                      {compatibleMesh && meshJob.mesh_digest && (
+                        <small>
+                          {t('mesh.meshDigest')} {meshJob.mesh_digest.slice(0, 12)}
+                        </small>
                       )}
                     </div>
                   )}
-                  {quality && mesh && ready && (
+                  {quality && meshFile && compatibleMesh && !dirty && (
                     <MeshReview
                       quality={quality}
                       project={p}
                       clearance={placement?.initial_vertical_mesh_clearance_mm ?? null}
                     />
+                  )}
+                </>
+              )}
+              {stage === 5 && !dimension && compatibleMesh && !dirty && (
+                <>
+                  <h3>{t('mesh.fixedNodes')}</h3>
+                  <p>{t('mesh.fixedNodesHelp')}</p>
+                  <label className="check">
+                    <input
+                      type="checkbox"
+                      checked={fixtureMode}
+                      onChange={(e) => {
+                        setFixtureMode(e.target.checked)
+                        setShowMesh(true)
+                        if (e.target.checked) target('node')
+                      }}
+                    />
+                    {t('mesh.fixedNodesCheck')}
+                  </label>
+                  <label>
+                    {t('mesh.rectangleOperation')}
+                    <select
+                      value={boxOperation}
+                      onChange={(e) =>
+                        setBoxOperation(e.target.value as 'replace' | 'add' | 'subtract')
+                      }
+                    >
+                      <option value="replace">{t('mesh.op.replace')}</option>
+                      <option value="add">{t('mesh.op.add')}</option>
+                      <option value="subtract">{t('mesh.op.subtract')}</option>
+                    </select>
+                  </label>
+                  <Facts
+                    rows={[
+                      [
+                        t('mesh.fixedNodeCount'),
+                        (pendingFixture ?? fixture?.labels ?? []).length,
+                      ],
+                      [t('mesh.fixtureSource'), fixture ? t('mesh.sourceNodes') : t('mesh.sourceNone')],
+                    ]}
+                  />
+                  <div className="fixture-actions">
+                    <button
+                      className="primary"
+                      disabled={!pendingFixture}
+                      onClick={() => execute(() => saveFixture(pendingFixture ?? []))}
+                    >
+                      <CheckCheck />
+                      {t('mesh.saveFixture')}
+                    </button>
+                    <button
+                      disabled={!(pendingFixture ?? fixture?.labels ?? []).length}
+                      onClick={() => setPendingFixture([])}
+                    >
+                      {t('mesh.clear')}
+                    </button>
+                  </div>
+                  {pendingFixture && (
+                    <small>{t('mesh.fixtureUnsaved', { count: pendingFixture.length })}</small>
+                  )}
+                  {!fixture && mount.entities.length > 0 && (
+                    <button
+                      className="wide"
+                      disabled={busy}
+                      onClick={() => execute(resolveLegacyFixture)}
+                    >
+                      <ScanLine />
+                      {t('mesh.resolveEdges', { count: mount.entities.length })}
+                    </button>
+                  )}
+                </>
+              )}
+              {(stage === 5 || stage === 6) && !dimension && compatibleMesh && !dirty && (
+                <>
+                  <h3>{t('mesh.deckSection')}</h3>
+                  <button
+                    className="primary wide"
+                    disabled={busy || !fixtureReviewed || !motionValid}
+                    title={!fixtureReviewed ? t('hint.fixtureRequired') : !motionValid ? t('hint.motion') : undefined}
+                    onClick={() => execute(prepareDeck)}
+                  >
+                    <FileText />
+                    {t('mesh.prepareDeck')}
+                  </button>
+                  {deck && (
+                    <div className="build-info" data-testid="deck-status">
+                      <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
+                      {deckReady ? (
+                        <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
+                          <FileText />
+                          {t('mesh.inspectDeck')}
+                        </a>
+                      ) : (
+                        <small>{t('mesh.deckStaleHint')}</small>
+                      )}
+                    </div>
                   )}
                 </>
               )}
@@ -1105,13 +1300,18 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <button
                     className="primary wide"
                     disabled={
-                      !ready ||
+                      !deckReady ||
+                      dirty ||
                       busy ||
                       !runName.trim() ||
                       (execution === 'ABAQUS' && cap.abaqus !== 'Configured')
                     }
                     title={
-                      execution === 'ABAQUS' && cap.abaqus !== 'Configured' ? cap.abaqus : undefined
+                      !deckReady
+                        ? t('hint.deckRequired')
+                        : execution === 'ABAQUS' && cap.abaqus !== 'Configured'
+                          ? cap.abaqus
+                          : undefined
                     }
                     onClick={() => execute(submit)}
                   >
@@ -1161,17 +1361,24 @@ export default function Workspace({ initial, locked, notify }: Props) {
         <span>
           {issue ||
             info ||
-            build?.diagnostic ||
+            meshJob?.diagnostic ||
+            deck?.diagnostic ||
             (busy
               ? t('status.working')
-              : selectionName
-                ? t('status.selected', { name: selectionName })
+              : fixtureMode
+                ? t('status.fixtureSelection', {
+                    count: (pendingFixture ?? fixture?.labels ?? []).length,
+                  })
+                : selectionName
+                  ? t('status.selected', { name: selectionName })
                 : t('status.selectPrompt'))}
         </span>
         <span className="spacer" />
         <span>
           <CircleDot />
-          {build && !dirty ? labelFrom(t, 'phase', build.phase) : t('status.localProject')}
+          {meshJob && !dirty
+            ? labelFrom(t, 'phase', (deck ?? meshJob).phase)
+            : t('status.localProject')}
         </span>
       </div>
     </main>

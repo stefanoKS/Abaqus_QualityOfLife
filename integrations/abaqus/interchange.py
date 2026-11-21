@@ -25,27 +25,78 @@ def _sample(series, times, t):
     return series[a] + (t - a) * (series[b] - series[a]) / (b - a)
 
 
-def align_histories(displacements, reactions, metadata, start_time=0):
-    """Piecewise linear interpolation only over the two histories' common time domain."""
-    u, rf = dict(displacements), dict(reactions)
+COMPONENTS = ("U1", "U2", "RF1", "RF2")
+
+
+def align_histories(series, metadata, start_time=0, step=None):
+    """Align every component on the two closing histories' common time domain.
+
+    ``series`` maps ``U1``/``U2``/``RF1``/``RF2`` to ``{time: value}``. Rows keep
+    the raw signed global components and add the door response projected along
+    the configured closing direction, measured from the start of this step.
+    Projecting a reaction whose raw sign opposes the travel (a resisting seal)
+    yields a positive closing-force curve; see docs/engineering-validation.md.
+    """
+    series = {name: dict(values) for name, values in series.items() if values}
+    u, rf = series.get("U2"), series.get("RF2")
     if not u or not rf:
         return []
     tu, tr = sorted(u), sorted(rf)
     lower, upper = max(tu[0], tr[0]), min(tu[-1], tr[-1])
+    if upper < lower:
+        return []
     divisor = metadata["thickness"] if metadata["force_normalization"] == "per_mm" else 1.0
-    values = []
-    for t in sorted(set(tu) | set(tr)):
-        if lower <= t <= upper:
-            total = _sample(rf, tr, t)
-            values.append(
-                {
-                    "time": start_time + t,
-                    "displacement": _sample(u, tu, t),
-                    "force": total / divisor,
-                    "total_force_N": total,
-                }
-            )
-    return values
+    closing = metadata.get("closing") or {}
+    direction = closing.get("direction") or [0.0, -1.0]
+    dx, dy = float(direction[0]), float(direction[1])
+    # Only the components the direction actually uses must exist; an X-only
+    # direction must not depend on U2/RF2 being present.
+    required = [
+        name
+        for name, weight in (("U1", dx), ("U2", dy), ("RF1", dx), ("RF2", dy))
+        if weight
+    ]
+    if not required or any(name not in series for name in required):
+        return []
+    ordered = {name: sorted(values) for name, values in series.items()}
+    origin = {
+        name: (series[name][points[0]] if points else 0.0) for name, points in ordered.items()
+    }
+    times = sorted({t for values in ordered.values() for t in values if lower <= t <= upper})
+    rows = []
+    for t in times:
+        values = {}
+        for name in COMPONENTS:
+            points = ordered.get(name)
+            if not points:
+                values[name] = 0.0
+                continue
+            if not (points[0] <= t <= points[-1]):
+                values = None
+                break
+            values[name] = _sample(series[name], points, t)
+        if values is None:
+            continue
+        total = values["RF1"] * dx + values["RF2"] * dy
+        # Travel is measured from this step's first sample so a later closing
+        # step reports closing displacement, not cumulative assembly travel.
+        travel = (values["U1"] - origin.get("U1", 0.0)) * dx + (
+            values["U2"] - origin.get("U2", 0.0)
+        ) * dy
+        rows.append(
+            {
+                "time": start_time + t,
+                "step": step,
+                "displacement": travel,
+                "force": total / divisor,
+                "total_force_N": total,
+                "u1": values["U1"],
+                "u2": values["U2"],
+                "rf1": values["RF1"],
+                "rf2": values["RF2"],
+            }
+        )
+    return rows
 
 
 def result_header(metadata, mode, instances):
@@ -61,7 +112,13 @@ def result_header(metadata, mode, instances):
         "thickness": metadata["thickness"],
         "force_normalization": metadata["force_normalization"],
         "force_unit": "N/mm" if per_length else "N",
-        "history_description": "Panel reference point U2 and signed RF2, aligned by time within overlap",
+        "closing": metadata.get("closing"),
+        "fixture": metadata.get("fixture"),
+        "history_components": list(COMPONENTS),
+        "history_description": (
+            "Door reference point U1/U2/RF1/RF2 aligned by time within each step; "
+            "the chart projects reaction and travel onto the closing direction."
+        ),
         "field_locations": {"U": "NODAL", "RF": "NODAL"},
         "averaging": "ODB field values retain their stored output position without spatial averaging.",
         "instances": instances,
@@ -89,17 +146,32 @@ def finish(directory, result):
         writer.writerow(
             [
                 "execution",
+                "step",
                 "time_s",
+                "panel_U1_mm",
                 "panel_U2_mm",
-                "panel_RF2_" + result["force_unit"],
+                "panel_RF1_N",
+                "panel_RF2_N",
                 "panel_total_RF2_N",
+                "closing_displacement_mm",
+                "closing_force_" + result["force_unit"],
+                "closing_total_force_N",
             ]
         )
         for row in result["history"]:
+            signed = row.get("rf2", 0.0)
             writer.writerow(
                 [
                     result["notice"],
+                    row.get("step") or "",
                     row["time"],
+                    row.get("u1", 0.0),
+                    row.get("u2", row["displacement"]),
+                    row.get("rf1", 0.0),
+                    signed,
+                    # Signed global RF2 and its projection are distinct: the old
+                    # writer put the projected total in this column.
+                    signed,
                     row["displacement"],
                     row["force"],
                     row["total_force_N"],

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { LayoutDashboard, Layers3, Monitor, PanelTop, X } from 'lucide-react'
+import { LayoutDashboard, Monitor, PanelTop, X } from 'lucide-react'
+import logo from '../assets/logo.png'
 import Dashboard from './Dashboard'
 import Workspace from './Workspace'
 import { RunView } from './RunView'
@@ -88,12 +89,10 @@ function App() {
     <>
       <header className="topbar">
         <button className="brand" onClick={workspace} aria-label={t('nav.brandAria')}>
-          <span className="brand-icon">
-            <Layers3 />
-          </span>
-          <span className="brand-name">
-            Abaqus <strong>QOL</strong>
-          </span>
+          {/* The supplied wordmark already reads "Abaqus QOL"; the hidden span
+              keeps a single accessible product name for assistive technology. */}
+          <img className="brand-logo" src={logo} alt="" aria-hidden="true" />
+          <span className="brand-name sr-only">{t('app.name')}</span>
         </button>
         <div className="nav-separator" />
         <nav aria-label={t('nav.main')}>

@@ -1,265 +1,304 @@
-# Implementation report — Abaqus QOL hardening phase
+# Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
 Date: 2026-11-21
-Baseline commit: `160f52f` (branch `main`, clean working tree)
+Baseline commit: `b250789` (branch `main`, clean working tree; only the supplied
+`apps/web/assets/logo.png` was untracked)
 Repository: `stefanoKS/Abaqus_QualityOfLife`
+Environment: Windows, Python 3.11.9 (`.venv`), Node.js 24.16.0, npm 11.13.0, Edge with WebGL,
+Abaqus/Standard 2024 installed at `C:\SIMULIA\Commands\abq2024.bat`.
 
-## A. Implementation summary
+## A0. Delivered increment — 2D mesh-first fixture (brief item 5)
 
-### Product identity (G1)
+Delivered after the milestone above. Scope was limited to the 2D fixture workflow; drawing partitions,
+two-panel motion, friction overrides and 3D solving remain separate milestones.
 
-- Displayed product name is exactly **Abaqus QOL**: header brand, browser title, page metadata,
-  FastAPI title, `scripts/serve.py` startup line, generated INP `*Heading`, README and user guides.
-- `apps/web/package.json` and `package-lock.json` renamed to `abaqus-qol` (version `0.2.0`).
-- The legacy data directory `%LOCALAPPDATA%\SimplifyAbaqus` is **kept**. Renaming it would create an
-  empty database next to the user's real one and hide existing projects.
-- New configuration aliases with documented, tested precedence: `SEAL_DATA` > `ABAQUS_QOL_DATA`,
-  `SIMPLIFY_ABAQUS_LAUNCHER` > `ABAQUS_QOL_LAUNCHER`, `SEAL_ODA` > `ABAQUS_QOL_ODA`. The legacy
-  names win, so existing startup scripts behave identically.
-- A CMD starter (`start-abaqus-qol.cmd`) was added for machines with a restrictive PowerShell
-  execution policy. The existing Python entry point is unchanged.
-- No vendor-affiliation claim is made; the README states the tool is independent of Dassault Systèmes.
+### Workflow and API
 
-### Localization (G2)
+- `BUILD` is replaced by two durable-worker operations:
+  `POST /api/meshes` (mesh only; an empty fixture is valid) and `POST /api/decks`
+  (requires a compatible reviewed mesh, a non-empty fixture and a valid motion).
+- `PUT /api/meshes/{id}/fixture` stores a validated, deduplicated, deterministically ordered set of
+  instance-qualified labels (`WS-1:15`). `POST /api/meshes/{id}/fixture/edges` resolves a legacy
+  CAD-edge mounting selection to nodes of that known mesh for inspection before saving.
+- `store.submit` validates server-side, so direct API calls cannot bypass the rules: the deck must
+  belong to the same model as the mesh, the mesh compatibility digest must match the saved revision,
+  the fixture must exist, be non-empty and be bound to that mesh digest; a run needs a completed deck
+  for the **exact** saved revision and the fixture hash the deck was prepared with.
+- Mesh identity: `packages/engineering/identity.py` digests only the mesh-determining inputs
+  (dimension/formulation/plane, vertices, analytic edges, face topology with cavity-fill presence,
+  component roles, global and local mesh controls). Material values, motion, contact, thickness and the
+  fixture are excluded, so they reuse the mesh. The worker records the digest of `mesh.json` and the
+  compatibility digest on the job and writes a reviewable `mesh-identity.json` artifact.
+- The deck writer consumes the stored mesh (`deck.write_inp(project, mesh, fixture)`), verifies the
+  mesh digest before writing, and writes `WSFIX` from exactly the saved labels. The run stage re-checks
+  the deck hash and the mesh digest before launching a solver.
 
-- Typed dictionary architecture in `apps/web/src/i18n/` (`ja.ts` source of truth, `en.ts` typed as
-  `Record<TranslationKey, string>`, provider in `index.tsx`).
-- Japanese is the default regardless of `navigator.language`; the choice persists in
-  `localStorage['abaqus-qol.language']`; `document.documentElement.lang` follows it.
-- 330 keys, translated for the application shell, dashboard, all eight workflow stages, material
-  editor, viewport, run diagnostics, results and error/state vocabulary. Locale formatting uses
-  `ja-JP` / `en-US`.
-- Backend vocabulary (job status, worker phase, run mode) is translated for display while the raw
-  value remains in `data-state` and in API payloads. Engineering identifiers, units, element types,
-  file extensions and SHA digests are never translated. Raw solver logs stay in their original form.
-- Language switching re-renders without remounting the workspace, so drafts, selections, the active
-  step and the viewport camera all survive.
-- Two independent completeness gates: `tsc` (type-level) and `npm run test:i18n`.
+### Browser
 
-### UI system (G3)
+- New **Mesh generation** section: **Generate mesh** (no fixture required) and a mesh-ready/stale
+  status with the digest.
+- New **Fixed nodes (WSFIX)** section on the mesh stage: a **Fixed-node box mode** toggle, rectangle
+  operation **Replace / Add / Subtract**, **Clear selection**, a live node count and source,
+  **Save fixed nodes**, and **Resolve N old mounting edges to nodes** for editable legacy models.
+- The viewport gained rectangular node selection: left drag selects when armed, Shift+drag and the
+  secondary buttons pan, the wheel zooms, and the rectangle is drawn as an overlay. Selection is
+  computed from projected mesh nodes with the active camera, so pan/zoom and high-DPI coordinates map
+  correctly; rigid-panel nodes and reference points can never be selected, and a rectangle never
+  expands to a CAD edge. Saved nodes stay highlighted after save, reload and language switch.
+- New **Input deck** section (**Prepare input deck**, deck status, inspect link) available on the mesh
+  and review stages; submission is enabled only for the exact revision, mesh and fixture.
+- Workflow indicators now distinguish *mesh required*, *mesh inputs changed*, *fixture required*,
+  *fixture reviewed* and *input ready*, and each incomplete or blocked step explains itself through
+  `title` and the status bar.
+- Japanese and English dictionaries were extended (391 keys in both).
 
-- `apps/web/src/theme/tokens.css` centralizes the palette, type scale, radii, spacing, focus ring and
-  Japanese-capable font stack. Contrast ratios are computed and documented in the file header.
-- 28+ duplicated literals in `style.css` migrated to tokens. Fifteen near-duplicate muted greys were
-  consolidated onto `--color-text-muted`; one of them (`#667c84`, 4.39:1) failed WCAG AA.
-- Base line height raised to 1.55 for Japanese; wide letter-spacing is now restricted to Latin text via
-  `:lang(ja)`; the smallest labels were raised (12.2 px → 12.6 px, labels 13.1 px → 13.4 px).
-- Non-colour status cues: workflow steps carry a check/lock/circle icon plus a screen-reader suffix;
-  job badges keep the machine status in `data-status` and `title`.
-- `NumberInput` was rewritten as draft-then-commit. The previous `key={value}` + `defaultValue`
-  implementation remounted on every committed value, silently discarding in-progress typing and focus.
-  The new field commits on Enter or blur, restores on Escape, and reports `aria-invalid` with a linked
-  message and range hint.
-- Primary/secondary/danger hierarchy preserved; blocked actions expose the reason through `title`.
+### Verification
 
-### Frontend architecture (G4)
+| Gate | Command | Result |
+|---|---|---|
+| Python tests | `.\.venv\Scripts\python.exe -m pytest -q` | **54 passed**, 1 skipped (opt-in ODB fixture) |
+| Translation completeness | `npm --prefix apps/web run test:i18n` | **391 keys** in ja and en |
+| TypeScript | `npm --prefix apps/web run typecheck` | pass |
+| Production build | `npm --prefix apps/web run build` | pass |
+| Browser end to end | `npm --prefix apps/web run test:browser` | **19 passed** |
+| API contract | `scripts/schema.py` | regenerated (`/api/meshes`, `/api/decks`, fixture, `deck` field) |
 
-- `Workspace.tsx` responsibilities were separated into cohesive modules instead of a bulk file move:
-  `features/workspace/WorkflowNavigation.tsx`, `features/workspace/AssemblyTree.tsx`,
-  `features/workspace/workflowStates.ts`, `features/materials/MaterialEditor.tsx`,
-  `features/mesh/meshQuality.ts`, `features/mesh/MeshReview.tsx`,
-  `shared/components/{NumberInput,Facts}.tsx`.
-- Workflow completion is derived from the saved engineering configuration (roles assigned, every region
-  has a material, a mounting edge exists, motion is valid, a build completed, runs exist, results
-  exist) instead of "the step was visited". Missing prerequisites mark dependent steps as blocked.
-- Polling is now adaptive: 1400 ms while any job is non-terminal, 10 s when everything is finished.
-- The VTK renderer is not recreated when the language changes (translation is read through a ref), so
-  camera state is preserved.
+New automated coverage:
 
-### Materials (G5)
+- `tests/test_fixture.py` (9): deck blocked until nodes are selected; unknown/rigid/foreign/malformed
+  labels rejected; duplicate labels deduplicated and ordered; a partial mounting-edge patch written to
+  `WSFIX` with neighbouring nodes absent; motion and friction edits reuse the mesh while a stale deck
+  cannot submit; a remesh changes the digest and invalidates the fixture; cross-model mesh and fixture
+  binding rejected; legacy edge resolution saved and reopened; historical runs and artifacts survive;
+  the result header carries the reviewed fixture.
+- `apps/web/tests/fixture.spec.ts` (4): box selection after pan and zoom with add/subtract/clear;
+  whole-model selection excluding rigid nodes; exact `WSFIX` comparison against the saved labels from
+  the generated INP; save/reload highlighting; motion reuse and remesh invalidation; high-DPI
+  (`deviceScaleFactor: 2`) selection; Japanese/English switch with an in-progress selection.
+- `tests/test_geometry.py` and `tests/test_abaqus.py` gained mesh-identity and corrected-CSV checks.
 
-- Full card workflow: list, select, create, duplicate, rename, colour, model switch, edit, delete with
-  a reference guard (blocked while any region uses the card, with the reason in the tooltip).
-- Linear elastic: density, Young's modulus, Poisson's ratio, colour, name.
-- Hyperfoam: editable uniaxial test-data table with add/remove row, three-column paste, and a chart.
-- Validation: finite values, density > 0, E > 0, −1 < ν < 0.5, at least three samples. Errors block
-  saving; engineering advice (non-monotonic axial strain, |lateral| > |axial|) is a separate warning.
-- Versioning is unchanged and verified: the server increments `version` only on a real data
-  difference; historical revisions keep their values; an unassigned card is not written to the deck.
+### Licensed evidence
 
-### Geometry and mesh (G6)
+One licensed Abaqus/Standard 2024 door-only case was run through this exact path (18-node box-selected
+patch, 42.3 s, contact reached). `WSFIX` matched the saved selection set-for-set, all selected nodes
+were held at floating-point zero across 26 frames, and the RP attained −6.0 mm. Full identifiers,
+hashes and tolerances are in
+[engineering-validation.md](engineering-validation.md#licensed-execution-record--mesh-first-fixture-2026-11-21).
 
-- Mesh review now reports measured values only: node/element counts, counts by element type,
-  per-region element counts, boundary edge divisions, shortest/longest element edge and the worst
-  longest/shortest edge ratio within one element. Inverted/degenerate elements cannot appear because
-  the mesher rejects them, and the UI says so rather than showing a score. No synthetic quality metric
-  was introduced.
-- The review step states explicitly that a successful mesh is not proof of analysis readiness.
+### Follow-up defects fixed here
 
-### Results (G9)
+- `history.csv` put the projected total in `panel_total_RF2_N`. The signed global `RF2` meaning is
+  restored there, and the projected value has its own `closing_total_force_N` column.
+- History projection now requires only the components the closing direction uses, so an X-only
+  direction does not depend on `U2`/`RF2`.
+- An empty history no longer crashes the results view's sample matching.
 
-- Added a variable selector (U, with unavailable outputs listed separately) and a component selector
-  (magnitude, |U1|, |U2|, |U3|). Components are contoured by absolute value while the probe reports the
-  signed value, so a ramp is never mistaken for a signed field.
-- Missing variables display as unavailable, never as zero. Instance-qualified probe identity is
-  unchanged. Provenance (DEMO vs solver) is shown in the results panel.
-- The force–displacement plot keeps signed RF2, units and the active frame marker.
+## A. Scope actually completed
 
-### Reliability (G10)
+The milestone brief lists nine items. This increment deliberately completes and verifies
+items **1, 2 and 8** end to end, and left items **3, 4, 5, 6 and 7** unstarted rather than
+half-implemented. Item 5 was subsequently delivered in section A0. The blockers for the rest are listed
+in section E. The [working-tree handoff](../agent.md) maps those items to code, acceptance checks and follow-up defects found during review.
 
-- Unknown-worker state remains non-resubmissible by design; recovery and safe-shutdown procedures are
-  documented in `docs/migration-and-recovery.md`.
-- The data-root resolution was refactored into an explicit, tested precedence function. No schema change
-  and no destructive migration was introduced.
+### 1. Windows entry point and product logo — DONE
 
-### Release engineering (G11)
+- `start-abaqus-qol.cmd` is now a bootstrap that locates Python 3.11+ and delegates to
+  `scripts/serve.py`. It never requires an execution-policy change, quotes every path (spaces are
+  supported), and inherits `SEAL_DATA`, `SEAL_ODA`, `SIMPLIFY_ABAQUS_LAUNCHER` and their
+  `ABAQUS_QOL_*` aliases unchanged.
+- If no Python 3.11+ is found the launcher prints the exact installation and manual-setup commands and
+  pauses so a double-click user can read them.
+- `scripts/serve.py` now:
+  - prepares the repository `.venv` and the pinned dependencies when missing (import probe, then
+    `pip install -r requirements.txt`), and builds the browser bundle when `node_modules` or `dist` is
+    missing or older than the sources;
+  - reports which interpreter it uses;
+  - identifies a live instance through `GET /api/health`
+    (`{"product": "Abaqus QOL", "status": "ready", "version", "pid", "started"}`), and a second launch
+    opens that instance instead of starting a second worker;
+  - refuses to start when the port belongs to another application, naming the port and suggesting
+    `--port N+1` (it never kills the other process);
+  - serialises simultaneous launches with `.local/serve.lock`, verifying the owner by health rather than
+    trusting a stale file;
+  - opens the browser only after readiness, and never with `--test-data`/`--no-browser`;
+  - keeps the worker's shutdown behaviour: the stop file is created, then the worker is awaited so its
+    current operation completes.
+- `sys.prefix`, not `sys.executable`, decides whether the project environment is active. On this machine
+  `.venv\Scripts\python.exe` is a shim that relaunches the base image, so an executable-path comparison
+  would loop forever; the bootstrap marker `ABAQUS_QOL_BOOTSTRAP` turns any such loop into a clear
+  message.
+- The header uses the supplied `apps/web/assets/logo.png` (1019 × 331) through a Vite asset import, so
+  production ships a content-hashed file (`dist/assets/logo-DG4MlTUg.png`). It is sized proportionally
+  (129 × 42 CSS px, ratio preserved) on a light chip for contrast against the dark navigation bar, and
+  there is exactly one accessible product name (decorative image plus one screen-reader label).
+  Verified by DOM measurement in Japanese and English.
 
-- `.github/workflows/ci.yml` runs Python tests, the translation gate, typecheck, production build and
-  the Playwright suite on `windows-latest` with `npm ci` and no Abaqus license.
-- `docs/release-checklist.md` records the gates, the supported version matrix and the optional licensed
-  checks.
+### 2. Project grouping with minimal migration — DONE
 
-### Documentation (G12)
+- New `groups(id, name, created)` table; `projects.group_id` links a model to a group. Models are still
+  `projects` rows, so revision, run, artifact and drawing identities are untouched.
+- `store.initialize()` performs the additive migration in one `BEGIN IMMEDIATE` transaction: add the
+  column when absent, then assign every `NULL` model to a single `Imported projects` group created on
+  demand. Repeated or interrupted starts converge; a second start creates nothing new.
+- API: `GET /api/groups` (groups with their models), `POST /api/groups`,
+  `POST /api/projects/{id}/duplicate` (a new model in the same group),
+  `GET /api/projects/{id}/revisions`. Creating a model with an unknown group returns 404. Job
+  duplication keeps the model's group.
+- Dashboard: **New project** now creates a project group plus its first model in one action (the model
+  name defaults to the project name), and each group header has **New model**. Each model offers
+  **Revisions** (inline history) and **Duplicate model**. The hint text states the difference between a
+  group and a model, and the workspace breadcrumb shows `Projects › group › model › revision`.
+- `Revision` also carries `group`/`group_name` so the workspace can show it without another request.
+- Contract regenerated (`scripts/schema.py`); `generated.ts` has no manual edits.
 
-- New: `docs/user-guide-ja.md`, `docs/user-guide-en.md`, `docs/architecture.md`,
-  `docs/engineering-validation.md`, `docs/migration-and-recovery.md`, `docs/release-checklist.md`,
-  `docs/implementation-report.md`.
-- Rewritten: `README.md` (concise, bilingual pointers, DEMO-vs-Abaqus table, configuration precedence).
-- Updated: `docs/engineering.md` (storage/config precedence, material card rules, mesh metrics,
-  verification record).
-- No screenshots are referenced, because none are checked in; the guides describe the actual labels.
+### 8. Door response as the default plot, with export of the displayed curve — DONE
 
-### Bugs fixed
+- The deck now requests `U1, U2, RF1, RF2` at the panel reference point (previously `U2, RF2`).
+- `result-metadata.json` gains a `closing` block (panel, instance, reference label, normalized direction,
+  distance, "measure from step start", ordered step roles).
+- `interchange.align_histories` aligns all four components on the common time domain per step and adds
+  `step`, `u1`, `u2`, `rf1`, `rf2`, plus the projected `displacement` and `force`. Travel is measured
+  from the first sample of the closing step so a later closing step reports closing displacement, not
+  assembly travel.
+- `results.json` keeps version 1 and every previous field; `history.csv` adds `step`, `panel_U1_mm`,
+  `panel_RF1_N`, `closing_displacement_mm`, `closing_force_<unit>` and keeps the old columns.
+- Results page: **Door response** is the default chart, opening on the closing step; sample-to-frame
+  matching uses step identity as well as time; **Reverse X sign** and **Reverse Y sign** transform both
+  the chart and the client-side **Export displayed curve** CSV; the unmodified artifact stays available
+  through **Download history CSV**. The exported CSV carries panel, instance, closing step, direction,
+  units, both signs, normalization and DEMO/ABAQUS provenance in `#` lines, then the displayed values and
+  the raw signed components.
+- Legacy artifacts (history rows without `u1/u2/rf1/rf2`) still open, keep their original U2/RF2 meaning,
+  and the UI says the projected response is unavailable for them.
+- The DEMO generator's sign convention was corrected after measuring the solver: Abaqus reports
+  `RF2 < 0` while the seal resists, so the projected closing force is positive. A regression test and a
+  browser test now lock that convention.
 
-1. `NumberInput` remounted on every committed value, discarding in-progress typing and focus.
-2. Fifteen muted text colours, one of which (4.39:1) failed WCAG AA, were replaced by a verified token.
-3. The active workflow step rendered an "unconfigured" icon even when it was configured.
-4. Negative lookups: the language selector's accessible name changed with the language, so a
-   name-based locator became stale mid-test (fixed in tests; the UI itself was correct).
-5. The dashboard, workspace and run view polled finished jobs every 1.2–1.4 s indefinitely.
+**Subsequent artifact review.** The single-step displayed curve has the recorded projection. In the
+stored CSV, the column named `panel_total_RF2_N` also receives this projection; use
+`panel_RF2_N` for the signed global reaction in this run. The [handoff](../agent.md) describes
+the compatibility fix and remaining missing-history and multi-step checks.
 
-## B. File change summary
+## B. Verification
 
-### Added
+### Automated gates (all executed locally)
 
-| File | Reason |
+| Gate | Command | Result |
+|---|---|---|
+| Python tests | `.\.venv\Scripts\python.exe -m pytest -q` | **43 passed**, 1 skipped (installed-runtime ODB fixture, opt-in) |
+| Translation completeness | `npm --prefix apps/web run test:i18n` | **349 keys** in ja and en |
+| TypeScript | `npm --prefix apps/web run typecheck` | pass |
+| Production build | `npm --prefix apps/web run build` | pass (chunk-size warning only) |
+| API contract | `.\.venv\Scripts\python.exe scripts\schema.py` | regenerated, no manual diff |
+| Browser end to end | `npm --prefix apps/web run test:browser` | **15 passed** |
+
+New tests in this increment:
+
+- `tests/test_grouping.py` (4): group with 2D+3D models and same-group duplicate; unknown group rejected;
+  newest-first revision history; **populated legacy database** migrated twice without losing revision,
+  run, artifact-list or original-drawing access, and without creating a second group; artifact directory
+  path unchanged after renaming a group.
+- `apps/web/tests/groups.spec.ts` (2): create a group with its first model, add a sibling model, browse
+  revisions, duplicate inside the group; an in-progress region selection and edit survive a ja/en switch.
+- `apps/web/tests/curve.spec.ts` (1): default door-response chart, projected travel/force signs, raw
+  components retained, both sign toggles mirrored in the export, raw artifact untouched, and the
+  historical run reopens after a later model edit.
+
+### Manual entry-point checks
+
+| Check | Result |
 |---|---|
-| `apps/web/src/i18n/{ja.ts,en.ts,index.tsx}` | Typed localization with compile-time completeness |
-| `apps/web/src/theme/tokens.css` | Central design tokens with computed contrast |
-| `apps/web/src/shared/components/NumberInput.tsx` | Correct draft/commit numeric editing |
-| `apps/web/src/shared/components/Facts.tsx` | Extracted presentational list |
-| `apps/web/src/shared/hooks/polling.ts` | Adaptive polling cadence |
-| `apps/web/src/features/workspace/{WorkflowNavigation.tsx,AssemblyTree.tsx,workflowStates.ts}` | Workspace responsibility split |
-| `apps/web/src/features/materials/MaterialEditor.tsx` | Material card editor + validation |
-| `apps/web/src/features/mesh/{meshQuality.ts,MeshReview.tsx}` | Measured mesh metrics and review UI |
-| `apps/web/scripts/check-translations.mjs` | Independent translation-completeness gate |
-| `apps/web/tests/{fixtures.ts,i18n.spec.ts,materials.spec.ts}` | English-selecting fixture, localization and material tests |
-| `tests/test_configuration.py` | Product identity and configuration precedence |
-| `.github/workflows/ci.yml` | Automated quality gates |
-| `start-abaqus-qol.cmd` | Startup without PowerShell execution-policy changes |
-| `docs/user-guide-ja.md`, `docs/user-guide-en.md`, `docs/architecture.md`, `docs/engineering-validation.md`, `docs/migration-and-recovery.md`, `docs/release-checklist.md`, `docs/implementation-report.md` | Documentation set |
+| `start-abaqus-qol.cmd --prepare` | “environment and browser bundle are ready”, exit 0 |
+| `start-abaqus-qol.cmd --no-browser --port 8897` | ready; `/api/health` returns the product identity |
+| Second launch on a live port | “already running … Opening it”, exit 0 |
+| Port owned by an unrelated HTTP server | “port 8898 is used by another application … --port 8899”, exit 1, other process untouched |
+| Header logo, ja and en | 129 × 42 px from the bundled hashed asset, one accessible name |
 
-### Modified
+### Licensed execution
 
-| File | Reason |
+One small, isolated, authorized Abaqus/Standard 2024 door-only closing case was executed from the normal
+workflow (API → worker → launcher → ODB extraction), on the synthetic hollow-bulb section. Full values,
+hashes and tolerances are in `docs/engineering-validation.md`.
+
+Summary: solver and extraction both `Succeeded`; 47 increments; `THE ANALYSIS HAS COMPLETED
+SUCCESSFULLY`; 26 frames in one `Closing` step; `WSFIX` held 13 nodes at floating-point zero displacement
+in every frame; panel RP `U2` went 0 → −6.0 mm monotonically; first contact at 1.92 mm travel against a
+reported geometric clearance of 1.80 mm (within one 0.24 mm output interval); final `RF2` −0.3335 N and
+projected closing force +0.3335 N; the exported CSV matched `closing_force = −RF2` and
+`closing_displacement = −U2` exactly. The `analysis.inp` SHA-256 matched the recorded `input_hash`.
+
+## C. Backward compatibility
+
+- **Storage**: same directory, same file layout. `groups` and `projects.group_id` are additive.
+- **Revisions and runs**: identities, URLs and artifact names unchanged. A legacy model opens, its runs
+  list, its original drawing downloads, and a sibling model in the same group is unaffected.
+- **Result artifacts**: `results.json`, `history.csv` and `frame-NNNNN.json` keep version 1 and all
+  previous fields; new fields are additive. Old runs remain viewable and exportable with their original
+  meaning.
+- **Configuration**: alias precedence unchanged (`SEAL_DATA` > `ABAQUS_QOL_DATA`, etc.).
+- **Worker**: durable queue, ownership/heartbeat, cancellation tree-kill and extraction-only retry are
+  unchanged; only the startup path around them changed.
+- **Rollback**: stop the services, restore the previous directory copy if desired, check out `b250789`.
+  The previous build ignores the extra table and column, so it also runs against a migrated database.
+
+## D. Files changed
+
+Added: `tests/test_grouping.py`, `apps/web/tests/groups.spec.ts`, `apps/web/tests/curve.spec.ts`,
+`apps/web/src/assets.d.ts`.
+
+Modified: `start-abaqus-qol.cmd`, `scripts/serve.py`, `services/store.py`, `services/api/main.py`,
+`services/api/contracts.py`, `integrations/abaqus/{interchange,results,extract_odb,deck}.py`,
+`apps/web/src/{main,Dashboard,Workspace,RunView,api,style}.tsx/ts/css`, `apps/web/src/i18n/{ja,en}.ts`,
+`apps/web/src/generated.ts` (regenerated), `apps/web/tests/curve.spec.ts`, `tests/test_abaqus.py`,
+`docs/{architecture,engineering-validation,migration-and-recovery,release-checklist,user-guide-ja,
+user-guide-en,implementation-report}.md`.
+
+Removed: nothing.
+
+## E. Remaining blockers, reported separately
+
+### DWG conversion
+
+- **Gap:** no ODA-compatible converter is installed on this machine, so no genuine DWG was converted and
+  the converted geometry, units, layers, curves and profiles were not inspected. `GET /api/capabilities`
+  reports `DWG converter not configured`, and the UI shows it.
+- **Continues with:** DXF, which is exercised end to end (import → roles → material → mesh → deck).
+- Nothing proprietary was fetched or redistributed.
+
+### Licensed execution
+
+- Executed: one door-only closing case that reaches contact (recorded above).
+- **Not executed and not implementable yet:** body-then-door two-step closing, oblique motion, reversed
+  profile and per-pair friction — items 6 and 7 are not implemented, so there is nothing to validate.
+- No solver diagnostics anomaly was observed; `analysis.msg`/`analysis.dat` were inspected for errors.
+
+### Physical correlation
+
+- **BLOCKED.** No trusted reference curve and no agreed engineering tolerance are available. The
+  clearance-versus-contact-onset agreement is a self-consistency check, not correlation. No claim of
+  engineering accuracy is made.
+
+### Not started from the brief
+
+| Item | State |
 |---|---|
-| `apps/web/src/main.tsx` | Product name, `<I18nProvider>`, language selector, translated labels |
-| `apps/web/src/Dashboard.tsx` | Localized, translated status badges, adaptive polling |
-| `apps/web/src/Workspace.tsx` | Localized, extracted components, material editor, mesh review, guarded save |
-| `apps/web/src/RunView.tsx` | Localized, variable/component selector, provenance, adaptive polling |
-| `apps/web/src/Viewport.tsx` | Localized, component contouring, camera preserved across language change |
-| `apps/web/src/viewportModel.ts` | `resultComponent`/`resultLabel` support |
-| `apps/web/src/api.ts` | Removed English-only `date`/`demoNotice` (now locale-aware in i18n) |
-| `apps/web/src/style.css` | Token migration, Japanese typography, new component styles |
-| `apps/web/index.html` | `lang="ja"`, title `Abaqus QOL`, description |
-| `apps/web/package.json`, `package-lock.json` | Package renamed to `abaqus-qol`, `test:i18n` script |
-| `apps/web/tests/{jobs,picking,workflow}.spec.ts` | Use the English-selecting fixture |
-| `services/store.py` | Explicit data-root precedence, legacy directory name, clearer error |
-| `services/api/main.py` | FastAPI title/version |
-| `integrations/abaqus/launcher.py` | Launcher alias with legacy precedence |
-| `integrations/abaqus/deck.py` | Generated heading now reads "Abaqus QOL" |
-| `integrations/drawings.py` | ODA alias |
-| `scripts/serve.py` | Startup identity, alias cleanup in test mode |
-| `README.md`, `docs/engineering.md` | Naming, configuration, verification record |
+| 3. Drawing-role review before region construction | Not started. Requires splitting `import_dxf` into a linework-review phase and a confirmed-region phase, plus profile role selection |
+| 4. Validated material-region partition tool | Not started. Requires a new topology-edit operation with base-revision checking and a cut/commit UI |
+| 5. Mesh independent of fixture selection | **Delivered in this increment** (see A0) |
+| 6. Role-aware arbitrary in-plane panel motion | Not started. Requires a per-panel motion schema, a new mesher/deck path and a two-step analysis with orientation checks |
+| 7. Friction on contact-surface pairs | Not started. Depends on 6 for multiple panels; also needs per-edge exterior surface construction and overlap conflict detection |
 
-### Removed
+## F. Readiness decision
 
-None. No source file, project record, artifact or test was deleted.
+**Selected level: 2 — INTERNAL DEMO READY**, with two verified licensed door-only cases (edge-based
+and mesh-node-selected fixtures).
 
-## C. Test results
-
-Environment: Windows, Python 3.11.4 in `.venv`, Node.js 24.16.0, npm 11.13.0, Edge with WebGL.
-
-| Suite | Command | Passed | Failed | Skipped | Result |
-|---|---|---|---|---|---|
-| Python (baseline, before changes) | `.\.venv\Scripts\python -m pytest -q` | 32 | 0 | 1 | PASS |
-| Python (final) | `.\.venv\Scripts\python -m pytest -q` | 39 | 0 | 1 | PASS |
-| Translation completeness | `npm --prefix apps/web run test:i18n` | 330 keys | 0 | 0 | PASS |
-| TypeScript | `npm --prefix apps/web run typecheck` | — | 0 | — | PASS |
-| Production build | `npm --prefix apps/web run build` | — | 0 | — | PASS (chunk-size warning only) |
-| API contract | `.\.venv\Scripts\python scripts\schema.py` | — | 0 | — | PASS (no diff in `generated.ts`) |
-| Browser (baseline, before changes) | `npm --prefix apps/web run test:browser` | 5 | 0 | 0 | PASS |
-| Browser (final) | `npm --prefix apps/web run test:browser` | 12 | 0 | 0 | PASS |
-
-The single skipped Python test is `tests/test_abaqus.py::test_installed_odb_round_trip`, gated on
-`SIMPLIFY_ABAQUS_TEST_LAUNCHER`. It requires an installed Abaqus runtime and was not available here.
-
-New Python tests: `tests/test_configuration.py` (7 tests: default legacy directory, alias used when
-legacy absent, legacy wins when both set, seed idempotency, launcher alias precedence and diagnostic,
-ODA alias, API title).
-
-New browser tests: `tests/i18n.spec.ts` (6) and `tests/materials.spec.ts` (1).
-
-## D. Check-gate matrix
-
-| Gate | Status | Evidence | Outstanding | Next action |
-|---|---|---|---|---|
-| **G0** Baseline | **PASS** | Clean tree at `160f52f`; 32 Python passed / 1 skipped; typecheck, build and 5/5 browser tests passed before any edit | Baseline recorded as the regression reference | — |
-| **G1** Product identity | **PASS** | Brand, title, API title, startup line, deck heading, package name, docs updated. Legacy directory retained; aliases tested by `tests/test_configuration.py`. No vendor affiliation implied. Remaining `SimplifyAbaqus`/`SIMPLIFY_ABAQUS` matches are intentional legacy compatibility (directory name, env variable names, legacy fixtures in tests) and are documented | None | — |
-| **G2** Localization | **PASS** | 330 keys, ja default, en switch, persistence, form/selection/camera preservation, localized statuses and accessibility labels; two independent completeness gates; Japanese and English browser tests pass; visual check at 1280/1440/1920 showed no clipping | Automated pixel-diff regression is not configured | Optional: add screenshot baselines |
-| **G3** UI/UX | **PASS** (partial automation) | Tokens with computed contrast; AA failure fixed; Japanese typography and line height; non-colour status cues; keyboard focus ring; `NumberInput` validation and disabled reasons. No automated axe-core run | No axe-core run; no automated visual regression | Add `@axe-core/playwright` and screenshot baselines |
-| **G4** Frontend architecture | **PASS** | Responsibilities split into cohesive modules; single source of truth for draft vs saved state; picking tests pass; no new framework; adaptive polling; camera preserved on language change. No profiling capture was taken | Performance was not profiled with a profiler; conclusions are from behaviour, not measurement | Profile large-geometry and frame-playback paths before further renderer changes |
-| **G5** Materials | **PASS** | Create/duplicate/edit/delete-guard, linear elastic and hyperfoam editors, hard vs warning validation, versions verified against the API, unassigned card excluded from the deck, `8.5, 0.44` and new test rows found in `analysis.inp` | — | — |
-| **G6** Geometry/mesh | **PASS** (scoped) | Existing DXF/Gmsh tests pass unchanged; mesh metrics measured from the produced mesh; review panel displays them; invalid models are still rejected before build | No new synthetic fixtures for nested cavities/self-intersection were added in this phase | Add the fixture matrix listed in the brief |
-| **G7** Abaqus execution | **PASS** (non-licensed) | Deck contract, material/set/mounting/output assertions, launcher argument fixture, completion-evidence and license-diagnosis tests all pass. Input hash and revision provenance unchanged | No licensed execution was performed | Run one authorized closing case |
-| **G8** Physical validation | **BLOCKED** | No licensed runtime and no reference curves/tolerances are available | Reference cases, curves and agreed tolerances are missing | Authorized engineer must supply references and approve tolerances |
-| **G9** Results | **PASS** (scoped) | Displacement magnitude and components render; unavailable outputs listed, never zeroed; signed probe values; units and signs preserved; DEMO/solver provenance shown; CSV unchanged; frame playback test passes | Stress/strain/CPRESS are only listed as unavailable because the extractor publishes no such nodal field | Wire `fields` from the extractor when a validated averaging method exists |
-| **G10** Reliability | **PASS** (no schema change) | API restart, browser closure, worker-disconnect, cancellation, extraction retry and artifact immutability tests pass; schema is still version 1 with idempotent initialization; recovery and shutdown documented | No automated unknown-process-state recovery drill beyond the existing disconnect test | Optionally add a "reconcile unknown job" guided command |
-| **G11** Release automation | **PASS** (workflow authored, not yet executed on GitHub) | `ci.yml` runs all gates on Windows without a license; clean `npm ci` and `pip install -r requirements.lock.txt` used; version matrix documented | The workflow has not run on GitHub Actions from this environment | Push and observe the first CI run |
-| **G12** Documentation | **PASS** | Japanese and English user guides, architecture, validation, migration/recovery, release checklist, report; naming consistent; DEMO separated; limitations accurate | No checked-in screenshots | Add screenshots from the real UI if desired |
-
-## E. Backward compatibility
-
-- **Storage**: unchanged directory (`%LOCALAPPDATA%\SimplifyAbaqus`) and unchanged file layout. A new
-  alias (`ABAQUS_QOL_DATA`) is additive; the legacy variable keeps precedence.
-- **Database**: schema version 1, unchanged. `initialize()` remains idempotent with
-  `CREATE TABLE IF NOT EXISTS`; no migration or destructive step was introduced, so rollback is simply
-  restoring the previous directory copy.
-- **Launcher**: `SIMPLIFY_ABAQUS_LAUNCHER` still works and wins over the alias.
-- **Projects and revisions**: the setup schema is untouched. Material versions are still recomputed
-  server-side from the previous revision; historical revisions are immutable.
-- **Artifacts**: manifest allowlist and download behaviour unchanged. `results.json`,
-  `history.csv` and `frame-NNNNN.json` formats are unchanged, so existing runs remain readable.
-- **API contract**: `generated.ts` regenerated with no diff; no endpoint or payload changed.
-- **Rollback**: stop the services, restore the previous directory copy, check out the previous commit.
-  No data conversion has to be undone.
-
-## F. Engineering limitations
-
-- 2D plane stress only. 3D remains a preview and cannot be submitted.
-- Elements are CPS3 / CPS4R with one R2D2 rigid panel; contact is hard with Coulomb friction along Y.
-- **No real licensed Abaqus solve was executed in this phase.** No reference force curve, contact-onset
-  comparison, mesh-convergence study or time-step sensitivity result exists.
-- Stress, strain and contact-pressure fields are not visualised: the extractor publishes no validated
-  nodal averaging for them, and the UI lists them as unavailable rather than inventing values.
-- Mesh metrics are geometric measurements of the produced mesh, not a solver-verified quality score.
-- DEMO output is synthetic and is labelled as such in the dashboard, run banner, result page, legend,
-  CSV and metadata.
-- Backend error strings remain in English (diagnostic detail); only their surrounding labels and
-  vocabulary are localized.
-
-## G. Production readiness
-
-**Selected level: 2 — INTERNAL DEMO READY.**
-
-Justification:
-
-- The internal demo path is fully exercised: project creation, DXF import, role/material/mounting
-  entry, revision immutability, build, DEMO run, diagnostics, results, CSV download, restart and reopen.
-  All automated gates pass (39 Python + 12 browser + translation + typecheck + build).
-- Localization, branding, material editing, mesh review and result inspection are complete and tested.
-- Level 3 (controlled internal pilot) is withheld because no licensed Abaqus solve has been executed
-  from this environment and no engineering comparison exists; a pilot would expose users to unvalidated
-  physical results.
-- Level 4 (engineering production) must not be selected: gate G8 is BLOCKED and the brief forbids it
-  without authorized validation evidence.
+- The internal path is fully exercised: create a project group, add 2D/3D models, import a DXF, assign
+  roles/materials/motion, save revisions, generate a mesh, box-select the fixed WS nodes, prepare the
+  deck, run DEMO or ABAQUS, inspect diagnostics, read the projected door response, export the displayed
+  curve, reopen historical runs.
+- Level 3 (controlled pilot) is still withheld: drawing-role review, partitioning, two-panel motion and
+  per-pair friction are not implemented, no reference correlation exists, and no tolerance has been
+  agreed.
+- **3D is not ready.** The 3D extrusion remains a preview; grouping 3D models is supported, but 3D
+  solving, meshing and deck generation remain deferred until the 2D workflow is complete and validated.

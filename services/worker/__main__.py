@@ -24,6 +24,7 @@ from services import store
 KNOWN_FILES = {
     "setup.json",
     "mesh.json",
+    "mesh-identity.json",
     "analysis.inp",
     "analysis.odb",
     "analysis.dat",
@@ -146,25 +147,69 @@ def perform(row, owner):
             imported = engineering.import_dxf(source, setup.name, metadata["units"])
             imported.source.filename = metadata["filename"]
             fields.update(solver="Succeeded", extraction="Succeeded", phase="Drawing imported")
-        elif row["mode"] == "BUILD":
+        elif row["mode"] == "MESH":
             mesh = engineering.generate_mesh(setup)
             (directory / "mesh.json").write_text(store.encoded(mesh), encoding="utf-8")
-            inp = deck.write_inp(setup, mesh)
+            mesh_digest = store.digest(directory / "mesh.json")
+            compat = engineering.mesh_compat(setup)
+            (directory / "mesh-identity.json").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "digest": mesh_digest,
+                        "compat": compat,
+                        "revision": row["revision"],
+                        "inputs": engineering.mesh_inputs(setup),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            checkpoint(jid)
+            fields.update(
+                solver="Succeeded",
+                extraction="Succeeded",
+                phase="Mesh ready",
+                mesh_digest=mesh_digest,
+                mesh_compat=compat,
+            )
+        elif row["mode"] == "DECK":
+            mesh_row = store.job(row["mesh"])
+            shutil.copyfile(store.job_dir(row["mesh"]) / "mesh.json", directory / "mesh.json")
+            mesh_digest = store.digest(directory / "mesh.json")
+            if not mesh_row["mesh_digest"] or mesh_digest != mesh_row["mesh_digest"]:
+                raise ValueError("The stored mesh does not match its recorded digest.")
+            if mesh_row["mesh_compat"] != engineering.mesh_compat(setup):
+                raise ValueError(
+                    "The mesh was generated for different mesh inputs. Generate the mesh again."
+                )
+            review = mesh_row["fixture"]
+            if not review or not review["labels"]:
+                raise ValueError(
+                    "Select the fixed weatherstrip nodes before preparing the input deck."
+                )
+            mesh = json.loads((directory / "mesh.json").read_text(encoding="utf-8"))
+            inp = deck.write_inp(setup, mesh, review["labels"])
             (directory / "analysis.inp").write_text(inp, encoding="utf-8")
-            results.write_metadata(setup, mesh, directory)
+            results.write_metadata(setup, mesh, directory, review["labels"])
             checkpoint(jid)
             fields.update(
                 solver="Succeeded",
                 extraction="Succeeded",
                 phase="Input ready",
                 input_hash=store.digest(directory / "analysis.inp"),
+                mesh_digest=mesh_digest,
+                fixture_hash=review["hash"],
             )
         elif not extracting:
-            build = store.job_dir(row["build"])
+            prepared = store.job_dir(row["build"])
             for name in ("mesh.json", "analysis.inp", "result-metadata.json"):
-                shutil.copyfile(build / name, directory / name)
+                shutil.copyfile(prepared / name, directory / name)
             if store.digest(directory / "analysis.inp") != row["input_hash"]:
-                raise ValueError("Input hash differs from the reviewed build.")
+                raise ValueError("Input hash differs from the reviewed deck.")
+            if row["mesh_digest"] and store.digest(directory / "mesh.json") != row["mesh_digest"]:
+                raise ValueError("Mesh digest differs from the reviewed deck.")
             store.update(
                 jid, owner, solver="Running", phase="Panel closing", manifest=manifest(directory)
             )
@@ -206,6 +251,12 @@ def perform(row, owner):
             if previous_index.exists():
                 previous_index.rename(directory / ("prior-index-" + store.new_id() + ".json"))
             mesh = json.loads((directory / "mesh.json").read_text(encoding="utf-8"))
+            metadata_path = directory / "result-metadata.json"
+            fixture_labels = None
+            if metadata_path.is_file():
+                fixture_labels = (
+                    json.loads(metadata_path.read_text(encoding="utf-8")).get("fixture") or {}
+                ).get("nodes")
             if row["mode"] == "DEMO":
                 if (
                     row["scenario"] == "extraction_failure"
@@ -215,9 +266,9 @@ def perform(row, owner):
                     raise ValueError(
                         "Requested one-time extraction failure. Retry extraction to recover."
                     )
-                results.write_demo(setup, mesh, directory)
+                results.write_demo(setup, mesh, directory, fixture_labels)
             else:
-                results.write_metadata(setup, mesh, directory)
+                results.write_metadata(setup, mesh, directory, fixture_labels)
                 code = monitor(
                     jid,
                     owner,

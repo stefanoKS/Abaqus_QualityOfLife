@@ -96,22 +96,18 @@ button.primary:hover:not(:disabled) {
 .brand-name {
   white-space: nowrap;
 }
-.brand strong {
-  font-weight: 700;
-}
-.brand-icon {
-  background: #4dc5a7;
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
+/* Wide 1019 × 331 wordmark. Fixed height keeps the 3.08:1 ratio and a light
+   chip supplies contrast against the dark navigation bar. */
+.brand-logo {
+  height: 42px;
+  width: auto;
+  display: block;
+  background: #fff;
   border-radius: 7px;
-  color: #123d35;
+  padding: 3px 9px;
 }
-.brand-icon svg {
-  width: 24px;
-  height: 24px;
-  stroke-width: 2;
+.topbar .brand:hover {
+  background: none;
 }
 .nav-separator {
   height: 26px;
@@ -1144,4 +1140,113 @@ input[type='color'] {
   height: 14px;
   flex: none;
   margin-top: 2px;
+}
+
+/* Project groups: a group holds several named models. */
+.group-list {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 26px;
+}
+.group-card {
+  padding: 14px 16px 8px;
+}
+.group-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.group-heading strong {
+  display: block;
+  font-size: 1rem;
+}
+.group-heading small {
+  color: var(--color-text-muted);
+  font-size: var(--text-meta);
+}
+.group-symbol {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--color-surface-sunken);
+  color: var(--color-primary);
+}
+.group-symbol svg {
+  width: 19px;
+  height: 19px;
+}
+.group-card .project-cards {
+  margin: 12px 0 6px;
+}
+.model-entry {
+  display: grid;
+  gap: 6px;
+}
+.model-tools {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.model-tools button {
+  font-size: var(--text-meta);
+  padding: 0.35rem 0.55rem;
+}
+.revision-list {
+  display: grid;
+  gap: 4px;
+  padding: 4px 0;
+}
+.revision-list button {
+  justify-content: space-between;
+  font-weight: 500;
+}
+.revision-list small {
+  color: var(--color-text-muted);
+}
+.create-form {
+  flex-wrap: wrap;
+}
+.create-form.inline {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: var(--color-surface-muted);
+}
+.create-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-meta);
+}
+.empty-line {
+  color: var(--color-text-muted);
+  font-size: var(--text-meta);
+  margin: 10px 0 6px;
+}
+.sign-controls {
+  display: flex;
+  gap: 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin: 10px 0;
+}
+.sign-controls legend {
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+  padding: 0 4px;
+}
+
+/* Fixed-node fixture review. */
+.fixture-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 10px 0 6px;
+}
+.fixture-actions button {
+  flex: 1;
 }

@@ -4,6 +4,9 @@ export type Revision = components['schemas']['Revision']
 export type Project = Revision['setup']
 export type Job = components['schemas']['Job']
 export type Summary = components['schemas']['Summary']
+export type Group = components['schemas']['GroupSummary']
+export type RevisionSummary = components['schemas']['RevisionSummary']
+export type FixtureInfo = components['schemas']['FixtureInfo']
 
 export async function request<T>(
   path: string,

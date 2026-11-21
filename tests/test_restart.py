@@ -52,14 +52,27 @@ def test_api_process_restart_with_external_worker(tmp_path):
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as http:
             project = wait(lambda: http.get("/api/projects").json())[0]
             base = {"revision": project["revision"], "token": str(uuid4())}
-            build = http.post("/api/builds", json=base).raise_for_status().json()
-            wait(lambda: http.get("/api/jobs/" + build["id"]).json()["status"] == "Completed")
+            mesh = http.post("/api/meshes", json=base).raise_for_status().json()
+            wait(lambda: http.get("/api/jobs/" + mesh["id"]).json()["status"] == "Completed")
+            labels = (
+                http.post("/api/meshes/" + mesh["id"] + "/fixture/edges", json={})
+                .raise_for_status()
+                .json()["labels"]
+            )
+            http.put(
+                "/api/meshes/" + mesh["id"] + "/fixture", json={"labels": labels}
+            ).raise_for_status()
+            deck = http.post(
+                "/api/decks",
+                json={"revision": project["revision"], "token": str(uuid4()), "mesh": mesh["id"]},
+            ).raise_for_status().json()
+            wait(lambda: http.get("/api/jobs/" + deck["id"]).json()["status"] == "Completed")
             body = {
-                **base,
+                "revision": project["revision"],
                 "token": str(uuid4()),
                 "name": "Restart proof",
                 "mode": "DEMO",
-                "build": build["id"],
+                "deck": deck["id"],
             }
             run = http.post("/api/runs", json=body).raise_for_status().json()
             server.terminate()

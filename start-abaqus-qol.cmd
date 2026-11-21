@@ -1,30 +1,59 @@
 @echo off
 rem Abaqus QOL launcher for Windows.
 rem
-rem This batch file is an alternative to running scripts\serve.py from PowerShell,
-rem so a machine with a restrictive execution policy can still start the workbench.
-rem Any configuration such as SEAL_DATA or SIMPLIFY_ABAQUS_LAUNCHER set in the
-rem environment before this file is called is inherited unchanged.
+rem Double-click this file (or call it with optional flags such as --port 8766).
+rem It prepares the repository-local Python environment and browser bundle when
+rem Python 3.11+ and Node.js are installed, starts the workbench and worker,
+rem waits for /api/health, and opens the default browser. A second launch reuses
+rem an instance that is already running instead of starting another worker.
+rem Any configuration set in the environment (SEAL_DATA, SEAL_ODA,
+rem SIMPLIFY_ABAQUS_LAUNCHER and their ABAQUS_QOL_* aliases) is inherited.
+rem A restrictive PowerShell execution policy does not affect this file.
 
 setlocal
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
-if not exist "%ROOT%.venv\Scripts\python.exe" (
-  echo Abaqus QOL: the Python environment is missing.
-  echo Create it once from this folder:
-  echo     py -3.11 -m venv .venv
-  echo     .\.venv\Scripts\python -m pip install -r requirements.txt
-  exit /b 1
+if exist "%ROOT%.venv\Scripts\python.exe" (
+  "%ROOT%.venv\Scripts\python.exe" "%ROOT%scripts\serve.py" %*
+  exit /b %ERRORLEVEL%
 )
 
-if not exist "%ROOT%apps\web\dist\index.html" (
-  echo Abaqus QOL: the browser build is missing.
-  echo Build it once from this folder:
-  echo     npm --prefix apps/web ci
-  echo     npm --prefix apps/web run build
-  exit /b 1
+rem No repository environment yet. Find a bootstrap interpreter once; serve.py
+rem creates .venv, installs the pinned dependencies and builds the bundle.
+where py >nul 2>nul
+if not errorlevel 1 (
+  py -3.11 -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,11) else 1)" >nul 2>nul
+  if not errorlevel 1 (
+    py -3.11 "%ROOT%scripts\serve.py" %*
+    exit /b %ERRORLEVEL%
+  )
+  py -3 -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,11) else 1)" >nul 2>nul
+  if not errorlevel 1 (
+    py -3 "%ROOT%scripts\serve.py" %*
+    exit /b %ERRORLEVEL%
+  )
 )
 
-"%ROOT%.venv\Scripts\python.exe" "%ROOT%scripts\serve.py" %*
-exit /b %ERRORLEVEL%
+where python >nul 2>nul
+if not errorlevel 1 (
+  python -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,11) else 1)" >nul 2>nul
+  if not errorlevel 1 (
+    python "%ROOT%scripts\serve.py" %*
+    exit /b %ERRORLEVEL%
+  )
+)
+
+echo.
+echo Abaqus QOL: Python 3.11 or newer was not found.
+echo Install Python from https://www.python.org/downloads/ and tick
+echo "Add python.exe to PATH", then run this file again.
+echo.
+echo Alternatively create the environment once from this folder:
+echo     py -3.11 -m venv .venv
+echo     .\.venv\Scripts\python -m pip install -r requirements.txt
+echo     npm --prefix apps/web ci
+echo     npm --prefix apps/web run build
+echo.
+pause
+exit /b 1

@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/api/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Health
+         * @description Identifiable readiness probe used by the launcher and instance reuse.
+         */
+        get: operations["health_api_health_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/capabilities": {
         parameters: {
             query?: never;
@@ -15,6 +35,24 @@ export interface paths {
         get: operations["capabilities_api_capabilities_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Groups */
+        get: operations["groups_api_groups_get"];
+        put?: never;
+        /** Create Group */
+        post: operations["create_group_api_groups_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -33,6 +71,43 @@ export interface paths {
         put?: never;
         /** Create */
         post: operations["create_api_projects_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Revision History */
+        get: operations["revision_history_api_projects__pid__revisions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Duplicate Model
+         * @description Copy the current model into a new, independent model in the same group.
+         */
+        post: operations["duplicate_model_api_projects__pid__duplicate_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -141,18 +216,73 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/builds": {
+    "/api/meshes": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Builds */
-        get: operations["builds_api_builds_get"];
+        /** Meshes */
+        get: operations["meshes_api_meshes_get"];
         put?: never;
-        /** Build */
-        post: operations["build_api_builds_post"];
+        /** Create Mesh */
+        post: operations["create_mesh_api_meshes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meshes/{jid}/fixture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Save Fixture */
+        put: operations["save_fixture_api_meshes__jid__fixture_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/meshes/{jid}/fixture/edges": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Legacy Fixture
+         * @description Resolve a stored CAD-edge mounting selection to nodes of this known mesh.
+         */
+        post: operations["resolve_legacy_fixture_api_meshes__jid__fixture_edges_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/decks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Decks */
+        get: operations["decks_api_decks_get"];
+        put?: never;
+        /** Create Deck */
+        post: operations["create_deck_api_decks_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -407,6 +537,32 @@ export interface components {
              */
             friction: number;
         };
+        /**
+         * Deck
+         * @description Prepare the input deck from an already reviewed mesh.
+         */
+        Deck: {
+            /**
+             * Revision
+             * Format: uuid
+             */
+            revision: string;
+            /**
+             * Token
+             * Format: uuid
+             */
+            token: string;
+            /**
+             * Mesh
+             * Format: uuid
+             */
+            mesh: string;
+        };
+        /** DuplicateModel */
+        DuplicateModel: {
+            /** Name */
+            name?: string | null;
+        };
         /** Edge */
         "Edge-Input": {
             /** Id */
@@ -543,6 +699,34 @@ export interface components {
             /** Loops */
             loops: string[][];
         };
+        /**
+         * Fixture
+         * @description Instance-qualified mesh node labels, e.g. ``WS-1:15``.
+         */
+        Fixture: {
+            /** Labels */
+            labels?: string[];
+        };
+        /** FixtureInfo */
+        FixtureInfo: {
+            /** Labels */
+            labels: string[];
+            /** Count */
+            count: number;
+            /** Hash */
+            hash: string;
+        };
+        /** GroupSummary */
+        GroupSummary: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Created */
+            created: number;
+            /** Models */
+            models: components["schemas"]["Summary"][];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -602,6 +786,15 @@ export interface components {
             cpus: number;
             /** Build */
             build: string | null;
+            /** Mesh */
+            mesh?: string | null;
+            /** Mesh Digest */
+            mesh_digest?: string | null;
+            /** Mesh Compat */
+            mesh_compat?: string | null;
+            /** Fixture Hash */
+            fixture_hash?: string | null;
+            fixture?: components["schemas"]["FixtureInfo"] | null;
             /** Diagnostic */
             diagnostic: string;
             /** Manifest */
@@ -769,6 +962,11 @@ export interface components {
              */
             selection: string;
         };
+        /** NewGroup */
+        NewGroup: {
+            /** Name */
+            name: string;
+        };
         /** NewProject */
         NewProject: {
             /** Name */
@@ -779,6 +977,8 @@ export interface components {
              * @enum {string}
              */
             dimension: "2D" | "3D";
+            /** Group */
+            group?: string | null;
         };
         /** Plane */
         "Plane-Input": {
@@ -986,7 +1186,30 @@ export interface components {
             created: number;
             /** Source Id */
             source_id: string | null;
+            /** Group */
+            group?: string | null;
+            /** Group Name */
+            group_name?: string | null;
+            /** Mesh Compat */
+            mesh_compat?: string | null;
             setup: components["schemas"]["Project-Output"];
+        };
+        /** RevisionSummary */
+        RevisionSummary: {
+            /** Id */
+            id: string;
+            /** Project */
+            project: string;
+            /** Number */
+            number: number;
+            /** Created */
+            created: number;
+            /** Source Id */
+            source_id?: string | null;
+            /** Name */
+            name: string;
+            /** Dimension */
+            dimension: string;
         };
         /** Save */
         Save: {
@@ -1070,10 +1293,10 @@ export interface components {
             /** Name */
             name: string;
             /**
-             * Build
+             * Deck
              * Format: uuid
              */
-            build: string;
+            deck: string;
             /**
              * Mode
              * @default DEMO
@@ -1106,6 +1329,15 @@ export interface components {
             dimension: string;
             /** Created */
             created: number;
+            /** Group */
+            group?: string | null;
+            /** Group Name */
+            group_name?: string | null;
+            /**
+             * Revisions
+             * @default 1
+             */
+            revisions: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -1136,6 +1368,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    health_api_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     capabilities_api_capabilities_get: {
         parameters: {
             query?: never;
@@ -1152,6 +1404,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    groups_api_groups_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupSummary"][];
+                };
+            };
+        };
+    };
+    create_group_api_groups_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewGroup"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1186,6 +1491,72 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["NewProject"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revision_history_api_projects__pid__revisions_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevisionSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    duplicate_model_api_projects__pid__duplicate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DuplicateModel"];
             };
         };
         responses: {
@@ -1405,7 +1776,7 @@ export interface operations {
             };
         };
     };
-    builds_api_builds_get: {
+    meshes_api_meshes_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -1425,7 +1796,7 @@ export interface operations {
             };
         };
     };
-    build_api_builds_post: {
+    create_mesh_api_meshes_post: {
         parameters: {
             query?: never;
             header?: never;
@@ -1435,6 +1806,125 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["Build"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_fixture_api_meshes__jid__fixture_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Fixture"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_legacy_fixture_api_meshes__jid__fixture_edges_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FixtureInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decks_api_decks_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"][];
+                };
+            };
+        };
+    };
+    create_deck_api_decks_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Deck"];
             };
         };
         responses: {

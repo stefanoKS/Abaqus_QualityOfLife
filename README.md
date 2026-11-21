@@ -16,8 +16,14 @@ closing. The same workspace displays straight 3D extrusions for selection and pr
 
 ## Start on Windows
 
-From the repository root in PowerShell, install into a Python 3.11 virtual environment. The browser
-build requires Node.js and npm. Use a browser with WebGL enabled.
+The simplest start is to double-click **`start-abaqus-qol.cmd`**. With Python 3.11+ and Node.js
+installed, the first launch creates the repository environment, installs the pinned dependencies,
+builds the browser bundle, starts the workbench and its worker, waits until `/api/health` reports
+ready, and opens the default browser. A second double-click reuses the running instance. If a
+prerequisite is missing, or the port belongs to another application, the launcher prints exactly what
+to do. No execution-policy change and no login are required.
+
+To set it up manually instead:
 
 ~~~powershell
 py -3.11 -m venv .venv
@@ -27,17 +33,14 @@ npm --prefix apps/web run build
 .\.venv\Scripts\python scripts/serve.py
 ~~~
 
+Useful launcher flags: `--port 8766` (different port), `--no-browser`, `--rebuild` (force a browser
+rebuild), `--prepare` (prepare the environment and exit).
+
 Open [the local workbench](http://127.0.0.1:8765). The command starts FastAPI, serves the built UI
 and starts an independent worker. Close the browser freely. Press **Ctrl+C** in the serving terminal
 to stop the API and let the worker finish its current operation. Queued work resumes at the next
 start. The database and artifacts stay in `%LOCALAPPDATA%\SimplifyAbaqus` — the directory keeps its
 original name so existing installations keep their projects.
-
-A CMD starter is available as well and needs no PowerShell execution-policy change:
-
-~~~bat
-start-abaqus-qol.cmd
-~~~
 
 ## First run
 
@@ -137,23 +140,33 @@ solver job.
 
 | Document | Contents |
 |---|---|
+| [AGENTS.md](AGENTS.md) | Repository conventions, entry points and regression commands for contributors |
+| [agent.md](agent.md) | Current implementation handoff, remaining 2D work, acceptance checks and known defects |
 | [docs/user-guide-ja.md](docs/user-guide-ja.md) | 日本語ユーザーガイド |
 | [docs/user-guide-en.md](docs/user-guide-en.md) | English user guide |
 | [docs/architecture.md](docs/architecture.md) | Components, data flow, state ownership |
 | [docs/engineering-validation.md](docs/engineering-validation.md) | Supported models, assumptions, benchmark procedure, limitations |
 | [docs/migration-and-recovery.md](docs/migration-and-recovery.md) | Data location, backup, restore, unknown-job recovery, rollback |
 | [docs/release-checklist.md](docs/release-checklist.md) | Release gates and CI checks |
-| [docs/implementation-report.md](docs/implementation-report.md) | Latest hardening report and gate matrix |
+| [docs/implementation-report.md](docs/implementation-report.md) | Latest 2D delivery report and reported verification results |
 | [docs/engineering.md](docs/engineering.md) | Detailed engineering and operations notes |
 
 ## Milestone status
 
 Real paths include clean-DXF import, analytic CAD reconstruction, Gmsh/OCC meshing, INP generation,
-immutable revisions, durable jobs and read-only ODB extraction. The Abaqus command adapter was
-exercised with a Windows batch fixture. Abaqus 2024 Python parsed a generated deck and extracted a
-manufactured ODB.
+immutable revisions, durable jobs, project grouping, read-only ODB extraction, a projected
+door-response export, and a mesh-first fixture workflow: generate the mesh, box-select the fixed
+weatherstrip nodes on the actual mesh, prepare the deck from that mesh, and submit. Mesh identity is
+separate from the analysis revision, so a motion or friction edit reuses the mesh while a geometry or
+mesh-control change forces fixture review.
 
-**Not yet verified:** physical solution accuracy, contact convergence, mesh convergence and
-production license behaviour. These require one authorized closing case plus trusted reference
-output. No reference force curve has been compared. DEMO output is not evidence. See
-[docs/engineering-validation.md](docs/engineering-validation.md).
+Two small authorized Abaqus/Standard 2024 door-only closing cases were executed through the normal
+workflow and reached contact (edge-based and box-selected fixtures). Run IDs, input/mesh hashes,
+`WSFIX` membership, reference-point trajectories, contact onset, projected force and tolerances are
+recorded in [docs/engineering-validation.md](docs/engineering-validation.md).
+
+**Not yet implemented:** drawing-role review before region construction, the material-region
+partition tool, role-aware arbitrary in-plane motion, and per-pair friction overrides. **Not yet
+verified:** physical solution accuracy, contact convergence, mesh convergence and production license
+behaviour — these need a trusted reference curve and an agreed engineering tolerance. DEMO output is
+not evidence. 3D remains a preview.

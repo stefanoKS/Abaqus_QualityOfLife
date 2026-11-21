@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from services import store
 from services.api.main import app
 from services.worker.__main__ import once
+from support import legacy_fixture, save_fixture
 
 
 @pytest.fixture()
@@ -26,22 +27,31 @@ def post(api, path, data):
     return res.json()
 
 
-def built(api):
-    r = post(api, "/api/projects", {"name": "Section"})
-    build = post(api, "/api/builds", {"revision": r["id"], "token": store.new_id()})
+def prepared(api, revision=None):
+    """Create (if needed) a model with a completed mesh, reviewed fixture and deck."""
+    if revision is None:
+        revision = post(api, "/api/projects", {"name": "Section"})
+    mesh = post(api, "/api/meshes", {"revision": revision["id"], "token": store.new_id()})
     assert once("test")
-    result = store.job(build["id"])
+    assert store.job(mesh["id"])["status"] == "Completed", store.job(mesh["id"])["diagnostic"]
+    labels = legacy_fixture(api, mesh["id"])["labels"]
+    save_fixture(api, mesh["id"], labels)
+    deck = post(
+        api, "/api/decks", {"revision": revision["id"], "token": store.new_id(), "mesh": mesh["id"]}
+    )
+    assert once("test")
+    result = store.job(deck["id"])
     assert result["status"] == "Completed", result["diagnostic"]
-    return r, result
+    return revision, result
 
 
-def request_run(api, r, b, scenario):
+def request_run(api, r, deck, scenario):
     return post(
         api,
         "/api/runs",
         dict(
             revision=r["id"],
-            build=b["id"],
+            deck=deck["id"],
             token=store.new_id(),
             scenario=scenario,
             mode="DEMO",
@@ -74,8 +84,8 @@ def test_persisted_revisions_and_safe_topology(client):
 def test_claim_retry_reconcile_and_idempotency(client):
     r = post(client, "/api/projects", {"name": "Concurrent"})
     body = {"revision": r["id"], "token": store.new_id()}
-    first = post(client, "/api/builds", body)
-    assert post(client, "/api/builds", body)["id"] == first["id"]
+    first = post(client, "/api/meshes", body)
+    assert post(client, "/api/meshes", body)["id"] == first["id"]
     with ThreadPoolExecutor(4) as pool:
         claimed = list(pool.map(store.claim, ["a", "b", "c", "d"]))
     winners = [c for c in claimed if c]
@@ -92,7 +102,7 @@ def test_claim_retry_reconcile_and_idempotency(client):
 
 
 def test_jobs_cancel_fail_reextract_and_immutable_artifacts(client):
-    r, b = built(client)
+    r, b = prepared(client)
     queued = request_run(client, r, b, "slow")
     assert client.post("/api/jobs/" + queued["id"] + "/cancel").json()["status"] == "Cancelled"
     fail = request_run(client, r, b, "failure")
@@ -188,8 +198,16 @@ def test_upload_confined_and_capability_diagnostics(client):
         .json()
     )
     assert saved["setup"]["materials"][0]["version"] == 2
-    build = post(client, "/api/builds", {"revision": saved["id"], "token": store.new_id()})
+    mesh = post(client, "/api/meshes", {"revision": saved["id"], "token": store.new_id()})
     assert once("mesh-test")
-    job = store.job(build["id"])
+    mesh_job = store.job(mesh["id"])
+    assert mesh_job["status"] == "Completed", mesh_job["diagnostic"]
+    labels = legacy_fixture(client, mesh["id"])["labels"]
+    save_fixture(client, mesh["id"], labels)
+    deck = post(
+        client, "/api/decks", {"revision": saved["id"], "token": store.new_id(), "mesh": mesh["id"]}
+    )
+    assert once("mesh-test")
+    job = store.job(deck["id"])
     assert job["status"] == "Completed", job["diagnostic"]
-    assert "*Solid Section" in (store.job_dir(build["id"]) / "analysis.inp").read_text()
+    assert "*Solid Section" in (store.job_dir(deck["id"]) / "analysis.inp").read_text()

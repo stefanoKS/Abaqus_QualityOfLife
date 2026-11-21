@@ -1,5 +1,6 @@
 import { test, expect } from './fixtures'
 import { randomUUID } from 'node:crypto'
+import { meshAndDeck } from './pipeline'
 import type { Job, Revision } from '../src/api'
 
 test('dashboard filters, cancellation, disconnected browser and extraction-only retry', async ({
@@ -10,20 +11,17 @@ test('dashboard filters, cancellation, disconnected browser and extraction-only 
   const r: Revision = await (
     await request.post('/api/projects', { data: { name: 'Queue checks' } })
   ).json()
-  const build: Job = await (
-    await request.post('/api/builds', { data: { revision: r.id, token: randomUUID() } })
-  ).json()
+  const { deck } = await meshAndDeck(request, r)
   async function job(id: string): Promise<Job> {
     return (await request.get('/api/jobs/' + id)).json()
   }
   async function run(name: string, scenario: string): Promise<Job> {
     const resp = await request.post('/api/runs', {
-      data: { revision: r.id, token: randomUUID(), build: build.id, name, scenario, mode: 'DEMO' },
+      data: { revision: r.id, token: randomUUID(), deck: deck.id, name, scenario, mode: 'DEMO' },
     })
     expect(resp.ok()).toBeTruthy()
     return resp.json()
   }
-  await expect.poll(async () => (await job(build.id)).status).toBe('Completed')
   const slow = await run('Cancel this slow closing', 'slow')
   await expect.poll(async () => (await job(slow.id)).status).toBe('Running')
   await page.goto('/#dashboard')

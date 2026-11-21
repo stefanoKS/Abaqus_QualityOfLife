@@ -14,7 +14,16 @@ import {
   Square,
   RotateCcw,
 } from 'lucide-react'
-import { request, elapsed, go, err, type Summary, type Job, type Revision } from './api'
+import {
+  request,
+  elapsed,
+  go,
+  err,
+  type Group,
+  type Job,
+  type Revision,
+  type RevisionSummary,
+} from './api'
 import { labelFrom, useI18n } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 
@@ -110,21 +119,24 @@ export function JobActions({
 
 export default function Dashboard({ notify }: { notify: (s: string) => void }) {
   const { t, formatDate } = useI18n()
-  const [projects, ps] = useState<Summary[]>([]),
+  const [groups, gs] = useState<Group[]>([]),
     [runs, rs] = useState<Job[]>([])
   const [filter, pf] = useState(''),
     [status, sf] = useState(''),
-    [creating, create] = useState(false),
+    [creatingGroup, createGroupForm] = useState(false),
     [name, nm] = useState(''),
+    [firstModel, first] = useState(''),
     [dim, dm] = useState('2D')
+  const [modelGroup, setModelGroup] = useState<string | null>(null),
+    [modelName, mn] = useState(''),
+    [modelDim, md] = useState('2D')
+  const [openRevisions, revealRevisions] = useState<string | null>(null),
+    [history, setHistory] = useState<RevisionSummary[]>([])
   const [busy, setBusy] = useState(false)
   async function refresh() {
     try {
-      const [a, b] = await Promise.all([
-        request<Summary[]>('/api/projects'),
-        request<Job[]>('/api/runs'),
-      ])
-      ps(a)
+      const [a, b] = await Promise.all([request<Group[]>('/api/groups'), request<Job[]>('/api/runs')])
+      gs(a)
       rs(b)
     } catch (e) {
       notify(err(e))
@@ -140,19 +152,67 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
     const id = setInterval(refresh, active ? ACTIVE_POLL_MS : IDLE_POLL_MS)
     return () => clearInterval(id)
   }, [active])
-  async function add(e: React.FormEvent) {
+  const projects = groups.flatMap((group) => group.models)
+  async function addGroup(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     try {
+      const group = await request<Group>('/api/groups', 'POST', { name: name.trim() })
+      // A group without a model has nothing to open, so the first model is
+      // created in the same action; it falls back to the project name.
       const r = await request<Revision>('/api/projects', 'POST', {
-        name: name.trim(),
+        name: (firstModel.trim() || name).trim(),
         dimension: dim,
+        group: group.id,
       })
+      createGroupForm(false)
+      nm('')
+      first('')
       go('workspace/' + r.id)
     } catch (e) {
       notify(err(e))
     } finally {
       setBusy(false)
+    }
+  }
+  async function addModel(e: React.FormEvent, group: string) {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      const r = await request<Revision>('/api/projects', 'POST', {
+        name: modelName.trim(),
+        dimension: modelDim,
+        group,
+      })
+      setModelGroup(null)
+      mn('')
+      await refresh()
+      go('workspace/' + r.id)
+    } catch (e) {
+      notify(err(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  async function duplicateModel(id: string) {
+    try {
+      await request<Revision>('/api/projects/' + id + '/duplicate', 'POST', {})
+      notify(t('dashboard.modelDuplicated'))
+      await refresh()
+    } catch (e) {
+      notify(err(e))
+    }
+  }
+  async function showRevisions(id: string) {
+    if (openRevisions === id) {
+      revealRevisions(null)
+      return
+    }
+    try {
+      setHistory(await request<RevisionSummary[]>('/api/projects/' + id + '/revisions'))
+      revealRevisions(id)
+    } catch (e) {
+      notify(err(e))
     }
   }
   const visible = runs.filter(
@@ -167,13 +227,14 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           </div>
           <h1>{t('dashboard.title')}</h1>
         </div>
-        <button className="primary" onClick={() => create(!creating)}>
+        <button className="primary" onClick={() => createGroupForm(!creatingGroup)}>
           <Plus />
           {t('dashboard.newProject')}
         </button>
       </div>
-      {creating && (
-        <form className="create-form card" onSubmit={add}>
+      {creatingGroup && (
+        <form className="create-form card" onSubmit={addGroup}>
+          <p className="create-hint">{t('dashboard.groupHint')}</p>
           <label>
             {t('dashboard.projectName')}
             <input
@@ -182,6 +243,15 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               maxLength={100}
               value={name}
               onChange={(e) => nm(e.target.value)}
+            />
+          </label>
+          <label>
+            {t('dashboard.modelName')}
+            <input
+              maxLength={100}
+              placeholder={name}
+              value={firstModel}
+              onChange={(e) => first(e.target.value)}
             />
           </label>
           <label>
@@ -194,30 +264,113 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           <button className="primary" disabled={busy || !name.trim()}>
             {t('dashboard.createProject')}
           </button>
-          <button type="button" onClick={() => create(false)}>
+          <button type="button" onClick={() => createGroupForm(false)}>
             {t('common.cancel')}
           </button>
         </form>
       )}
       <h2>
         <FolderOpen />
-        {t('dashboard.projects')} <small>{projects.length}</small>
+        {t('dashboard.projects')} <small>{groups.length}</small>
       </h2>
-      <div className="project-cards">
-        {projects.map((p) => (
-          <button key={p.id} className="project-card" onClick={() => go('workspace/' + p.revision)}>
-            <span className="project-symbol">
-              <Layers3 />
-            </span>
-            <span>
-              <strong>{p.name}</strong>
-              <small>
-                {p.dimension} · {t('dashboard.revision', { number: p.number })} ·{' '}
-                {formatDate(p.created)}
-              </small>
-            </span>
-            <ChevronRight />
-          </button>
+      <div className="group-list">
+        {groups.map((group) => (
+          <section className="group-card card" key={group.id}>
+            <div className="group-heading">
+              <span className="group-symbol">
+                <FolderOpen />
+              </span>
+              <div>
+                <strong>{group.name}</strong>
+                <small>
+                  {t('dashboard.modelsCount', { count: group.models.length })} ·{' '}
+                  {formatDate(group.created)}
+                </small>
+              </div>
+              <div className="spacer" />
+              <button onClick={() => setModelGroup(modelGroup === group.id ? null : group.id)}>
+                <Plus />
+                {t('dashboard.newModel')}
+              </button>
+            </div>
+            {modelGroup === group.id && (
+              <form className="create-form inline" onSubmit={(e) => addModel(e, group.id)}>
+                <label>
+                  {t('dashboard.modelName')}
+                  <input
+                    autoFocus
+                    required
+                    maxLength={100}
+                    value={modelName}
+                    onChange={(e) => mn(e.target.value)}
+                  />
+                </label>
+                <label>
+                  {t('dashboard.startingGeometry')}
+                  <select value={modelDim} onChange={(e) => md(e.target.value)}>
+                    <option value="2D">{t('dashboard.section2d')}</option>
+                    <option value="3D">{t('dashboard.section3d')}</option>
+                  </select>
+                </label>
+                <button className="primary" disabled={busy || !modelName.trim()}>
+                  {t('dashboard.createModel')}
+                </button>
+                <button type="button" onClick={() => setModelGroup(null)}>
+                  {t('common.cancel')}
+                </button>
+              </form>
+            )}
+            {group.models.length ? (
+              <div className="project-cards">
+                {group.models.map((p) => (
+                  <div className="model-entry" key={p.id}>
+                    <button className="project-card" onClick={() => go('workspace/' + p.revision)}>
+                      <span className="project-symbol">
+                        <Layers3 />
+                      </span>
+                      <span>
+                        <strong>{p.name}</strong>
+                        <small>
+                          {p.dimension} · {t('dashboard.revision', { number: p.number })} ·{' '}
+                          {t('dashboard.revisionCount', { count: p.revisions })}
+                        </small>
+                      </span>
+                      <ChevronRight />
+                    </button>
+                    <div className="model-tools">
+                      <button
+                        onClick={() => showRevisions(p.id)}
+                        aria-expanded={openRevisions === p.id}
+                        title={t('dashboard.revisions')}
+                      >
+                        <History />
+                        {t('dashboard.revisions')}
+                      </button>
+                      <button
+                        onClick={() => duplicateModel(p.id)}
+                        title={t('dashboard.duplicateModel')}
+                        aria-label={t('dashboard.duplicateModel') + ' · ' + p.name}
+                      >
+                        <Copy />
+                      </button>
+                    </div>
+                    {openRevisions === p.id && (
+                      <div className="revision-list">
+                        {history.map((row) => (
+                          <button key={row.id} onClick={() => go('workspace/' + row.id)}>
+                            {t('dashboard.revision', { number: row.number })}
+                            <small>{formatDate(row.created)}</small>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="empty-line">{t('dashboard.noModels')}</p>
+            )}
+          </section>
         ))}
       </div>
       <section className="card run-card">

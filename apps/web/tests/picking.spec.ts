@@ -109,12 +109,10 @@ test('both halves of a rendered quad probe the original FE element', async ({
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Mesh' })
     .click()
-  await page.getByRole('button', { name: 'Generate mesh & input' }).click()
-  await expect(page.locator('.build-info').getByText('Input ready', { exact: true })).toBeVisible({
-    timeout: 60000,
-  })
-  const builds: Job[] = await (await page.request.get('/api/builds')).json()
-  const build = builds.find(
+  await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
+  await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
+  const meshes: Job[] = await (await page.request.get('/api/meshes')).json()
+  const build = meshes.find(
     (b) => b.revision === revision.id && b.status === 'Completed'
   )!
   const mesh: ViewMesh = await (

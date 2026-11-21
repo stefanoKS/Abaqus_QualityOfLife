@@ -14,6 +14,19 @@ Name = Annotated[str, Field(min_length=1, max_length=100)]
 class NewProject(Contract):
     name: Name
     dimension: Literal["2D", "3D"] = "2D"
+    # Models live in a project group. Omitted (legacy clients) lands in the
+    # default group instead of failing.
+    group: UUID | None = None
+
+
+class NewGroup(Contract):
+    name: Name
+
+
+class Group(Contract):
+    id: str
+    name: str
+    created: float
 
 
 class Save(Contract):
@@ -27,6 +40,9 @@ class Revision(Contract):
     number: int
     created: float
     source_id: str | None
+    group: str | None = None
+    group_name: str | None = None
+    mesh_compat: str | None = None
     setup: Project
 
 
@@ -37,6 +53,27 @@ class Summary(Contract):
     name: str
     dimension: str
     created: float
+    group: str | None = None
+    group_name: str | None = None
+    revisions: int = 1
+
+
+class GroupSummary(Group):
+    models: list[Summary]
+
+
+class RevisionSummary(Contract):
+    id: str
+    project: str
+    number: int
+    created: float
+    source_id: str | None = None
+    name: str
+    dimension: str
+
+
+class DuplicateModel(Contract):
+    name: Name | None = None
 
 
 class Build(Contract):
@@ -44,9 +81,27 @@ class Build(Contract):
     token: UUID
 
 
+class Deck(Build):
+    """Prepare the input deck from an already reviewed mesh."""
+
+    mesh: UUID
+
+
+class Fixture(Contract):
+    """Instance-qualified mesh node labels, e.g. ``WS-1:15``."""
+
+    labels: list[str] = Field(default_factory=list, max_length=20000)
+
+
+class FixtureInfo(Contract):
+    labels: list[str]
+    count: int
+    hash: str
+
+
 class Submit(Build):
     name: Name
-    build: UUID
+    deck: UUID
     mode: Literal["DEMO", "ABAQUS"] = "DEMO"
     scenario: Literal["success", "failure", "slow", "extraction_failure"] = "success"
     cpus: int = Field(default=1, ge=1, le=32)
@@ -79,6 +134,11 @@ class Job(BaseModel):
     extraction_exit: int | None
     cpus: int
     build: str | None
+    mesh: str | None = None
+    mesh_digest: str | None = None
+    mesh_compat: str | None = None
+    fixture_hash: str | None = None
+    fixture: FixtureInfo | None = None
     diagnostic: str
     manifest: list[str]
     input_hash: str | None

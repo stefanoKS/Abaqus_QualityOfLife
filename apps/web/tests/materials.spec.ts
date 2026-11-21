@@ -87,10 +87,15 @@ test('material cards are editable, validated, versioned and written to the deck'
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Mesh' })
     .click()
-  await page.getByRole('button', { name: 'Generate mesh & input' }).click()
-  await expect(
-    page.locator('.build-info').getByText('Input ready', { exact: true }),
-  ).toBeVisible({ timeout: 60000 })
+  await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
+  await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
+  await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
+  await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await expect(page.getByTestId('deck-status')).toHaveCount(0)
+  await page.getByRole('button', { name: 'Prepare input deck' }).click()
+  await expect(page.getByTestId('deck-status')).toContainText('Input ready', {
+    timeout: 60000,
+  })
   const deckHref = await page.getByRole('link', { name: 'Inspect input deck' }).getAttribute('href')
   const deck = await (await page.request.get(deckHref!)).text()
   expect(deck).toContain('*Elastic')

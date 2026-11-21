@@ -6,7 +6,7 @@ import ezdxf
 import pytest
 from pydantic import ValidationError
 
-from packages.engineering import Project, display, generate_mesh, import_dxf, synthetic
+from packages.engineering import Project, display, generate_mesh, import_dxf, mesh_compat, synthetic
 from packages.engineering.geometry import face_polygon, sample_edges
 from packages.engineering.mesh import _check_element
 
@@ -146,6 +146,36 @@ def test_project_rejects_stale_selections_and_nonplanar_points():
     p["vertices"][0]["xyz"] = (1, 1, 1)
     with pytest.raises(ValidationError, match="XY plane"):
         Project.model_validate(p)
+
+
+def test_mesh_identity_tracks_mesh_inputs_only():
+    from packages.engineering.identity import mesh_inputs
+
+    p = synthetic()
+    base = mesh_compat(p)
+    other = p.model_copy(deep=True)
+    other.motion.travel = -9
+    other.motion.duration = 3
+    other.contact.friction = 0.9
+    other.analysis.thickness = 4
+    other.materials[0].young = 12
+    other.edges[0].name = "Renamed edge"
+    assert mesh_compat(other) == base
+    # Geometry, roles, cavity fill and mesh controls do change the identity.
+    p.mesh.size = 0.9
+    assert mesh_compat(p) != base
+    p = synthetic()
+    p.mesh.local["e1"] = 0.5
+    assert mesh_compat(p) != base
+    p = synthetic()
+    p.components[1].role = "vehicle_body"
+    assert mesh_compat(p) != base
+    p = synthetic()
+    p.faces[0].material = None
+    assert mesh_compat(p) != base
+    # The recorded inputs are reviewable, not opaque.
+    inputs = mesh_inputs(synthetic())
+    assert {"vertices", "edges", "faces", "components", "mesh"} <= set(inputs)
 
 
 @pytest.mark.parametrize("conn", [[1, 2, 2], [1, 3, 2], [1, 2, 3, 4]])

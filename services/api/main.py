@@ -1,5 +1,8 @@
+import json
+import os
 import re
 import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -14,9 +17,37 @@ from integrations import drawings
 from packages import engineering
 from packages.engineering.model import Project
 from services import store
-from .contracts import Build, Job, NewProject, Revision, Save, Submit, Summary
+from .contracts import (
+    Build,
+    Deck,
+    DuplicateModel,
+    Fixture,
+    FixtureInfo,
+    GroupSummary,
+    Job,
+    NewGroup,
+    NewProject,
+    Revision,
+    RevisionSummary,
+    Save,
+    Submit,
+    Summary,
+)
 
 MAX_DRAWING = 8 * 1024 * 1024
+STARTED = time.time()
+
+
+def revision_payload(row):
+    """Attach the mesh-compatibility digest so the browser can decide mesh reuse."""
+    return {**row, "mesh_compat": engineering.mesh_compat(Project.model_validate(row["setup"]))}
+
+
+def mesh_artifact(jid):
+    path = store.job_dir(jid) / "mesh.json"
+    if not path.is_file():
+        raise store.Conflict("This mesh job has no stored mesh artifact.")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @asynccontextmanager
@@ -57,6 +88,18 @@ async def invalid(_, exc):
     return JSONResponse({"detail": str(exc)}, 409 if isinstance(exc, store.Conflict) else 422)
 
 
+@app.get("/api/health")
+def health():
+    """Identifiable readiness probe used by the launcher and instance reuse."""
+    return {
+        "product": "Abaqus QOL",
+        "status": "ready",
+        "version": app.version,
+        "pid": os.getpid(),
+        "started": STARTED,
+    }
+
+
 @app.get("/api/capabilities")
 def capabilities():
     from integrations.abaqus.launcher import configured_launcher
@@ -71,22 +114,58 @@ def capabilities():
     return result
 
 
+@app.get("/api/groups", response_model=list[GroupSummary])
+def groups():
+    return store.groups()
+
+
+@app.post("/api/groups", response_model=GroupSummary, status_code=201)
+def create_group(body: NewGroup):
+    return store.create_group(body.name)
+
+
 @app.get("/api/projects", response_model=list[Summary])
 def projects():
     return store.projects()
 
 
+@app.get("/api/projects/{pid}/revisions", response_model=list[RevisionSummary])
+def revision_history(pid: UUID):
+    return store.revision_history(pid)
+
+
+@app.post("/api/projects/{pid}/duplicate", response_model=Revision)
+def duplicate_model(pid: UUID, body: DuplicateModel = DuplicateModel()):
+    """Copy the current model into a new, independent model in the same group."""
+    group = store.group_of(str(pid))
+    with store.connection() as db:
+        head = db.execute(
+            "SELECT r.setup, r.source_id FROM projects p JOIN revisions r ON p.head=r.id "
+            "WHERE p.id=?",
+            (str(pid),),
+        ).fetchone()
+    if head is None:
+        raise KeyError("Project not found")
+    setup = json.loads(head["setup"])
+    setup["name"] = body.name or setup["name"][:150] + " · copy"
+    return revision_payload(store.save(setup, source_id=head["source_id"], group=group["id"]))
+
+
 @app.post("/api/projects", response_model=Revision)
 def create(body: NewProject):
+    if body.group and not store.group_exists(str(body.group)):
+        raise KeyError("Project group not found")
     setup = engineering.synthetic(body.name)
     if body.dimension == "3D":
         setup.dimension, setup.formulation = "3D", "extrusion_preview"
-    return store.save(setup.model_dump(mode="json"))
+    return revision_payload(
+        store.save(setup.model_dump(mode="json"), group=str(body.group) if body.group else None)
+    )
 
 
 @app.get("/api/revisions/{rid}", response_model=Revision)
 def revision(rid: UUID):
-    return store.revision(rid)
+    return revision_payload(store.revision(rid))
 
 
 def topology(setup):
@@ -116,7 +195,7 @@ def save(pid: UUID, body: Save):
                 value != prior.get(key) for key, value in card.items() if key != "version"
             )
             card["version"] = prior["version"] + int(changed)
-    return store.save(setup, str(pid), str(body.base), previous["source_id"])
+    return revision_payload(store.save(setup, str(pid), str(body.base), previous["source_id"]))
 
 
 @app.post("/api/projects/{pid}/drawing", response_model=Job, status_code=202)
@@ -163,7 +242,7 @@ def imported(jid: UUID):
             "SELECT id FROM revisions WHERE project=? AND source_id=? ORDER BY number LIMIT 1",
             (job["project"], str(jid)),
         ).fetchone()
-    return store.revision(row["id"])
+    return revision_payload(store.revision(row["id"]))
 
 
 @app.get("/api/revisions/{rid}/drawing")
@@ -186,19 +265,82 @@ def display(body: Project):
     return engineering.display(body)
 
 
-@app.post("/api/builds", response_model=Job)
-def build(body: Build):
-    setup = store.revision(body.revision)["setup"]
-    if setup["dimension"] != "2D":
+@app.post("/api/meshes", response_model=Job)
+def create_mesh(body: Build):
+    setup = Project.model_validate(store.revision(body.revision)["setup"])
+    if setup.dimension != "2D":
+        raise ValueError(
+            "Mesh generation is available for 2D sections. The extrusion is a geometry preview."
+        )
+    # An empty fixture is valid here: the mesh is generated first, nodes are
+    # reviewed afterwards.
+    return store.submit(
+        str(body.revision),
+        "Generate mesh",
+        "MESH",
+        str(body.token),
+        compat=engineering.mesh_compat(setup),
+    )
+
+
+@app.get("/api/meshes", response_model=list[Job])
+def meshes():
+    return store.jobs(("MESH",))
+
+
+@app.put("/api/meshes/{jid}/fixture", response_model=Job)
+def save_fixture(jid: UUID, body: Fixture):
+    row = store.job(jid)
+    if row["mode"] != "MESH" or row["status"] != "Completed" or not row["mesh_digest"]:
+        raise store.Conflict("Generate the mesh before reviewing its fixed nodes.")
+    labels = engineering.fixture.normalize(body.labels, mesh_artifact(jid))
+    return store.set_fixture(
+        jid, row["mesh_digest"], engineering.fixture.labels_hash(labels), labels
+    )
+
+
+@app.post("/api/meshes/{jid}/fixture/edges", response_model=FixtureInfo)
+def resolve_legacy_fixture(jid: UUID):
+    """Resolve a stored CAD-edge mounting selection to nodes of this known mesh."""
+    row = store.job(jid)
+    if row["mode"] != "MESH" or row["status"] != "Completed":
+        raise store.Conflict("Generate the mesh before resolving a mounting selection.")
+    setup = store.revision(row["revision"])["setup"]
+    selection = next(
+        (s for s in setup["selections"] if s["id"] == setup["mounting"]["selection"]), None
+    )
+    if not selection or not selection["entities"]:
+        raise ValueError(
+            "This revision has no stored mounting edges. Select fixed nodes on the mesh instead."
+        )
+    labels = engineering.fixture.from_edges(mesh_artifact(jid), selection["entities"])
+    return {
+        "labels": labels,
+        "count": len(labels),
+        "hash": engineering.fixture.labels_hash(labels),
+    }
+
+
+@app.post("/api/decks", response_model=Job)
+def create_deck(body: Deck):
+    setup = Project.model_validate(store.revision(body.revision)["setup"])
+    if setup.dimension != "2D":
         raise ValueError(
             "Input generation is available for 2D sections. The extrusion is a geometry preview."
         )
-    return store.submit(str(body.revision), "Mesh and input", "BUILD", str(body.token))
+    return store.submit(
+        str(body.revision),
+        "Prepare input deck",
+        "DECK",
+        str(body.token),
+        mesh=str(body.mesh),
+        compat=engineering.mesh_compat(setup),
+    )
 
 
-@app.get("/api/builds", response_model=list[Job])
-def builds():
-    return store.jobs(True)
+@app.get("/api/decks", response_model=list[Job])
+def decks():
+    return store.jobs(("DECK",))
 
 
 @app.post("/api/runs", response_model=Job)
@@ -217,7 +359,7 @@ def submit(body: Submit):
         str(body.token),
         body.scenario,
         body.cpus,
-        str(body.build),
+        deck=str(body.deck),
     )
 
 
@@ -238,7 +380,10 @@ def duplicate(jid: UUID):
     # An independent project avoids overwriting someone else's current head.
     setup = snapshot["setup"]
     setup["name"] = setup["name"][:150] + " · copy"
-    return store.save(setup, source_id=snapshot["source_id"])
+    group = store.group_of(job["project"])
+    return revision_payload(
+        store.save(setup, source_id=snapshot["source_id"], group=group["id"])
+    )
 
 
 @app.post("/api/jobs/{jid}/cancel", response_model=Job)

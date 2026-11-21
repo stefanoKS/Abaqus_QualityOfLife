@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { useTranslate } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
-import type { StepState } from './workflowStates'
+import type { StepStatus } from './workflowStates'
 
 export const WORKFLOW_STEPS: { nameKey: TranslationKey; icon: typeof FileInput }[] = [
   { nameKey: 'workspace.step.import', icon: FileInput },
@@ -33,16 +33,18 @@ export function WorkflowNavigation({
   onSelect,
 }: {
   stage: number
-  states: StepState[]
+  states: StepStatus[]
   onSelect: (index: number) => void
 }) {
   const t = useTranslate()
   return (
     <nav className="steps" aria-label={t('workspace.workflow')}>
       {WORKFLOW_STEPS.map(({ nameKey, icon: Icon }, index) => {
-        const state = states[index] ?? 'incomplete'
+        const status = states[index] ?? { state: 'incomplete' as const }
+        const state = status.state
         const label = t(nameKey)
         const current = stage === index
+        const reason = status.hint ? t(status.hint) : undefined
         return (
           <button
             key={nameKey}
@@ -51,6 +53,7 @@ export function WorkflowNavigation({
             data-state={state}
             data-current={current || undefined}
             aria-current={current ? 'step' : undefined}
+            title={reason}
             onClick={() => onSelect(index)}
           >
             <Icon />

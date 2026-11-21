@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
+import { meshAndDeck } from './pipeline'
 import type { Job, Revision } from '../src/api'
 
 /**
@@ -84,20 +85,12 @@ test('job states are translated while the stored value stays machine-readable', 
   const revision: Revision = await (
     await request.post('/api/projects', { data: { name: 'Localized states' } })
   ).json()
-  const build: Job = await (
-    await request.post('/api/builds', { data: { revision: revision.id, token: randomUUID() } })
-  ).json()
-  await expect
-    .poll(
-      async () => ((await (await request.get('/api/jobs/' + build.id)).json()) as Job).status,
-      { timeout: 60000 },
-    )
-    .toBe('Completed')
+  const { deck } = await meshAndDeck(request, revision)
   const run: Job = await (
     await request.post('/api/runs', {
       data: {
         revision: revision.id,
-        build: build.id,
+        deck: deck.id,
         token: randomUUID(),
         name: 'Localized run',
         scenario: 'success',

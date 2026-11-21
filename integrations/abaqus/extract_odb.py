@@ -78,8 +78,11 @@ def _history(step, metadata, start_time):
         if name.upper() != target:
             continue
         outputs = step.historyRegions[name].historyOutputs
-        if "U2" in outputs and "RF2" in outputs:
-            return align_histories(outputs["U2"].data, outputs["RF2"].data, metadata, start_time)
+        series = {
+            key: outputs[key].data for key in ("U1", "U2", "RF1", "RF2") if key in outputs
+        }
+        if "U2" in series and "RF2" in series:
+            return align_histories(series, metadata, start_time, step=step.name)
     return []
 
 
