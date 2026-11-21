@@ -31,6 +31,62 @@ DRAWING = ROOT / "examples" / "hollow-section_2.dwg"
 EXPECTED_SHA256 = "8592c3c2aa59530e7b937d58f6354f6beeb24b6bc56cfcb6d37945e483aac771"
 
 
+PROBLEMS = []
+
+
+def fail(message):
+    """Record a release-blocking discrepancy; the harness exits non-zero."""
+    PROBLEMS.append(message)
+    print("CHECK FAILED : " + message)
+
+
+
+def wsfix_matches(written, expected):
+    """Exact set equality between the deck's WSFIX and the saved selection."""
+    return sorted(int(value) for value in written) == sorted(int(value) for value in expected)
+
+
+def travel_attained(history, prescribed, relative=0.01, absolute=0.01):
+    if not history:
+        return False, 0.0
+    travel = abs(float(history[-1]["u2"]))
+    required = abs(float(prescribed))
+    return abs(travel - required) <= max(absolute, required * relative), travel
+
+
+def first_contact(history):
+    """Signed RF2 magnitude above numerical noise, or None."""
+    for row in history:
+        if abs(float(row["rf2"])) > 1e-9:
+            return row
+    return None
+
+
+def csv_agrees(rows, history, tolerance=1e-9):
+    """Last CSV row must equal the last extracted sample for the shared columns."""
+    if not rows or not history:
+        return False
+    final, sample = rows[-1], history[-1]
+    pairs = [
+        (float(final["panel_U2_mm"]), float(sample["u2"])),
+        (float(final["panel_RF2_N"]), float(sample["rf2"])),
+    ]
+    return all(abs(a - b) <= tolerance for a, b in pairs)
+
+
+def frame_fixed_error(frames, labels, instance="WS-1", tolerance=1e-9):
+    """Worst |U| of the fixed nodes across frames, or None if a label is absent."""
+    worst = 0.0
+    for payload in frames:
+        rows = payload.get("displacements", {}).get(instance, [])
+        mapping = {int(row[0]): row[1:] for row in rows}
+        if labels - set(mapping):
+            return None
+        for label in labels:
+            worst = max(worst, max(abs(float(value)) for value in mapping[label]))
+    return worst
+
+
 def run_worker(owner):
     processed = 0
     while once(owner):
@@ -180,11 +236,15 @@ def main():
         written = sorted(int(value) for value in re.findall(r"\d+", block.group(1)))
         expected = sorted(int(label.split(":")[1]) for label in labels)
         print(f"WSFIX equal  : {written == expected} ({len(written)} labels)")
-        if written != expected:
-            raise SystemExit("WSFIX does not match the saved selection")
+        if not wsfix_matches(written, expected):
+            fail("WSFIX does not match the saved selection")
+        if not labels:
+            fail("the reviewed fixture is empty")
 
         if not options.licensed:
             print("result       : native path complete, no solver tokens consumed")
+            if PROBLEMS:
+                raise SystemExit("FAILED: " + "; ".join(PROBLEMS))
             return
 
         submitted = api.post(
@@ -205,10 +265,81 @@ def main():
         print(f"phase        : {job['phase']}")
         print(f"diagnostic   : {job['diagnostic']}")
         directory = store.job_dir(job["id"])
-        for name in ("results.json", "result-metadata.json", "history.csv"):
+        if job["solver"] != "Succeeded":
+            fail("solver status is " + str(job["solver"]))
+        if job["extraction"] != "Succeeded":
+            fail("extraction status is " + str(job["extraction"]))
+        for name in ("results.json", "result-metadata.json", "history.csv", "analysis.odb"):
             path = directory / name
             print(f"{name:20} : {'present' if path.is_file() else 'missing'}")
+            if not path.is_file():
+                fail("missing output " + name)
+        warnings = []
+        message_file = directory / "analysis.msg"
+        if message_file.is_file():
+            for line in message_file.read_text(errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("***WARNING") or stripped.startswith("***NOTE"):
+                    warnings.append(stripped[:160])
+        sta = directory / "analysis.sta"
+        print(f"analysis.msg : {len(warnings)} warning/note lines")
+        for line in warnings[:10]:
+            print("  " + line)
+        if sta.is_file():
+            lines = [line for line in sta.read_text(errors="replace").splitlines() if line.strip()]
+            completed = [line for line in lines if "COMPLETED SUCCESSFULLY" in line]
+            print(f"analysis.sta : {'completed' if completed else 'no completion line'}")
+            if not completed:
+                fail("the solver did not report THE ANALYSIS HAS COMPLETED SUCCESSFULLY")
+        results = json.loads((directory / "results.json").read_text(encoding="utf-8"))
+        history = results.get("history", [])
+        if not history:
+            fail("the extracted history is empty")
+        else:
+            last = history[-1]
+            ok, travel = travel_attained(history, options.travel)
+            required = abs(float(options.travel))
+            print(f"travel       : {travel:.4f} mm of {required:.4f} mm prescribed")
+            if not ok:
+                fail("prescribed travel was not attained")
+            contact = first_contact(history)
+            if contact is None:
+                print("contact      : no contact found")
+                fail("no contact was detected during closing")
+            else:
+                print(f"contact      : first non-zero RF2 at travel {abs(float(contact['u2'])):.4f} mm")
+            # Fixed nodes must be absent from every frame's displacement noise.
+            labels_int = {int(label.split(":")[1]) for label in labels}
+            worst = 0.0
+            frames = 0
+            for frame in sorted(directory.glob("frame-*.json")):
+                payload = json.loads(frame.read_text(encoding="utf-8"))
+                rows = payload.get("displacements", {}).get("WS-1", [])
+                mapping = {int(row[0]): row[1:] for row in rows}
+                missing = labels_int - set(mapping)
+                if missing:
+                    fail("frame " + frame.name + " is missing fixed nodes " + str(sorted(missing)))
+                    break
+                for label in labels_int:
+                    worst = max(worst, max(abs(float(value)) for value in mapping[label]))
+                frames += 1
+            print(f"frames       : {frames}; worst fixed-node |U| {worst:.3e} mm")
+            if worst > 1e-9:
+                fail("a fixed node moved " + format(worst, ".3e") + " mm")
+            csv_path = directory / "history.csv"
+            if csv_path.is_file() and history:
+                import csv as csv_module
+                rows = list(csv_module.DictReader(csv_path.open(encoding="utf-8-sig")))
+                if rows:
+                    final = rows[-1]
+                    if abs(float(final["panel_U2_mm"]) - float(history[-1]["u2"])) > 1e-9:
+                        fail("history.csv and the extracted ODB disagree on panel U2")
+                    if abs(float(final["panel_RF2_N"]) - float(history[-1]["rf2"])) > 1e-9:
+                        fail("history.csv and the extracted ODB disagree on panel RF2")
         print(f"evidence     : {options.evidence}")
+    if PROBLEMS:
+        raise SystemExit("FAILED: " + "; ".join(PROBLEMS))
+    print("result       : all acceptance checks passed")
 
 
 if __name__ == "__main__":

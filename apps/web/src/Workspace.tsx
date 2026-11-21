@@ -32,7 +32,8 @@ import { Facts } from './shared/components/Facts'
 import { NumberInput } from './shared/components/NumberInput'
 import { AssemblyTree } from './features/workspace/AssemblyTree'
 import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
-import { workflowStates } from './features/workspace/workflowStates'
+import { orderedStates } from './features/workspace/workflowStates'
+import { MESH_STAGES, STAGE, stageId, stageMode } from './features/workspace/stages'
 import {
   MaterialEditor,
   freshCard,
@@ -125,7 +126,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
           setMeshFile(null)
           setPendingFixture(null)
           message(t('import.done'))
-          setStage(1)
+          setStage(STAGE.components)
         } else if (['Cancelled', 'Failed', 'Unknown / worker disconnected'].includes(job.status)) {
           throw new Error(job.diagnostic || job.status)
         } else timer = setTimeout(check, 500)
@@ -293,15 +294,27 @@ export default function Workspace({ initial, locked, notify }: Props) {
   )
   const states = useMemo(
     () =>
-      workflowStates({
+      orderedStates({
         project: p,
         mesh: meshJob,
         compatibleMesh,
         fixture,
         deck: deckReady ? deck : null,
         runs: related,
+        dirty,
       }),
-    [p, meshJob, compatibleMesh, fixture, deck, deckReady, related],
+    [p, meshJob, compatibleMesh, fixture, deck, deckReady, related, dirty],
+  )
+  const participantNames = useMemo(
+    () =>
+      p.components
+        .filter((c) => c.role === 'seal' || c.role === 'moving_panel')
+        .map((c) => c.name),
+    [p.components],
+  )
+  const bodyNames = useMemo(
+    () => p.components.filter((c) => c.role === 'vehicle_body').map((c) => c.name),
+    [p.components],
   )
   function target(next: SelectionMode) {
     setMode(next)
@@ -317,9 +330,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
     } else select(null)
   }
   function changeStage(i: number) {
+    const id = stageId(i)
     setStage(i)
-    setShowMesh(i === 5 || i === 6)
-    target(i === 2 ? 'face' : i === 3 ? 'edge' : 'component')
+    setShowMesh(MESH_STAGES.includes(id))
+    setFixtureMode(id === 'mounting')
+    target(stageMode(id))
   }
   async function save() {
     if (!dirty) return rev
@@ -509,7 +524,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 <Save />
                 {t('workspace.saveRevision')}
               </button>
-              <button className="primary" onClick={() => changeStage(6)}>
+              <button className="primary" onClick={() => changeStage(STAGE.review)}>
                 <Play />
                 {t('workspace.reviewRun')}
               </button>
@@ -551,7 +566,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
             }
             onPick={(kind, id, componentId) => {
               setMode(kind)
-              setStage(kind === 'face' ? 2 : kind === 'edge' ? 3 : 1)
+              setStage(STAGE[kind === 'face' ? 'materials' : kind === 'edge' ? 'mesh' : 'components'])
               select({ kind, id, entity: id, component: componentId })
             }}
           />
@@ -638,8 +653,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
               onSelect={(hit) => {
                 select(hit)
                 message('')
-                if (hit?.kind === 'face' && stage === 1) setStage(2)
-                if (hit?.kind === 'edge' && stage === 1) setStage(3)
+                if (hit?.kind === 'face' && stage === STAGE.components) setStage(STAGE.materials)
+                if (hit?.kind === 'edge' && stage === STAGE.components) setStage(STAGE.mesh)
               }}
               colors={colors}
               hidden={hidden}
@@ -682,7 +697,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
           <div className="property-body">
             <div className="eyebrow">{steps[stage]}</div>
             <fieldset disabled={!!locked || busy}>
-              {stage === 0 && (
+              {stage === STAGE.import && (
                 <>
                   <h2>{t('import.title')}</h2>
                   <label>
@@ -739,7 +754,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </small>
                 </>
               )}
-              {stage === 1 && (
+              {stage === STAGE.components && (
                 <>
                   <h2>{component?.name ?? t('components.select')}</h2>
                   {component && (
@@ -790,7 +805,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         <button
                           key={f.id}
                           onClick={() => {
-                            setStage(2)
+                            setStage(STAGE.materials)
                             setMode('face')
                             select({ kind: 'face', id: f.id, entity: f.id, component: f.component })
                           }}
@@ -803,7 +818,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </div>
                 </>
               )}
-              {stage === 2 && (
+              {stage === STAGE.materials && (
                 <>
                   <h2>{face?.name ?? t('materials.select')}</h2>
                   {face && (
@@ -914,34 +929,41 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {stage === 3 && (
+              {stage === STAGE.mounting && !dimension && (
+                <>
+                  <h2>{t('mounting.title')}</h2>
+                  <p>{t('mounting.help')}</p>
+                  {!compatibleMesh && (
+                    <button className="primary wide" onClick={() => changeStage(STAGE.mesh)}>
+                      <Grid2X2 />
+                      {t('mounting.generateFirst')}
+                    </button>
+                  )}
+                  {compatibleMesh && (
+                    <Facts
+                      rows={[
+                        [t('mounting.meshIdentity'), compatibleMesh.mesh_digest!.slice(0, 12)],
+                        [
+                          t('mounting.selection'),
+                          pendingFixture
+                            ? t('mounting.pending', { count: pendingFixture.length })
+                            : t('mounting.saved', { count: shownFixture.length }),
+                        ],
+                      ]}
+                    />
+                  )}
+                  <small>{t('mounting.newFixtureOnly')}</small>
+                </>
+              )}
+      {stage === STAGE.contact && !dimension && (
                 <>
                   <h2>{t('contact.title')}</h2>
-                  <label>
-                    {t('contact.selectedBoundary')}
-                    <input readOnly value={edge?.name ?? t('contact.selectEdge')} />
-                  </label>
-                  {edge && component?.role === 'seal' && (
-                    <label className="check">
-                      <input
-                        type="checkbox"
-                        checked={mount.entities.includes(edge.id)}
-                        onChange={(e) =>
-                          edit((n) => {
-                            n.selections.find((s) => s.id === mount.id)!.entities = e.target.checked
-                              ? [...mount.entities, edge.id]
-                              : mount.entities.filter((t2) => t2 !== edge.id)
-                          })
-                        }
-                      />
-                      {t('contact.fixEdge')}
-                    </label>
-                  )}
                   <Facts
                     rows={[
-                      [t('contact.mounting'), t('contact.fixedEdges', { count: mount.entities.length })],
                       [t('contact.normal'), t('contact.hard')],
                       [t('contact.domain'), t('contact.allExterior')],
+                      [t('contact.participants'), participantNames.join(', ') || t('contact.none')],
+                      [t('contact.excluded'), bodyNames.join(', ') || t('contact.none')],
                     ]}
                   />
                   <NumberInput
@@ -949,16 +971,32 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     value={p.contact.friction}
                     min={0}
                     max={5}
-                    rangeHint="0 – 5"
+                    rangeHint="0 ? 5"
                     onChange={(v) =>
                       edit((n) => {
                         n.contact.friction = v
                       })
                     }
                   />
+                  <small>{t('contact.allSurfaces')}</small>
+                  {bodyNames.length > 0 && (
+                    <p className="notice" data-testid="body-excluded">
+                      {t('body.excluded')}
+                    </p>
+                  )}
+                  <button
+                    className="primary wide"
+                    disabled={busy || !dirty}
+                    title={dirty ? undefined : t('contact.saved')}
+                    onClick={() => execute(save)}
+                  >
+                    <CheckCheck />
+                    {t('contact.save')}
+                  </button>
+                  <small>{t('contact.noFixtureAction')}</small>
                 </>
               )}
-              {stage === 4 && (
+              {stage === STAGE.motion && !dimension && (
                 <>
                   <h2>{t('motion.title')}</h2>
                   <NumberInput
@@ -997,7 +1035,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <p>{t('motion.help')}</p>
                 </>
               )}
-              {dimension && stage !== 7 && (
+      {dimension && stage !== STAGE.results && (
                 <>
                   <h3>{t('extrusion.title')}</h3>
                   <NumberInput
@@ -1026,7 +1064,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <small>{t('extrusion.previewOnly')}</small>
                 </>
               )}
-              {stage === 5 && !dimension && (
+              {stage === STAGE.mesh && !dimension && (
                 <>
                   <h2>{t('mesh.title')}</h2>
                   <NumberInput
@@ -1090,7 +1128,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {stage === 6 && !dimension && (
+              {stage === STAGE.review && !dimension && (
                 <>
                   <h2>{t('review.title')}</h2>
                   <Facts
@@ -1100,6 +1138,30 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       [t('review.geometry'), t('review.nonlinear')],
                     ]}
                   />
+                  <Facts
+                    rows={[
+                      [
+                        t('review.mounting'),
+                        fixture
+                          ? t('review.fixtureSummary', {
+                              count: fixture.count,
+                              digest: compatibleMesh?.mesh_digest?.slice(0, 12) ?? '',
+                            })
+                          : t('hint.fixtureRequired'),
+                      ],
+                      [
+                        t('review.contact'),
+                        t('review.contactSummary', { friction: p.contact.friction }),
+                      ],
+                      [t('review.panels'), participantNames.join(', ') || t('contact.none')],
+                      [t('review.stepSequence'), t('review.stepDoorOnly')],
+                    ]}
+                  />
+                  {bodyNames.length > 0 && (
+                    <p className="notice" data-testid="body-excluded">
+                      {t('body.excluded')}
+                    </p>
+                  )}
                   <NumberInput
                     label={t('review.thickness')}
                     unit="mm"
@@ -1127,7 +1189,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </label>
                 </>
               )}
-              {(stage === 5 || stage === 6) && !dimension && (
+              {(stage === STAGE.mesh || stage === STAGE.review) && !dimension && (
                 <>
                   <h3>{t('mesh.meshSection')}</h3>
                   <button
@@ -1173,7 +1235,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   />
                 </>
               )}
-              {stage === 5 && !dimension && !locked && compatibleMesh && !dirty && (
+              {stage === STAGE.mounting && !dimension && !locked && compatibleMesh && !dirty && (
                 <>
                   <h3>{t('mesh.fixedNodes')}</h3>
                   <p>{t('mesh.fixedNodesHelp')}</p>
@@ -1250,7 +1312,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {(stage === 5 || stage === 6) && !dimension && compatibleMesh && !dirty && (
+              {(stage === STAGE.mesh || stage === STAGE.review) && !dimension && compatibleMesh && !dirty && (
                 <>
                   <h3>{t('mesh.deckSection')}</h3>
                   <button
@@ -1285,7 +1347,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {stage === 6 && !dimension && (
+              {stage === STAGE.review && !dimension && (
                 <>
                   <h3>{t('review.submit')}</h3>
                   <label>
@@ -1363,7 +1425,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 </>
               )}
             </fieldset>
-            {stage === 7 && (
+            {stage === STAGE.results && (
               <>
                 <h2>{t('results.revisionResults')}</h2>
                 {related.length === 0 ? (

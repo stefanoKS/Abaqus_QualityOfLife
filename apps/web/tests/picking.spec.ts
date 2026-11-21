@@ -107,6 +107,7 @@ test('both halves of a rendered quad probe the original FE element', async ({
   const { pick, revision } = await openSection(page)
   await page
     .getByRole('navigation', { name: 'Workflow' })
+  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
     .getByRole('button', { name: 'Mesh' })
     .click()
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()

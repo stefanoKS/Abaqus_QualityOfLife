@@ -10,22 +10,44 @@ import {
   Link2,
   Lock,
   MoveVertical,
+  Pin,
   Play,
 } from 'lucide-react'
 import { useTranslate } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
+import { STAGE_ORDER, type StageId } from './stages'
 import type { StepStatus } from './workflowStates'
 
-export const WORKFLOW_STEPS: { nameKey: TranslationKey; icon: typeof FileInput }[] = [
-  { nameKey: 'workspace.step.import', icon: FileInput },
-  { nameKey: 'workspace.step.components', icon: Boxes },
-  { nameKey: 'workspace.step.materials', icon: Layers3 },
-  { nameKey: 'workspace.step.contact', icon: Link2 },
-  { nameKey: 'workspace.step.motion', icon: MoveVertical },
-  { nameKey: 'workspace.step.mesh', icon: Grid2X2 },
-  { nameKey: 'workspace.step.review', icon: Play },
-  { nameKey: 'workspace.step.results', icon: Activity },
-]
+/** Labels follow `STAGE_ORDER`; the id is what routes and pickers use. */
+export const STAGE_ICONS: Record<StageId, typeof FileInput> = {
+  import: FileInput,
+  components: Boxes,
+  materials: Layers3,
+  mesh: Grid2X2,
+  mounting: Pin,
+  contact: Link2,
+  motion: MoveVertical,
+  review: Play,
+  results: Activity,
+}
+
+export const STAGE_LABELS: Record<StageId, TranslationKey> = {
+  import: 'workspace.step.import',
+  components: 'workspace.step.components',
+  materials: 'workspace.step.materials',
+  mesh: 'workspace.step.mesh',
+  mounting: 'workspace.step.mounting',
+  contact: 'workspace.step.contact',
+  motion: 'workspace.step.motion',
+  review: 'workspace.step.review',
+  results: 'workspace.step.results',
+}
+
+export const WORKFLOW_STEPS = STAGE_ORDER.map((id) => ({
+  id,
+  nameKey: STAGE_LABELS[id],
+  icon: STAGE_ICONS[id],
+}))
 
 export function WorkflowNavigation({
   stage,
@@ -39,7 +61,7 @@ export function WorkflowNavigation({
   const t = useTranslate()
   return (
     <nav className="steps" aria-label={t('workspace.workflow')}>
-      {WORKFLOW_STEPS.map(({ nameKey, icon: Icon }, index) => {
+      {WORKFLOW_STEPS.map(({ id, nameKey, icon: Icon }, index) => {
         const status = states[index] ?? { state: 'incomplete' as const }
         const state = status.state
         const label = t(nameKey)
@@ -47,8 +69,9 @@ export function WorkflowNavigation({
         const reason = status.hint ? t(status.hint) : undefined
         return (
           <button
-            key={nameKey}
+            key={id}
             type="button"
+            data-stage={id}
             className={current ? 'selected' : ''}
             data-state={state}
             data-current={current || undefined}

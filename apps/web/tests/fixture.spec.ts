@@ -1,4 +1,4 @@
-import { expect, test, type Page } from './fixtures'
+﻿import { expect, test, type Page } from './fixtures'
 import { randomUUID } from 'node:crypto'
 import type { Display, ViewMesh } from '../src/viewportModel'
 import type { Job, Revision } from '../src/api'
@@ -29,6 +29,7 @@ async function count(page: Page) {
     .locator('.property-body dl div')
     .filter({ hasText: 'Selected nodes' })
     .locator('dd')
+    .first()
     .textContent()
   return Number(text)
 }
@@ -39,6 +40,23 @@ async function openMeshStage(page: Page, revision: Revision) {
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Mesh' })
     .click()
+}
+
+async function openReviewStage(page: Page) {
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Review / Run' })
+    .click()
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeVisible()
+}
+
+/** Mounting owns the fixed-node controls; Mesh only produces the mesh. */
+async function openMountingStage(page: Page) {
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Mounting' })
+    .click()
+  await expect(page.getByLabel('Fixed-node box mode')).toBeVisible()
 }
 
 async function generateMesh(page: Page) {
@@ -67,9 +85,12 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
   ).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
+  await openMountingStage(page)
 
-  const prepare = page.getByRole('button', { name: 'Prepare input deck' })
-  await expect(prepare).toBeDisabled()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await openMountingStage(page)
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
 
@@ -116,14 +137,17 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
     await at(page, -10, -0.6, PAN.dx, PAN.dy),
     await at(page, 10, 1.4, PAN.dx, PAN.dy),
   )
+  await openMountingStage(page)
   expect(await count(page)).toBe(added - partial)
 
   // Clear, then select the whole model: rigid-panel nodes must be excluded.
   await page.getByRole('button', { name: 'Clear selection' }).click()
+  await openMountingStage(page)
   expect(await count(page)).toBe(0)
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   await page.getByLabel('Rectangle operation').selectOption('replace')
   await dragBox(page, await at(page, -12, -1), await at(page, 12, 16))
+  await openMountingStage(page)
   expect(await count(page)).toBe(deformable.size)
 
   // Redo the partial mounting-foot selection and save it.
@@ -139,8 +163,11 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
   // A partial region never expands to a whole CAD edge or to every seal node.
   expect(stored.fixture!.labels.length).toBeLessThan(deformable.size)
 
-  await expect(prepare).toBeEnabled()
-  await prepare.click()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
+  await openReviewStage(page)
+  await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
   const href = await page.getByRole('link', { name: 'Inspect input deck' }).getAttribute('href')
   const deck = await (await request.get(href!)).text()
@@ -167,6 +194,7 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
     .getByRole('button', { name: 'Mesh' })
     .click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 30000 })
+  await openMountingStage(page)
   expect(await count(page)).toBe(selected)
   await expect(page.getByText('Reviewed mesh nodes')).toBeVisible()
   const meshes: Job[] = await (await request.get('/api/meshes')).json()
@@ -183,11 +211,13 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
+  await openMountingStage(page)
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
   await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await openReviewStage(page)
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
 
@@ -231,8 +261,11 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
   await expect(page.getByText('Fixed nodes (WSFIX)')).toHaveCount(0)
 
   await generateMesh(page)
+  await openMountingStage(page)
   await expect(page.getByText('Fixed nodes (WSFIX)')).toBeVisible()
+  await openMountingStage(page)
   expect(await count(page)).toBe(0)
+  await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
 })
 
@@ -246,6 +279,7 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
+  await openMountingStage(page)
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
@@ -253,32 +287,50 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   const selected = await count(page)
   expect(selected).toBeGreaterThan(0)
 
-  const prepare = page.getByRole('button', { name: 'Prepare input deck' })
+  // Deck actions live on Review; return there before each assertion.
   // Nothing is saved yet, so the deck cannot be prepared or submitted.
-  await expect(prepare).toBeDisabled()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await openMountingStage(page)
   // The pending count survives polling and a camera change.
   await page.getByRole('button', { name: 'Zoom in' }).click()
   await page.waitForTimeout(1600)
+  await openMountingStage(page)
   expect(await count(page)).toBe(selected)
-  await expect(prepare).toBeDisabled()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await openMountingStage(page)
 
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
-  await expect(prepare).toBeEnabled()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
 
   // A changed selection blocks again until it is discarded.
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   await dragBox(page, await at(page, -10, 1.4), await at(page, 10, 3.3))
-  await expect(prepare).toBeDisabled()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await openMountingStage(page)
   await page.getByRole('button', { name: 'Discard selection' }).click()
-  await expect(prepare).toBeEnabled()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
+  await openMountingStage(page)
   expect(await count(page)).toBe(selected)
 
   // The pending state also survives a language switch.
   await dragBox(page, await at(page, -10, 1.4), await at(page, 10, 3.3))
-  await expect(prepare).toBeDisabled()
-  await page.locator('.lang-picker select').selectOption('ja')
-  await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeDisabled()
-  await expect(page.getByText(/節点を選択中です。保存するまで解析には使われません。/)).toBeVisible()
+  await openReviewStage(page)
+  await openReviewStage(page)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await openMountingStage(page)
+  await page.locator('.lang-button').click()
+  await expect(page.getByRole('button', { name: 'å…¥åŠ›ãƒ‡ãƒƒã‚­ã‚’ä½œæˆ' })).toBeDisabled()
+  await expect(page.getByText(/ç¯€ç‚¹ã‚’é¸æŠžä¸­ã§ã™ã€‚ä¿å­˜ã™ã‚‹ã¾ã§è§£æžã«ã¯ä½¿ã‚ã‚Œã¾ã›ã‚“ã€‚/)).toBeVisible()
 })
 
 test('an explicit remesh in the same revision starts a fresh review', async ({ page, request }) => {
@@ -288,11 +340,13 @@ test('an explicit remesh in the same revision starts a fresh review', async ({ p
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
+  await openMountingStage(page)
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
   await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await openReviewStage(page)
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
 
@@ -306,6 +360,7 @@ test('an explicit remesh in the same revision starts a fresh review', async ({ p
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
   await expect.poll(jobs, { timeout: 60000 }).toBe(before + 1)
   await expect.poll(async () => count(page), { timeout: 60000 }).toBe(0)
+  await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await expect(page.getByTestId('deck-status')).toHaveCount(0)
 
@@ -323,12 +378,14 @@ test('a submitted setup replays the fixed nodes archived in its deck', async ({ 
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
+  await openMountingStage(page)
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
   await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
   const archived = await count(page)
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await openReviewStage(page)
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
   await page
@@ -362,6 +419,7 @@ test('a submitted setup replays the fixed nodes archived in its deck', async ({ 
     .getByRole('button', { name: 'Mesh' })
     .click()
   await expect(page.getByText('Archived in the submitted deck').first()).toBeVisible()
+  await openMountingStage(page)
   expect(await count(page)).toBe(archived)
   await expect(page.getByRole('button', { name: 'Save fixed nodes' })).toHaveCount(0)
   const job: Job = await (await request.get('/api/jobs/' + runId)).json()
@@ -380,10 +438,12 @@ test.describe('high-DPI selection', () => {
     ).json()
     await openMeshStage(page, revision)
     await generateMesh(page)
+  await openMountingStage(page)
     await page.getByLabel('Fixed-node box mode').check()
     await page.getByRole('button', { name: 'Fit and reset view' }).click()
     const at = projector(bounds.bounds)
     await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
+  await openMountingStage(page)
     expect(await count(page)).toBeGreaterThan(0)
     await page.getByRole('button', { name: 'Save fixed nodes' }).click()
     const job = await meshJob(request, revision)
@@ -402,6 +462,7 @@ test('an in-progress fixed-node selection survives a language switch', async ({
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
+  await openMountingStage(page)
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
@@ -409,21 +470,20 @@ test('an in-progress fixed-node selection survives a language switch', async ({
   const selected = await count(page)
   expect(selected).toBeGreaterThan(0)
   expect(await page.getByText(/nodes selected\. They are not used until you save\./).count()).toBe(1)
+  await page.locator('.lang-button').click()
 
-  await page.locator('.lang-picker select').selectOption('ja')
-
-  await expect(page.getByRole('heading', { name: '固定節点（WSFIX）' })).toBeVisible()
-  await expect(page.getByLabel('矩形選択モード')).toBeChecked()
+  await expect(page.getByRole('heading', { name: 'å›ºå®šç¯€ç‚¹ï¼ˆWSFIXï¼‰' })).toBeVisible()
+  await expect(page.getByLabel('çŸ©å½¢é¸æŠžãƒ¢ãƒ¼ãƒ‰')).toBeChecked()
   await expect(
-    page.getByText(selected + ' 節点を選択中です。保存するまで解析には使われません。'),
+    page.getByText(selected + ' ç¯€ç‚¹ã‚’é¸æŠžä¸­ã§ã™ã€‚ä¿å­˜ã™ã‚‹ã¾ã§è§£æžã«ã¯ä½¿ã‚ã‚Œã¾ã›ã‚“ã€‚'),
   ).toBeVisible()
-  await expect(page.getByRole('button', { name: '固定節点を保存' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'å›ºå®šç¯€ç‚¹ã‚’ä¿å­˜' })).toBeEnabled()
   // The pending count is unchanged by the language switch.
   expect(
     Number(
       await page
         .locator('.property-body dl div')
-        .filter({ hasText: '選択節点数' })
+        .filter({ hasText: 'é¸æŠžç¯€ç‚¹æ•°' })
         .locator('dd')
         .textContent(),
     ),

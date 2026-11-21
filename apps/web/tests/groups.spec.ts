@@ -55,8 +55,7 @@ test('an in-progress region selection survives a language switch', async ({ page
   await expect(page.getByRole('heading', { name: 'Hollow bulb' })).toBeVisible()
   await page.getByLabel('Material card').selectOption('base_rubber')
   await expect(page.getByText('Unsaved changes')).toBeVisible()
-
-  await page.locator('.lang-picker select').selectOption('ja')
+  await page.locator('.lang-button').click()
 
   // Same selected region and the same in-progress edit, now in Japanese.
   await expect(page.getByRole('heading', { name: 'Hollow bulb' })).toBeVisible()

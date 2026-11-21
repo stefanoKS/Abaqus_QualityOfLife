@@ -6,10 +6,15 @@ from threading import Lock
 
 import gmsh
 
+from . import fidelity
 from .geometry import face_polygon, sample_edges
 from .spline import occ_descriptor
 
 _GMSH = Lock()  # Gmsh holds a process-global kernel and options.
+
+BOUNDARY_TOLERANCE = 0.02  # mm, FE boundary versus the analytic drawing curve
+CURVATURE_ELEMENTS = 24  # elements per full turn of curvature, first attempt
+MAX_REFINEMENTS = 4
 
 
 def generate_mesh(project):
@@ -157,7 +162,9 @@ def _build(p, faces_at_edge, excluded=()):
         surfaces[face.id] = occ.addPlaneSurface(loops)
     occ.synchronize()
     gmsh.option.setNumber("Mesh.MeshSizeMax", p.mesh.size)
-    gmsh.option.setNumber("Mesh.MeshSizeMin", min([p.mesh.size, *p.mesh.local.values()]) / 4)
+    # The floor must not clamp curvature refinement, or a tight boundary radius
+    # plateaus above the boundary tolerance.
+    gmsh.option.setNumber("Mesh.MeshSizeMin", min([p.mesh.size, *p.mesh.local.values()]) / 100)
     for edge_id, size in p.mesh.local.items():
         for tag, length in zip(curves[edge_id], lengths[edge_id]):
             gmsh.model.mesh.setTransfiniteCurve(
@@ -169,84 +176,112 @@ def _build(p, faces_at_edge, excluded=()):
             gmsh.model.mesh.setRecombine(2, surface)
         if gmsh.model.getNormal(surface, [0, 0])[2] < 0:
             gmsh.model.mesh.setReverse(2, surface)
-    gmsh.model.mesh.generate(2)
-    node_ids, coords, _ = gmsh.model.mesh.getNodes()
-    coords = {int(n): [float(x) for x in pt] for n, pt in zip(node_ids, coords.reshape(-1, 3))}
-    elements, face_elements, edge_nodes = [], {}, {}
-    face_nodes = defaultdict(set)
-    for face in p.material_regions:
-        face_elements[face.id] = []
-        types, groups, connectivities = gmsh.model.mesh.getElements(2, surfaces[face.id])
-        for kind, ids, connectivity in zip(types, groups, connectivities):
-            if kind not in (2, 3):
-                raise ValueError(f"Unsupported Gmsh surface element type {kind}.")
-            width, label = (3, "CPS3") if kind == 2 else (4, "CPS4R")
-            for element_id, row in zip(ids, connectivity.reshape(-1, width)):
-                conn = [int(n) for n in row]
-                _check_element(int(element_id), conn, coords)
-                elements.append(
-                    dict(
-                        id=int(element_id),
-                        type=label,
-                        nodes=conn,
-                        entity=face.id,
-                        component=face.component,
+    def produce():
+        node_ids, coords, _ = gmsh.model.mesh.getNodes()
+        coords = {int(n): [float(x) for x in pt] for n, pt in zip(node_ids, coords.reshape(-1, 3))}
+        elements, face_elements, edge_nodes = [], {}, {}
+        face_nodes = defaultdict(set)
+        for face in p.material_regions:
+            face_elements[face.id] = []
+            types, groups, connectivities = gmsh.model.mesh.getElements(2, surfaces[face.id])
+            for kind, ids, connectivity in zip(types, groups, connectivities):
+                if kind not in (2, 3):
+                    raise ValueError(f"Unsupported Gmsh surface element type {kind}.")
+                width, label = (3, "CPS3") if kind == 2 else (4, "CPS4R")
+                for element_id, row in zip(ids, connectivity.reshape(-1, width)):
+                    conn = [int(n) for n in row]
+                    _check_element(int(element_id), conn, coords)
+                    elements.append(
+                        dict(
+                            id=int(element_id),
+                            type=label,
+                            nodes=conn,
+                            entity=face.id,
+                            component=face.component,
+                        )
                     )
-                )
-                face_nodes[face.id].update(conn)
-                face_elements[face.id].append(int(element_id))
-        if not face_elements[face.id]:
-            raise ValueError(f"No mesh generated for {face.name}.")
-    roles = {c.id: c.role for c in p.components}
-    for edge in p.edges:
-        if roles[edge.component] == "vehicle_body":
-            continue  # reviewed but not part of the analysed model
-        tags = curves[edge.id]
-        collected = set()
-        for tag in tags:
-            node_ids, _, _ = gmsh.model.mesh.getNodes(1, tag, includeBoundary=True)
-            collected.update(int(n) for n in node_ids)
-        # Order against the stored analytic definition, independent of OCC wire orientation.
-        ordered = _along(sorted(collected), coords, samples[edge.id])
-        if len(ordered) < 2:
-            raise ValueError(f"No boundary discretization for {edge.name}.")
-        edge_nodes[edge.id] = ordered
-        for face_id in faces_at_edge[edge.id]:
-            missing = set(ordered) - face_nodes[face_id]
-            if missing:
-                raise ValueError(
-                    f"Disconnected mesh interface at {edge.name}: {len(missing)} of "
-                    f"{len(ordered)} boundary nodes are absent from {face_id}."
-                )
-        if roles[edge.component] == "moving_panel":
-            line_ids, conns = [], []
+                    face_nodes[face.id].update(conn)
+                    face_elements[face.id].append(int(element_id))
+            if not face_elements[face.id]:
+                raise ValueError(f"No mesh generated for {face.name}.")
+        roles = {c.id: c.role for c in p.components}
+        for edge in p.edges:
+            if roles[edge.component] == "vehicle_body":
+                continue  # reviewed but not part of the analysed model
+            tags = curves[edge.id]
+            collected = set()
             for tag in tags:
-                types, groups, connectivity = gmsh.model.mesh.getElements(1, tag)
-                if list(types) != [1]:
-                    raise ValueError(f"Expected linear panel segments on {edge.name}.")
-                line_ids.extend(int(eid) for eid in groups[0])
-                conns.extend(connectivity[0].reshape(-1, 2))
-            for eid, row in zip(line_ids, conns):
-                pair = _along(sorted(map(int, row)), coords, samples[edge.id])
-                elements.append(
-                    dict(
-                        id=eid,
-                        type="R2D2",
-                        nodes=pair,
-                        entity=edge.id,
-                        component=edge.component,
+                node_ids, _, _ = gmsh.model.mesh.getNodes(1, tag, includeBoundary=True)
+                collected.update(int(n) for n in node_ids)
+            # Order against the stored analytic definition, independent of OCC wire orientation.
+            ordered = _along(sorted(collected), coords, samples[edge.id])
+            if len(ordered) < 2:
+                raise ValueError(f"No boundary discretization for {edge.name}.")
+            edge_nodes[edge.id] = ordered
+            for face_id in faces_at_edge[edge.id]:
+                missing = set(ordered) - face_nodes[face_id]
+                if missing:
+                    raise ValueError(
+                        f"Disconnected mesh interface at {edge.name}: {len(missing)} of "
+                        f"{len(ordered)} boundary nodes are absent from {face_id}."
                     )
-                )
-    used = {n for elem in elements for n in elem["nodes"]}
-    return dict(
-        nodes=[dict(id=n, xyz=coords[n]) for n in sorted(used)],
-        elements=elements,
-        edge_nodes=edge_nodes,
-        face_elements=face_elements,
-        excluded=excluded,
-        counts=dict(Counter(e["type"] for e in elements)),
-    )
+            if roles[edge.component] == "moving_panel":
+                line_ids, conns = [], []
+                for tag in tags:
+                    types, groups, connectivity = gmsh.model.mesh.getElements(1, tag)
+                    if list(types) != [1]:
+                        raise ValueError(f"Expected linear panel segments on {edge.name}.")
+                    line_ids.extend(int(eid) for eid in groups[0])
+                    conns.extend(connectivity[0].reshape(-1, 2))
+                for eid, row in zip(line_ids, conns):
+                    pair = _along(sorted(map(int, row)), coords, samples[edge.id])
+                    elements.append(
+                        dict(
+                            id=eid,
+                            type="R2D2",
+                            nodes=pair,
+                            entity=edge.id,
+                            component=edge.component,
+                        )
+                    )
+        used = {n for elem in elements for n in elem["nodes"]}
+        return dict(
+            nodes=[dict(id=n, xyz=coords[n]) for n in sorted(used)],
+            elements=elements,
+            edge_nodes=edge_nodes,
+            face_elements=face_elements,
+            excluded=excluded,
+            counts=dict(Counter(e["type"] for e in elements)),
+        )
 
+
+    # Curvature-driven refinement: an element chord is only acceptable while the
+    # measured FE boundary stays inside the boundary tolerance, so the mesh is
+    # regenerated at a finer curvature spacing until it does.
+    per_turn = CURVATURE_ELEMENTS
+    attempt = 0
+    while True:
+        gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", per_turn)
+        if attempt:
+            gmsh.model.mesh.clear()
+        gmsh.model.mesh.generate(2)
+        produced = produce()
+        worst = fidelity.measure(p, produced)["worst"] if produced["nodes"] else 0.0
+        if worst <= BOUNDARY_TOLERANCE:
+            produced["boundary"] = fidelity.measure(p, produced)
+            return produced
+        attempt += 1
+        if attempt > MAX_REFINEMENTS:
+            raise ValueError(
+                "The mesh cannot satisfy the "
+                + str(BOUNDARY_TOLERANCE)
+                + " mm boundary tolerance: the measured deviation is "
+                + format(worst, ".5f")
+                + " mm after "
+                + str(MAX_REFINEMENTS)
+                + " refinement passes. Reduce the global size or repair the boundary curve."
+            )
+        per_turn = per_turn * 2
 
 def _along(node_ids, coords, polyline):
     """Sort nodes by their arc-length position along the analytic curve.

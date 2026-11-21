@@ -199,6 +199,37 @@ Interpretation:
   compound. The force value is therefore an execution result, not a correlation result.
 - No engineering tolerance has been agreed, so the closing force is recorded, not judged.
 
+### Mesh-fidelity correction on the private drawing (release candidate)
+
+The first private-drawing mesh did not satisfy the boundary tolerance. Measured against the analytic
+curves rather than the display tessellation:
+
+| Group | First mesh | Refined mesh | Limit |
+|---|---|---|---|
+| Outer WS (spline CD) | 0.30747 mm | 0.01549 mm | 0.02 mm |
+| Cavity (spline 11D) | 0.11288 mm | 0.01974 mm | 0.02 mm |
+| Door (spline 120) | 0.01423 mm | 0.01423 mm | 0.02 mm |
+| Fit points beyond 0.02 mm | 10 of 21 (worst 0.29415 mm) | 0 of 21 (worst 0.01071 mm) | 0 |
+
+Two causes were found and fixed: the boundary polyline of a closed spline was compared without its
+closing segment, and the global `MeshSizeMin` floor blocked curvature refinement below 0.25 mm on a
+sub-millimetre hook. Meshing now refines from curvature and re-measures until every boundary group is
+inside 0.02 mm, or raises a diagnostic naming the measured deviation.
+
+Refined licensed run (same drawing, same fixture, door travel ?6.5 mm, one CPU):
+
+| Item | Value |
+|---|---|
+| Run | `d0d409c2-6fc9-4e69-95a1-c75069075d68` |
+| Solver / extraction | `Succeeded` / `Succeeded`, `THE ANALYSIS HAS COMPLETED SUCCESSFULLY`, 90 increments |
+| Frames | 66; worst fixed-node \|U\| 1.811e-38 mm; all 15 labels present in every frame |
+| Travel | 6.5 mm of 6.5 mm prescribed; clearance 5.66497 mm; first contact at 5.70 mm |
+| Final `RF2` / projected closing force | ?0.016966 N / +0.016966 N |
+| Previous coarse-mesh value | ?0.018122 N (a 6.4 % difference from the mesh change; both are comparison values, not a target) |
+| CSV vs ODB | last row equals the extracted sample for `panel_U2_mm` and `panel_RF2_N` |
+| Solver warnings | 3 ? "THE SOLUTION APPEARS TO BE DIVERGING" and 3 ? negative-eigenvalue warnings ? **needing engineering review**, not an expected output limitation |
+| Expected limitations | Body profile excluded; hyperfoam card is illustrative |
+
 ## Drawing-curve evidence (synthetic, no license needed)
 
 `tests/test_spline.py` measures the imported curve rather than the control values:

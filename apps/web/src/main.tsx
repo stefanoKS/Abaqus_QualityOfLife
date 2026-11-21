@@ -1,31 +1,32 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { LayoutDashboard, Monitor, PanelTop, X } from 'lucide-react'
+import { Languages, LayoutDashboard, Monitor, PanelTop, X } from 'lucide-react'
 import logo from '../assets/logo.png'
 import Dashboard from './Dashboard'
 import Workspace from './Workspace'
 import { RunView } from './RunView'
 import { err, go, request, type Revision, type Summary, type Job } from './api'
-import { I18nProvider, LANGUAGES, useI18n, type Language } from './i18n'
+import { I18nProvider, useI18n, type Language } from './i18n'
 import './theme/tokens.css'
 import './style.css'
 
-function LanguageSelect() {
+function LanguageButton() {
   const { t, lang, setLang } = useI18n()
+  const next: Language = lang === 'ja' ? 'en' : 'ja'
+  // The visible label names the destination language, so one activation is enough.
+  const label = next === 'en' ? t('lang.en') : t('lang.ja')
   return (
-    <label className="lang-picker">
-      <select
-        aria-label={t('lang.switch')}
-        value={lang}
-        onChange={(e) => setLang(e.target.value as Language)}
-      >
-        {LANGUAGES.map((option) => (
-          <option key={option.id} value={option.id}>
-            {t(option.labelKey)}
-          </option>
-        ))}
-      </select>
-    </label>
+    <button
+      type="button"
+      className="lang-button"
+      lang={next === 'en' ? 'en' : 'ja'}
+      aria-label={t('lang.switchTo', { language: label })}
+      title={t('lang.switchTo', { language: label })}
+      onClick={() => setLang(next)}
+    >
+      <Languages aria-hidden="true" />
+      <span>{label}</span>
+    </button>
   )
 }
 
@@ -118,7 +119,7 @@ function App() {
           <Monitor />
           {t('nav.localSession')}
         </span>
-        <LanguageSelect />
+        <LanguageButton />
       </header>
       {view === 'dashboard' ? (
         <Dashboard notify={notify} />

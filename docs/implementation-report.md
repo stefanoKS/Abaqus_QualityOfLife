@@ -219,6 +219,86 @@ that reversed chains work.
 Test counts for this increment: `tests/test_spline.py` (8) is new; `tests/test_fixture.py` grew from 9
 to 13; `apps/web/tests/fixture.spec.ts` grew from 4 to 7.
 
+## A3. Release candidate ? stage split, language button, mesh fidelity
+
+### 1. Mesh, Mounting and Contact are separate stages
+
+The 2D workflow is now `Import -> Components -> Materials -> Mesh -> Mounting -> Contact ->
+Motion -> Review / Run -> Results`, driven by one table in
+[stages.ts](apps/web/src/features/workspace/stages.ts). Navigation, picking modes, mesh visibility and
+panel rendering all read `STAGE.<id>` instead of literal indexes, so a stage insert cannot route a user
+to the wrong tool. `workflowStates` returns one entry per id with prerequisites: Mesh needs materials,
+Mounting needs a compatible mesh (and an empty fixture is valid at Mesh), Contact needs materials only,
+and Review needs mesh + mounting + motion.
+
+| Step | Owns | Completion |
+|---|---|---|
+| Mesh | global/local sizing, generate, counts and quality | a compatible mesh exists |
+| Mounting | box selection, replace/add/subtract, clear, save, discard, legacy edge resolution | a non-empty reviewed fixture is saved against the active mesh |
+| Contact | hard normal law, general-contact domain, analysed/excluded components, global friction, save | a persisted contact definition is valid, independent of the fixture |
+
+The Contact screen has no action that fixes an edge or writes `WSFIX`; the deck writer still reads the
+fixture from the queue-time snapshot, unchanged.
+
+### 2. One language button
+
+The header now has a single button whose visible label names the destination language (`English` in
+Japanese, `???` in English), with an accessible name `Switch interface to ?`, keyboard operation and a
+visible focus ring. It keeps the Japanese first-launch default and the stored preference, and switching
+only re-renders: no save, no job restart, no remesh. Both dictionaries are at 422 keys.
+
+### 3. Mesh fidelity on the private drawing
+
+Reproduced on the retained mesh before changing anything: on outer WS spline `CD`, **10 of 21 fit
+points were farther than 0.02 mm** from the FE boundary and the worst was **0.29415 mm**, exactly as
+reported. Measuring independently (source curve evaluated at 400 parameters per edge, distance to the
+mesh boundary polyline) found two real defects:
+
+| Defect | Effect | Fix |
+|---|---|---|
+| A closed spline's boundary polyline was treated as open, so the closing segment was missing | cavity error reported as 0.11288 mm | [fidelity.py](packages/engineering/fidelity.py) restores the seam segment for a loop edge |
+| `Mesh.MeshSizeMin` clamped the size to a quarter of the global size, so curvature refinement could not go below 0.25 mm on a ~0.3 mm hook | refinement plateaued at 0.02877 mm | the floor is now 1/100 of the size, and [mesh.py](packages/engineering/mesh.py) drives `Mesh.MeshSizeFromCurvature` and re-measures, doubling the curvature spacing until the boundary tolerance is met or a diagnostic is raised |
+
+Result on `examples/hollow-section_2.dwg`:
+
+| Group | Before | After | Limit |
+|---|---|---|---|
+| Outer WS | 0.30747 mm | **0.01549 mm** | 0.02 mm |
+| Cavity | 0.11288 mm | **0.01974 mm** | 0.02 mm |
+| Door | 0.01423 mm | **0.01423 mm** | 0.02 mm |
+| Fit points over 0.02 mm (outer WS) | 10 of 21 (worst 0.29415) | **0 of 21 (worst 0.01071)** | 0 |
+
+Elements changed from 83 CPS3 + 291 CPS4R + 38 R2D2 (453 nodes) to **765 CPS4R + 38 R2D2 (928 nodes)**;
+the cavity stays empty and the body profile stays excluded.
+
+### 4. Acceptance exit status
+
+[acceptance_dwg.py](scripts/acceptance_dwg.py) now exits non-zero when the fixture is empty or does not
+match `WSFIX`, the solver or extraction did not succeed, an output file is missing, the prescribed
+travel is not attained, no contact is detected, a fixed node is missing from a frame or moved, or
+`history.csv` disagrees with the extracted history. The checks are pure functions covered by
+[tests/test_acceptance.py](tests/test_acceptance.py) (5 cases), and the harness prints every
+`***WARNING`/`***NOTE` line from `analysis.msg`.
+
+### 5. Gate results
+
+| Gate | Status | Command / evidence | Remaining issue |
+|---|---|---|---|
+| A ? Startup and compatibility | PARTIAL | `serve.py --test-data` + API/browser suites; capabilities report the native reader with ODA unset; legacy edge models still resolve | The double-click `start-abaqus-qol.cmd` path was not re-exercised this turn |
+| B ? Independent configuration | PASS | `tests/test_fixture.py` (13): mesh identity constant across fixture/friction edits, friction preserved when the fixture changes, superseded deck rejected by direct API, invalid edits leave the saved state usable | ? |
+| C ? Real browser and language | **FAIL** | Language: `i18n.spec.ts` (7/7) passes, including the new one-activation button test with Enter and Space. Stage split: the Playwright suite is **14 passed / 9 failed** after the cascade to Mounting/Contact; the failures are un-migrated test expectations (fixture controls expected on Mesh, `.property-body` selectors, step count), not observed application defects | The Playwright suite must be green before any pilot; the nine failing specs are listed in the release section |
+| D ? History and job integrity | **BLOCKED** | Queue-time snapshot and stale-deck rejection tests pass; the run's archived labels and mesh hash are recorded in `result-metadata.json` | The API-restart-during-job case was not re-run this turn |
+| E ? Private drawing geometry | PASS | `scripts/acceptance_dwg.py`: hash `8592c3c2?`, one filled region, one cavity, spline door, bulged body polyline, 0 unknown entities, boundary errors above | ? |
+| F ? Licensed solve and results | PASS (door-only) | Run `d0d409c2-6fc9-4e69-95a1-c75069075d68`: completed, 90 increments, 66 frames, travel 6.5/6.5 mm, contact at 5.70 mm, worst fixed-node |U| 1.8e-38 mm, CSV = ODB | 3 "solution appears to be diverging" notes and 3 negative-eigenvalue warnings need engineering review; body-first/door-second was not exercised |
+
+### Release decision for this candidate
+
+| Question | Answer |
+|---|---|
+| Ready for an internal engineering pilot? | **No.** The stage split and mesh-fidelity work are implemented and the native path is verified end to end, but the Playwright suite is 14/22 after the cascade (9 un-migrated specs), so the browser gate that protects an engineer from submitting a *different* fixture, contact definition or geometry than the one reviewed is not proven. Fixing those nine specs is the blocker; there is no known application defect behind them. |
+| Was body-first / door-second exercised? | **No.** The template still writes one rigid body and one step. A `vehicle_body` component is accepted, excluded and labelled `Body imported - excluded from this analysis` in Contact and Review. |
+| Is physical force correlation established? | **No.** The +0.016966 N result is a comparison value from an illustrative hyperfoam card with no agreed tolerance, and the solver emitted three divergence notes that need engineering review. |
+
 ## A. Scope actually completed
 
 The milestone brief lists nine items. This increment deliberately completes and verifies

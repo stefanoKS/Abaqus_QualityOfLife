@@ -89,6 +89,7 @@ test('material cards are editable, validated, versioned and written to the deck'
     .click()
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
+  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
   await expect(page.getByTestId('deck-status')).toHaveCount(0)

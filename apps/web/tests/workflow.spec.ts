@@ -25,6 +25,7 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
   // The deck cannot be prepared before a fixed-node selection exists.
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   await expect(prepare).toBeDisabled()
+  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
   await expect(prepare).toBeEnabled()

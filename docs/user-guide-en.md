@@ -33,6 +33,11 @@ Completion is derived from the saved setup, not from whether you opened the step
 
 ## 2. Basic workflow
 
+The 2D workflow is **Import -> Components -> Materials -> Mesh -> Mounting -> Contact -> Motion -> Review / Run -> Results**. Mesh produces elements only; **Mounting** owns the fixed-node selection and **Contact** owns the contact law and friction, and neither blocks the other.
+
+The header shows one language button labelled with the destination language (`English` while the interface is Japanese, `???` while it is English). One click switches; the current model, step, camera, selection and unsaved values are kept.
+
+
 1. **Dashboard → New project**. This creates a *project group* and its first model in one step. A group
    is a container ("5q45"); a model is one analysed configuration inside it. Leave *Model name* blank to
    reuse the project name. The starting geometry is a 2D hollow bulb section or a 3D extruded segment.

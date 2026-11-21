@@ -2,6 +2,13 @@ import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
 import { meshAndDeck } from './pipeline'
 import type { Job, Revision } from '../src/api'
+import { en, ja } from '../src/i18n'
+
+/** Build the expected accessible name from the dictionaries, not a literal. */
+function switchLabel(destination: string, japanese: boolean): string {
+  const template = (japanese ? ja : en)['lang.switchTo']
+  return template.replace('{language}', destination)
+}
 
 /**
  * These tests use the default (unmodified) context on purpose: Japanese must be
@@ -19,22 +26,42 @@ test('Japanese is the default interface language', async ({ page }) => {
   await expect(page.getByRole('button', { name: '新規プロジェクト' })).toBeVisible()
 })
 
+test('the language button names the destination language and switches in one activation', async ({
+  page,
+}) => {
+  await page.goto('/#dashboard')
+  const button = page.locator('.lang-button')
+  // Japanese interface: the button offers English, and names the action.
+  await expect(button).toHaveText(en['lang.en'])
+  await expect(button).toHaveAttribute('aria-label', switchLabel(en['lang.en'], true))
+  await button.focus()
+  await expect(button).toBeFocused()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en')
+  // English interface: the button offers Japanese.
+  await expect(button).toHaveText(ja['lang.ja'])
+  await expect(button).toHaveAttribute('aria-label', switchLabel(ja['lang.ja'], false))
+  await button.focus()
+  await page.keyboard.press(' ')
+  await expect(page.locator('html')).toHaveAttribute('lang', 'ja')
+})
+
 test('switching to English and back updates the interface without a reload', async ({ page }) => {
   await page.goto('/#dashboard')
-  const picker = page.locator('.lang-picker select')
-  await picker.selectOption('en')
+  const picker = page.locator('.lang-button')
+  await page.locator('.lang-button').click()
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
   await expect(page.getByRole('heading', { name: 'Simulation dashboard' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'New project' })).toBeVisible()
-  await expect(page.getByRole('combobox', { name: 'Switch language' })).toBeVisible()
-  await picker.selectOption('ja')
+  await expect(picker).toBeVisible()
+  await page.locator('.lang-button').click()
   await expect(page.locator('html')).toHaveAttribute('lang', 'ja')
   await expect(page.getByRole('heading', { name: '解析ダッシュボード' })).toBeVisible()
 })
 
 test('the language choice survives a reload', async ({ page }) => {
   await page.goto('/#dashboard')
-  await page.locator('.lang-picker select').selectOption('en')
+  await page.locator('.lang-button').click()
   await expect(page.getByRole('heading', { name: 'Simulation dashboard' })).toBeVisible()
   await page.reload()
   await expect(page.locator('html')).toHaveAttribute('lang', 'en')
@@ -57,7 +84,7 @@ test('engineer-entered values and the active step survive a language switch', as
   await travel.press('Tab')
   await expect(page.getByText('未保存の変更があります')).toBeVisible()
 
-  await page.locator('.lang-picker select').selectOption('en')
+  await page.locator('.lang-button').click()
 
   // Same step, same committed numeric value, English labels.
   await expect(page.getByRole('navigation', { name: 'Workflow' })).toBeVisible()
@@ -110,7 +137,7 @@ test('job states are translated while the stored value stays machine-readable', 
   await expect(row.locator('.badge')).toHaveText('完了')
   // The raw contract value is retained for diagnostics.
   await expect(row.locator('.badge')).toHaveAttribute('data-status', 'Completed')
-  await page.locator('.lang-picker select').selectOption('en')
+  await page.locator('.lang-button').click()
   await expect(row.locator('.badge')).toHaveText('Completed')
   await expect(page.getByLabel('Filter by status')).toBeVisible()
 })
@@ -124,7 +151,7 @@ test('accessibility labels are localized in both languages', async ({ page, requ
   await expect(page.getByRole('button', { name: '拡大' })).toBeVisible()
   await expect(page.getByRole('combobox', { name: '選択モード' })).toBeVisible()
 
-  await page.locator('.lang-picker select').selectOption('en')
+  await page.locator('.lang-button').click()
 
   await expect(page.getByRole('application', { name: '2D engineering viewport' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Zoom in' })).toBeVisible()
