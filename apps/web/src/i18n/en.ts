@@ -336,6 +336,7 @@ export const en: Dictionary = {
   'review.scenarioFailure': 'Solver failure',
   'review.scenarioSlow': 'Slow run for cancellation',
   'review.scenarioExtraction': 'Extraction fails once',
+  'review.abaqusOnly': 'Submission runs Abaqus. A missing launcher or license is reported in diagnostics.',
   'review.cpus': 'Solver CPUs',
   'review.submitLicensed': 'Submit licensed analysis',
   'review.submitDemo': 'Submit demo run',

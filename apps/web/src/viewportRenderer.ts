@@ -74,7 +74,47 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
   property.setEdgeColor(0.19, 0.28, 0.3)
   property.setLineWidth(surface.kind === 'edge' ? 2 : 1)
   return {
+    key: surface.key ?? '',
     actor,
+    data,
+    mapper,
+    update: (next: Surface, range: number | null) => {
+      // Same topology: swap coordinates in place and refresh the colours.
+      const points = data.getPoints()
+      const existing = points.getData() as (Float32Array & { delete?: () => void }) | undefined
+      const flat = new Float32Array(next.points.flat())
+      if (existing && typeof existing.set === 'function' && existing.length === flat.length) {
+        existing.set(flat)
+        points.setData(existing, 3)
+      } else {
+        existing?.delete?.()
+        points.setData(flat, 3)
+      }
+      if (next.contour && next.magnitudes) {
+        const values = Uint8Array.from(
+          next.magnitudes.flatMap((v) => colorAt((v ?? 0) / (range || 1)))
+        )
+        const scalars = data.getPointData().getScalars()
+        if (scalars && scalars.getNumberOfTuples() === next.magnitudes.length) {
+          scalars.setData(values, 3)
+        } else {
+          scalars?.delete()
+          data
+            .getPointData()
+            .setScalars(
+              vtkDataArray.newInstance({
+                name: 'Displacement magnitude',
+                numberOfComponents: 3,
+                values,
+              })
+            )
+        }
+        mapper.setColorModeToDirectScalars()
+      }
+      data.modified()
+      points.modified()
+      actor.modified()
+    },
     delete: () => {
       data.getPointData().getScalars()?.delete()
       data.getPoints().delete()
@@ -121,14 +161,37 @@ export class ViewportRenderer {
     this.ctx = overlay.getContext('2d')!
   }
   setScene(scene: Scene, dimension: '2D' | '3D', fit: boolean) {
-    this.clear()
+    // A frame change keeps the same topology: reuse each actor and only push new
+    // coordinates and colours into it. Rebuilding actors per frame is what made
+    // playback blank the view and reset the camera.
+    const reusable = new Map(this.actors.map((item) => [String(item.key), item]))
+    const next: ReturnType<typeof makeActor>[] = []
+    for (const surface of scene.surfaces) {
+      const existing = reusable.get(String(surface.key ?? ''))
+      if (existing) {
+        reusable.delete(String(surface.key ?? ''))
+        existing.update(surface, scene.range)
+        next.push(existing)
+        continue
+      }
+      const created = makeActor(surface, scene.range, dimension === '3D')
+      this.renderer.addActor(created.actor)
+      next.push(created)
+    }
+    for (const stale of reusable.values()) {
+      this.renderer.removeActor(stale.actor)
+      stale.delete()
+    }
+    this.actors = next
     this.scene = scene
     this.dimension = dimension
     this.bounds = extent(scene)
-    this.actors = scene.surfaces.map((surface) =>
-      makeActor(surface, scene.range, dimension === '3D')
-    )
-    for (const { actor } of this.actors) this.renderer.addActor(actor)
+    // Fit to the whole run so later frames of the same result cannot be clipped.
+    const motion = typeof this.scene.extent === 'number' ? this.scene.extent : 0
+    if (motion > 0) {
+      const b = this.bounds
+      this.bounds = [b[0] - motion, b[1] + motion, b[2] - motion, b[3] + motion, b[4], b[5]]
+    }
     this.hovered = null
     if (fit || !this.started) this.fit()
     else {

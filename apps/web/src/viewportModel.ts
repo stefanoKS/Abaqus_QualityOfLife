@@ -51,6 +51,8 @@ export interface ResultFrame {
 export interface ViewResults {
   instances: ResultInstance[]
   frame: ResultFrame | null
+  /** Largest |displacement| over the whole run in mm; fit once to cover it. */
+  extent?: number
 }
 export interface ViewportProps {
   dimension: '2D' | '3D'
@@ -83,6 +85,8 @@ export interface ViewportProps {
 }
 
 export interface Surface {
+  /** Stable identity of this surface across frames, used to reuse the actor. */
+  key?: string
   kind: 'face' | 'edge'
   points: number[][]
   cells: number[][]
@@ -98,6 +102,8 @@ export interface Surface {
 export interface Scene {
   surfaces: Surface[]
   range: number | null
+  /** Bounds covering the whole run, so the camera is fitted once. */
+  extent?: number[] | null
 }
 
 function cadColor(
@@ -217,6 +223,26 @@ function instanceSurfaces(
   return [...groups.values()].map((group) => group.surface)
 }
 
+
+/**
+ * Bounds that cover the whole run, so fitting once cannot clip later frames.
+ * Uses the largest |displacement| over the run and the undeformed extent.
+ */
+function runExtent(props: ViewportProps): number[] | null {
+  const instances = props.results?.instances
+  if (!instances?.length) return null
+  const motion = Math.max(0, Number(props.results?.extent ?? 0))
+  const ext = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]
+  for (const instance of instances)
+    for (const row of instance.nodes) {
+      for (let i = 0; i < 3; i++) {
+        ext[2 * i] = Math.min(ext[2 * i], row[i + 1] - motion)
+        ext[2 * i + 1] = Math.max(ext[2 * i + 1], row[i + 1] + motion)
+      }
+    }
+  return ext
+}
+
 export function makeScene(props: ViewportProps): Scene {
   if (props.results) {
     const surfaces = props.results.instances.flatMap((instance) =>
@@ -236,13 +262,18 @@ export function makeScene(props: ViewportProps): Scene {
         props
       )
     )
+    // Stable per-instance topology identity: the same key on every frame lets the
+    // renderer update coordinates instead of rebuilding actors.
+    surfaces.forEach((surface, index) => {
+      if (!surface.key) surface.key = surface.instance ? surface.instance + '#' + index : '#' + index
+    })
     let range: number | null = null
     for (const surface of surfaces)
       if (surface.contour) {
         for (const value of surface.magnitudes ?? [])
           if (value !== undefined) range = Math.max(range ?? 0, value)
       }
-    return { surfaces, range }
+    return { surfaces, range, extent: runExtent(props) }
   }
   const surfaces: Surface[] = []
   if (props.mesh && props.dimension === '2D') {

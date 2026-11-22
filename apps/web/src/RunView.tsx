@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   Archive,
@@ -110,6 +110,16 @@ function nearestIndex<T extends { time: number; step?: string | null }>(
   ).index
 }
 
+
+/** Largest |displacement| over the run, so one fit covers every frame. */
+function runExtent(index: Index): number {
+  let extent = 0
+  for (const row of index.history ?? []) {
+    extent = Math.max(extent, Math.abs(row.u1 ?? 0), Math.abs(row.u2 ?? 0))
+  }
+  return extent
+}
+
 export function RunView({
   id,
   resultView,
@@ -129,6 +139,9 @@ export function RunView({
   const [sel, select] = useState<Picked | null>(null),
     [mode, setMode] = useState<'node' | 'element'>('node'),
     [deformed, deform] = useState(true)
+  const [displayedFrame, setDisplayedFrame] = useState<number | null>(null)
+  const [pendingFrame, setPendingFrame] = useState<number | null>(null)
+  const [frameError, setFrameError] = useState<number | null>(null)
   const [component, setComponent] = useState<Component>('magnitude')
   const [logs, setLogs] = useState(''),
     [logFile, setLogFile] = useState('worker.log')
@@ -163,17 +176,27 @@ export function RunView({
       })
     return () => ac.abort()
   }, [job?.status, resultView, id, notify])
+  // Only the newest request may commit. The last complete frame stays on screen
+  // while the next one loads, so playback never blanks the viewport.
+  const frameRequest = useRef(0)
   useEffect(() => {
     if (!index) return
     const ac = new AbortController()
-    setFrame(null)
+    const sequence = ++frameRequest.current
+    setPendingFrame(n)
     request<Frame>(artifact(id, index.frames[n].file), 'GET', undefined, ac.signal)
-      .then(setFrame)
+      .then((loaded) => {
+        if (ac.signal.aborted || sequence !== frameRequest.current) return
+        setFrame(loaded)
+        setDisplayedFrame(n)
+        setFrameError(null)
+      })
       .catch((e) => {
-        if (!ac.signal.aborted) {
-          playing(false)
-          notify(err(e))
-        }
+        if (ac.signal.aborted || sequence !== frameRequest.current) return
+        // Keep the last good frame visible and say which one failed.
+        setFrameError(n)
+        playing(false)
+        notify(err(e))
       })
     return () => ac.abort()
   }, [index, n, id, notify])
@@ -383,7 +406,11 @@ export function RunView({
                 mode={mode}
                 selection={sel}
                 onSelect={select}
-                results={displacementAvailable ? { instances: index.instances, frame } : null}
+                results={
+                  index && !disabled.includes('U')
+                    ? { instances: index.instances, frame, extent: runExtent(index) }
+                    : null
+                }
                 deformed={deformed}
                 resultComponent={component}
                 resultLabel={legendLabel}
