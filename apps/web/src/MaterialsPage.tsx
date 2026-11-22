@@ -33,6 +33,8 @@ const DEFAULT_CARD: FullCard = {
   density: 1.1e-9,
   young: 5,
   poisson: 0.49,
+  c10: null,
+  d1: null,
   test_data: [],
 }
 
@@ -99,6 +101,8 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
       ...draft,
       young: draft.young ?? null,
       poisson: draft.poisson ?? null,
+      c10: draft.c10 ?? null,
+      d1: draft.d1 ?? null,
       library_id: null,
       library_version: null,
     }),
@@ -304,7 +308,9 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                   <small>
                     {row.card.model === 'hyperfoam_test'
                       ? t('materials.modelHyperfoam')
-                      : t('materials.modelLinear')}{' '}
+                      : row.card.model === 'neo_hookean'
+                        ? t('materials.modelNeoHookean')
+                        : t('materials.modelLinear')}{' '}
                     · v{row.current_version} ·{' '}
                     {t('materialsLibrary.usedByCount', { count: row.usage_count })}
                     {row.archived ? ' · ' + t('materialsLibrary.archived') : ''}
@@ -407,11 +413,14 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                           : old.test_data,
                       young: model === 'linear_elastic' ? (old.young ?? 5) : old.young,
                       poisson: model === 'linear_elastic' ? (old.poisson ?? 0.49) : old.poisson,
+                      c10: model === 'neo_hookean' ? (old.c10 ?? 0.5) : old.c10,
+                      d1: model === 'neo_hookean' ? (old.d1 ?? 0.01) : old.d1,
                     }))
                   }}
                 >
                   <option value="linear_elastic">{t('materials.modelLinear')}</option>
                   <option value="hyperfoam_test">{t('materials.modelHyperfoam')}</option>
+                  <option value="neo_hookean">{t('materials.modelNeoHookean')}</option>
                 </select>
               </label>
               <label>
@@ -443,6 +452,23 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                     max={0.4999}
                     onChange={(poisson) => setDraft((old) => ({ ...old, poisson }))}
                   />
+                </>
+              ) : draft.model === 'neo_hookean' ? (
+                <>
+                  <NumberInput
+                    label={t('materials.c10')}
+                    value={draft.c10 ?? 0.5}
+                    min={1e-9}
+                    onChange={(c10) => setDraft((old) => ({ ...old, c10 }))}
+                  />
+                  <small>{t('materials.c10Hint')}</small>
+                  <NumberInput
+                    label={t('materials.d1')}
+                    value={draft.d1 ?? 0.01}
+                    min={1e-9}
+                    onChange={(d1) => setDraft((old) => ({ ...old, d1 }))}
+                  />
+                  <small>{t('materials.d1Hint')}</small>
                 </>
               ) : (
                 <>

@@ -283,3 +283,46 @@ def test_import_never_merges_distinct_cards_by_name(monkeypatch, tmp_path):
         )
         again = api.post("/api/materials/import", json={"revision": head["revision"]}).json()
         assert all(row["existing"] for row in again)
+
+
+def test_neo_hookean_library_card_round_trips_and_versions(monkeypatch, tmp_path):
+    """A compressible neo-Hookean card keeps C10/D1, units and version history.
+
+    Existing linear-elastic cards are never relabelled as a rubber law.
+    """
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    with TestClient(app, base_url="http://127.0.0.1") as api:
+        created = api.post(
+            "/api/materials",
+            json={
+                "name": "Synthetic neo-Hookean",
+                "card": {
+                    "model": "neo_hookean",
+                    "color": "#2f9e8f",
+                    "density": 1.1e-9,
+                    "c10": 0.5,
+                    "d1": 0.01,
+                    "test_data": [],
+                },
+            },
+        )
+        assert created.status_code == 201, created.text
+        material = created.json()
+        assert material["card"]["model"] == "neo_hookean"
+        assert material["card"]["c10"] == 0.5
+        assert material["card"]["d1"] == 0.01
+        assert material["card"]["young"] is None
+
+        detail = api.get(f"/api/materials/{material['id']}").json()
+        changed = dict(detail["card"], c10=0.75)
+        updated = api.put(f"/api/materials/{material['id']}", json={"card": changed})
+        assert updated.status_code == 200, updated.text
+        versions = updated.json()["versions"]
+        assert versions[0]["card"]["c10"] == 0.5
+        assert versions[1]["card"]["c10"] == 0.75
+        assert versions[1]["card"]["d1"] == 0.01
+
+        # A card created as linear elastic stays linear elastic.
+        linear = create_library(api, "Linear remains linear").json()
+        assert linear["card"]["model"] == "linear_elastic"
+        assert linear["card"]["c10"] is None

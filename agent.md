@@ -1,5 +1,51 @@
 # Abaqus QOL implementation handoff
 
+## Milestone delivery · 2026-11-23 (Gates A–G PASS with neo-Hookean; physical correlation BLOCKED)
+
+Baseline `5104b99`. All work was done in isolated data roots and on isolated ports; the live
+instance (8765), its database, drawings and retained runs were not restarted or modified. The live
+instance was reachable at the start of the session and was not reachable at the end; no session
+action targeted it, and it was not started again.
+
+| Area | State | Where |
+|---|---|---|
+| Import units | PASS: no checkbox, immediate picker, declared mm / unitless-as-mm / missing-header / named-unit rejection recorded in `Source.unit_basis`. Browser and API tested. | [units.py](packages/engineering/units.py), [Workspace.tsx](apps/web/src/Workspace.tsx), [test_units.py](tests/test_units.py) |
+| Defaults | PASS: new models 0.5 mm / 1.0 s; `schema_version` 2 with version-1 legacy backfill (1.0 mm / 1.3 s) and explicit-value preservation. | [model.py](packages/engineering/model.py), [test_defaults.py](tests/test_defaults.py) |
+| Rubber element policy + solid law | PASS: enforced reduced integration, CPS4/R2D2/CPS3 legend, per-region counts, deck rejects CPS4 rubber quads; compressible neo-Hookean C10/D1 with versioned library cards, bilingual editing and a licensed 2024 run (`a8f47acc…`). | [deck.py](integrations/abaqus/deck.py), [model.py](packages/engineering/model.py), [MaterialEditor.tsx](apps/web/src/features/materials/MaterialEditor.tsx), [engineering-validation.md](docs/engineering-validation.md) |
+| Zero travel | PASS: true hold for body/door incl. door-only, explicit zero BCs, hold-only UI/diagnostics. | [deck.py](integrations/abaqus/deck.py), [zero-travel.spec.ts](apps/web/tests/zero-travel.spec.ts) |
+| Placement | PASS: offset-first assembled side, intersection vs ambiguous, no-overlap; legacy 1.80 mm door gap preserved. | [deck.py](integrations/abaqus/deck.py), [test_two_step.py](tests/test_two_step.py) |
+| Results | PASS: Mises default, element cell colouring (max IP), fixed 0–0.5 MPa scale, saturation, editable range, white canvas, edge/node toggles, 1× deformation, node/element probes, missing vs zero. | [RunView.tsx](apps/web/src/RunView.tsx), [viewportModel.ts](apps/web/src/viewportModel.ts), [results-retained.spec.ts](apps/web/tests/results-retained.spec.ts) |
+| Step identity | PASS: canonical id ignores case and whitespace (`Bodyseating`), shared by frames/history/plot/CSV; configured name kept for display. | [interchange.py](integrations/abaqus/interchange.py), [extract_odb.py](integrations/abaqus/extract_odb.py) |
+| Licensed two-panel | PASS (execution): moving-body 5 mm gap `eca0c88e-8196-48cc-964a-971f2f8c24e3`; held-body `89fab9df-23fd-481c-a8d5-bbcb934f0354`; neo-Hookean door seal `a8f47acc-dd15-42df-8f61-a0feed14adb9`. All solved and extracted; both RPs read directly from both ODB steps; fixed nodes ~1e-37 mm; Mises and CSV agree. | [engineering-validation.md](docs/engineering-validation.md) |
+| Mesh recovery | PASS: missing/corrupt active mesh is `mesh.artifact_missing/corrupt` in readiness, deck preparation refuses with the recovery action, and historical decks stay readable. | [readiness.py](services/readiness.py), [store.py](services/store.py), [test_release_and_compatibility.py](tests/test_release_and_compatibility.py) |
+| Offset picking | PASS: real Edge/WebGL clicks on `PANEL-1` and `BODY-1` at +0.5/−1.0 mm, surviving zoom and middle-button pan. | [offset-picking.spec.ts](apps/web/tests/offset-picking.spec.ts) |
+| Two-step replay | PASS: a re-extracted licensed two-step result opens on Closing, switches the curve/CSV to Body seating and back with canonical ids. | [two-step-results.spec.ts](apps/web/tests/two-step-results.spec.ts) |
+| Physical correlation | **BLOCKED**: no independent reference, no agreed tolerance. Solver warnings (divergence cut-backs, 3 unconnected regions, zero-force body step before contact) need engineering review. | validation record |
+
+**Tests actually run:** pytest **230 passed, 1 opt-in skipped**; `test:i18n` **700 keys**;
+`test:encoding` pass (41 files); `typecheck` pass; build release **`50f7b3465baf`**; Playwright
+**71 passed, 1 opt-in skipped** (the retained-result replay spec is skipped when its isolated 8891
+instance/`.local` seed is absent; the two-step replay spec skipped only if 8892 is absent).
+
+**Next executable slice.** (1) Physical correlation against an independent reference with an agreed
+tolerance, starting from the synthetic two-panel and neo-Hookean cases (do not claim it from
+convergence alone). (2) Convergence and rate sensitivity; the licensed runs still emit divergence
+cut-backs and pre-contact zero-force warnings. (3) Per-pair friction, oblique motion and partitions
+remain outside this delivery. (4) Optionally broaden the solid-rubber law beyond neo-Hookean.
+
+**Files changed (this milestone).** `packages/engineering/{model,geometry,units,dxf,dwg,__init__}.py`;
+`integrations/abaqus/{deck,results,interchange,extract_odb}.py`; `services/api/{main,contracts}.py`,
+`services/readiness.py`, `services/store.py`, `services/material_library.py`;
+`apps/web/src/{Workspace,RunView,Viewport,viewportModel,viewportRenderer,style,viewport.css,MaterialsPage}.tsx`,
+`features/mesh/{meshQuality,MeshReview}.tsx/ts`, `features/run/fields.ts`,
+`features/materials/MaterialEditor.tsx`,
+`features/workspace/{AssemblyDiagnostics,readiness,workflowStates}`,
+`i18n/{en,ja}`, `generated.ts`; tests `test_defaults`, `test_units`, `test_results_fields`,
+`test_two_step`, `test_abaqus`, `test_geometry`, `test_release_and_compatibility`,
+`test_material_library`,
+`apps/web/tests/{import-units,zero-travel,assembly,results-retained,offset-picking,two-step-results,result-fields,materials,playback,numeric-guard,isolation,workflow}`;
+docs. `scripts/schema.py` was run and the generated diff inspected.
+
 ## Two-panel placement, contact orientation and motion projection · 2026-11-22 (Gates 1–6 PASS, Gate 7 BLOCKED)
 
 Baseline `f1cb37b`, clean tree. The reported arrangement — door **above** the seal moving −5.5 mm

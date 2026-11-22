@@ -1,5 +1,6 @@
 """License-free contracts; optional installed-runtime roundtrip uses only 'abaqus python'."""
 
+import copy
 import hashlib
 import json
 import os
@@ -33,6 +34,65 @@ def test_deck_sections_history_mesh_and_motion(model_mesh):
     assert "*Solid Section, elset=REGION_2" in deck
     assert f"PANEL_RP, 2, 2, {project.motion.travel}" in deck
     assert deck.count("*End Step") == 1
+
+
+def test_rubber_quadrilateral_is_rejected_as_full_integration(model_mesh):
+    """Rubber quadrilaterals are always CPS4R; a forged CPS4 never reaches the deck."""
+    project, mesh = model_mesh
+    faces = {face.id: face for face in project.faces}
+    rubber = {
+        card.id for card in project.materials if card.model in ("hyperfoam_test", "neo_hookean")
+    }
+    quad = next(
+        element
+        for element in mesh["elements"]
+        if element["type"] == "CPS4R"
+        and faces[element["entity"]].material in rubber
+    )
+    face = faces[quad["entity"]]
+    material = next(card for card in project.materials if card.id == face.material)
+    assert material.model == "hyperfoam_test"
+    broken = copy.deepcopy(mesh)
+    next(element for element in broken["elements"] if element["id"] == quad["id"])[
+        "type"
+    ] = "CPS4"
+    with pytest.raises(ValueError, match="CPS4R|reduced integration"):
+        write_inp(project, broken)
+
+
+def test_neo_hookean_card_is_written_and_treated_as_rubber():
+    """Compressible neo-Hookean: C10 (MPa) / D1 (MPa^-1), reduced integration."""
+    from packages.engineering.model import Material
+
+    project = synthetic()
+    project.materials.append(
+        Material(
+            id="neo",
+            name="Synthetic neo-Hookean",
+            color="#2f9e8f",
+            model="neo_hookean",
+            density=1.1e-9,
+            c10=0.5,
+            d1=0.01,
+        )
+    )
+    next(face for face in project.faces if face.id == "bulb").material = "neo"
+    mesh = generate_mesh(project)
+    deck = write_inp(project, mesh)
+    assert "*Hyperelastic, neo Hooke" in deck
+    assert "\n0.5, 0.01\n" in deck
+    assert deck.count("*Hyperelastic, neo Hooke") == 1
+    quad = next(
+        element
+        for element in mesh["elements"]
+        if element["type"] == "CPS4R" and element["entity"] == "bulb"
+    )
+    broken = copy.deepcopy(mesh)
+    next(element for element in broken["elements"] if element["id"] == quad["id"])[
+        "type"
+    ] = "CPS4"
+    with pytest.raises(ValueError, match="CPS4R|reduced integration"):
+        write_inp(project, broken)
 
 
 def test_deck_rejects_invalid_mount_and_degenerate_mesh(model_mesh):

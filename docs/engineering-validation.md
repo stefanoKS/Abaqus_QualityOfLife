@@ -200,8 +200,10 @@ asserts that the converter is never reached, and the acceptance harness below ru
 Interpretation:
 
 - This is a **door-only** closing case on the real drawing. The body profile is imported, reviewed and
-  reported as excluded; it is not meshed and it does not move. Body seating followed by door closing
-  (two panels, two steps) is **not implemented**, so no two-panel table can be evidenced.
+  reported as excluded; it is not meshed and it does not move. At the time of this session body
+  seating followed by door closing (two panels, two steps) was not implemented; the milestone
+  delivery below adds and exercises that template, so this bullet is the historical door-only record,
+  not a current limitation.
 - The material card is the illustrative hyperfoam card carried by the repository; it is not a measured
   compound. The force value is therefore an execution result, not a correlation result.
 - No engineering tolerance has been agreed, so the closing force is recorded, not judged.
@@ -438,3 +440,124 @@ Supported geometry limitations of this increment:
   model that already carries one. The DXF reader still rejects open non-PANEL contours and merges
   multiple open PANEL contours into one component, so a DXF-only two-panel drawing cannot yet
   declare a separate body profile.
+
+## Milestone delivery — import units, defaults, zero travel, stress viewer and licensed two-panel runs
+
+Date: 2026-11-23 (work started 2026-11-22). Baseline `5104b99`. Isolated data roots and ports were
+used throughout; the engineer's live instance (8765) and its database, drawings and retained runs
+were not restarted or modified.
+
+### What was executed
+
+| Area | Status | Evidence |
+|---|---|---|
+| Import unit policy: declared mm, unitless-as-mm, missing header, inches rejection | PASS | `tests/test_units.py`; browser `apps/web/tests/import-units.spec.ts` |
+| Import without the mm checkbox, first click opens the picker, cancel/corrupt/two models | PASS | `import-units.spec.ts`, `isolation.spec.ts` |
+| New-model defaults 0.5 mm / 1.0 s; version-1 payloads keep 1.0 mm / 1.3 s | PASS | `tests/test_defaults.py`, API creation/duplication |
+| Rubber quadrilateral reduced-integration policy and CPS4 rejection | PASS | `tests/test_abaqus.py::test_rubber_quadrilateral_is_rejected_as_full_integration`; Mesh UI policy and element legend |
+| Solid hyperelastic rubber (compressible neo-Hookean C10/D1) | PASS | `tests/test_abaqus.py`, `tests/test_material_library.py`, browser `materials.spec.ts`; licensed run `a8f47acc-dd15-42df-8f61-a0feed14adb9` |
+| Zero travel as a true hold (four combinations + door-only) | PASS | `tests/test_two_step.py`; browser `apps/web/tests/zero-travel.spec.ts` (0/−5.5 and 0/0) |
+| Draft validation never blanks the last geometry | PASS | `zero-travel.spec.ts`; display no longer clears on a draft 422 |
+| Assembled-offset placement, intersection vs ambiguous side, no X overlap | PASS | `tests/test_two_step.py` geometric tests |
+| Missing raw components preserved (null, empty CSV cell); measured zero numeric | PASS | `tests/test_results_fields.py` |
+| Canonical step identity incl. Abaqus space-stripped names | PASS | re-extracted licensed ODBs; `test_results_fields.py` |
+| Stress-default Results view, cell colouring and max-IP policy | PASS | browser `results-retained.spec.ts` on retained licensed `39f696ee…` |
+| White Results canvas, fixed 0–0.5 MPa limits, saturation, range editing | PASS | `results-retained.spec.ts`, screenshots under `.local/milestone/` |
+| Edges/node markers independent toggles, deformation scale | PASS | `results-retained.spec.ts` |
+| Licensed two-panel body+door and held-body+door execution | PASS (execution) | runs below |
+| Viewer/extractor Mises vs ODB | PASS (extraction agreement) | element 217 IP1 values below |
+| Physical correlation | BLOCKED | no independent reference data or agreed tolerance |
+| Mesh-artifact recovery for missing/corrupt active mesh | PASS | `test_release_and_compatibility.py::test_missing_or_corrupt_active_mesh_names_the_recovery`; readiness `mesh.artifact_missing/corrupt`, deck refusal, historical deck readable |
+| Offset-profile picking in a real browser | PASS | browser `offset-picking.spec.ts`: door/body at +0.5/−1.0 mm, zoom and middle-button pan |
+| Two-step result replay in the Results UI | PASS | browser `two-step-results.spec.ts` on a re-extracted licensed result: opens on Closing, switches to Body seating, canonical CSV step |
+
+### Licensed execution record — two-panel synthetic, 2026-11-23
+
+Environment: Abaqus/Standard 2024 (`C:\SIMULIA\Commands\abq2024.bat`), one CPU, isolated
+`SEAL_DATA`, synthetic `Two-panel seating section` (coarse 1.5 mm acceptance mesh), `Body seating`
+(1.0 s) then `Closing` (1.3 s). Run through the normal API → worker → solver → read-only extractor
+path. ODBs were inspected read-only with `abaqus python`.
+
+| Case | Run | Body step | Closing step | Fixed WS nodes | Final max CPRESS | Max Mises (ODB) |
+|---|---|---|---|---|---|---|
+| moving body 5 mm gap, door −5.5 | `eca0c88e-8196-48cc-964a-971f2f8c24e3` | BODY U2 0→5.0, RF2 0.0; PANEL 0→0 | BODY held 5.0→5.0, RF2 ≈0; PANEL 0→−5.5, RF2 −0.17537114024162292 | 13 labels, max \|U\| 9.15e-38 mm | 0.05185 MPa | 0.162458926 MPa (WS-1 el. 217 IP 1) |
+| held body, door −5.5 | `89fab9df-23fd-481c-a8d5-bbcb934f0354` | BODY 0→0, RF2 0; PANEL 0→0 | BODY 0→0, RF2 0; PANEL 0→−5.5, RF2 −0.17537090182304382 | 13 labels, max \|U\| 9.15e-38 mm | 0.05185 MPa | 0.162471995 MPa (WS-1 el. 217 IP 1) |
+
+| Case | Mesh digest | Deck SHA-256 | Solver / extraction | Frames |
+|---|---|---|---|---|
+| moving body 5 mm gap | `51ef1a65fa5b7701156f9ce6c93b4bd2411fd63b0c6b490f6e10b19d929b0c15` | `b5b0413517ac770645d88d68732428008595ccd495263bee93992489c9ff4bf1` | Succeeded / Succeeded | 117 |
+| held body | `487df47458048a8b9ded0689a855b8c9c473b8c0a657406c9f9617cc32619104` | `c75f09b0735ac36b02570257cfde6a177f67500c9bc7d76cddf5f13595856dd5` | Succeeded / Succeeded | 117 |
+
+Checks actually made:
+
+- **Prescribed and attained motion.** Both reference points were read directly from the ODB in
+  both steps. The commanded body/door travel is attained; the non-moving reference stays fixed.
+- **Step-boundary continuity.** The body's Closing-step first U2 equals its Body-seating last U2;
+  the door's Closing-step first U2 is 0.
+- **Fixed nodes.** The 13 reviewed `WS-1` labels move by at most ~1e-37 mm over every frame.
+- **Projection and CSV.** `history.csv` final door row equals the ODB RP: U2 −5.5,
+  RF2 −0.17537114024162292 / −0.17537090182304382, projected force +0.17537…; body step rows carry
+  U2 5.0 / 0.0 with `step_id` `bodyseating`.
+- **Mises agreement.** The extractor's `Mises` field for WS-1 element 217 integration point 1
+  equals the ODB invariant to the printed precision (0.162458926 vs 0.16245892643928528;
+  0.162471995 vs 0.16247199475765228). The viewer colours an element by its maximum
+  integration-point Mises and the Gate F browser test verifies the displayed probe value against
+  the extracted frame.
+- **Solver warnings.** Both analyses completed successfully but emitted divergence/cut-back
+  warnings and "3 unconnected regions" (the two rigid instances and the seal are separate
+  instances until contact). The 5 mm-gap body step also reports zero force before contact. These
+  warnings require engineering review; a converged solve is not a physical validation.
+- **Sensitivity, not a target.** An earlier moving-body run with the synthetic body drawn only
+  1 mm below the seal and commanded +5 mm (`4279bf92-e9e6-4f4f-a011-a02fbfe60ef8`) over-compressed
+  the foot: BODY RF2 1975.7 N and CPRESS 109.76 MPa. It is retained as a high-compression
+  sensitivity case and is **not** presented as a representative seating result.
+
+### Licensed neo-Hookean solid-rubber verification
+
+The same API → worker → solver → extractor path was used for a door-only synthetic section whose
+bulb is assigned a compressible neo-Hookean card (C10 = 0.5 MPa, D1 = 0.01 MPa⁻¹). The deck contains
+`*Hyperelastic, neo Hooke` followed by `0.5, 0.01`; this is a deliberately named synthetic card, not
+a material qualification.
+
+| Run | Mesh digest | Deck SHA-256 | Solver / extraction | Result |
+|---|---|---|---|---|
+| `a8f47acc-dd15-42df-8f61-a0feed14adb9` | `3869f07dfd81e4ea8a26e37cb0c0a5737b6bb752f42914d1e849ea7a2aa5bfd3` | `cf4017b226c3523d17bf7920dca332256074fb9add9c2c4668aa6cd63437bf84` | Succeeded / Succeeded | Closing 51 frames; PANEL U2 0→−5.5, RF2 −0.3982129693031311; 13 fixed nodes max \|U\| 8.41e-37 mm; CPRESS 0.116296 MPa; max Mises 0.367282778 MPa (WS-1 el. 199 IP 1) |
+
+The analysis ended with "THE ANALYSIS HAS BEEN COMPLETED" and **0 ERROR MESSAGES**. It emitted
+divergence/cut-back warnings and "2 unconnected regions", which remain engineering-review items.
+The material library keeps C10/D1 as versioned values (v1/v2 tested), and a linear-elastic card is
+never relabelled.
+
+### Two-step result replay
+
+A re-extracted copy of the held-body licensed run (source `89fab9df-23fd-481c-a8d5-bbcb934f0354`)
+was served on an isolated instance as completed run `62ce070f-5803-44ac-a14b-4488d574b09f`. The
+browser spec opens it on the **Closing** frame (t = 1.0 s), shows both canonical step options, switches
+the curve/CSV to **Body seating** (`step_id=bodyseating`) while retaining the displayed frame and
+field/probe policy, then returns to **Closing** (`step_id=closing`) and reaches 5.5 mm. This is a
+replay of extracted evidence, not a new solve.
+
+### Final regression
+
+pytest **230 passed, 1 opt-in skipped**; Playwright **71 passed, 1 opt-in skipped** (the retained
+8891 replay was not running for the final suite, so it skipped by design; the two-step 8892 replay
+ran and passed); `test:i18n` **700 keys**; encoding **41 files**; `typecheck`; production build
+**`50f7b3465baf`**. No solver is used by the automated suites.
+
+### Separate conclusions
+
+These are intentionally separate; none implies the next one.
+
+| Conclusion | Outcome | Basis |
+|---|---|---|
+| Workflow readiness | **PASS for the stated gates** | Import/units, defaults, zero holds, placement, mesh recovery, results controls and step identity are automated and pass; Gates A–F/H above. |
+| Successful solver execution | **PASS for the three synthetic acceptance cases** | `eca0c88e…`, `89fab9df…` and `a8f47acc…` each completed solver and extraction; ODB read-only inspection. Not a statement about arbitrary geometry or production decks. |
+| Viewer agreement with the ODB | **PASS for the extracted fields tested** | Extractor Mises equals the ODB invariant to ~1e-9 MPa; the browser probe equals the extracted max-IP value; RP histories/CSV equal the ODB; two-step replay preserves canonical step identity. |
+| Physical correlation | **BLOCKED** | No independent reference measurement, boundary condition set or agreed tolerance. Convergence alone, and a completed solve, do not establish it. |
+
+### Remaining blockers
+
+| Area | Status |
+|---|---|
+| Physical correlation | No independent reference and no agreed tolerance. |
+| Convergence/rate sensitivity | Not studied; the synthetic cases emit divergence cut-backs and zero-force warnings before contact. |

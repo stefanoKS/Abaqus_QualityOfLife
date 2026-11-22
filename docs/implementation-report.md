@@ -7,6 +7,71 @@ Repository: `stefanoKS/Abaqus_QualityOfLife`
 Environment: Windows, Python 3.11.9 (`.venv`), Node.js 24.16.0, npm 11.13.0, Edge with WebGL,
 Abaqus/Standard 2024 installed at `C:\SIMULIA\Commands\abq2024.bat`.
 
+## A7. Milestone delivery — import units, defaults, zero-travel holds, stress viewer, licensed two-panel runs
+
+Date: 2026-11-23. Baseline: `5104b99`, clean tree. Isolated data roots and ports; the live instance
+(8765) and its data/artifacts were not restarted or modified. Two authorized small synthetic
+Abaqus/Standard 2024 two-panel cases were executed (one CPU); their ODBs were inspected read-only.
+
+### Delivered behaviour
+
+| Area | Change |
+|---|---|
+| Import | Removed the "Drawing coordinates are in mm" checkbox in both languages. Import enables immediately and the first click opens the picker. A drawing's own header decides: declared mm imports directly; unitless is interpreted as project mm and recorded as `unitless drawing interpreted as mm`; a missing header is recorded separately; another declared unit is rejected by name. `Source.unit_basis` persists the decision. |
+| Defaults | New models use a 0.5 mm global mesh and a 1.0 s new step. `schema_version` 2 marks the new defaults; version-1 payloads with omitted defaulted fields still read as 1.0 mm / 1.3 s, and explicit values are never rewritten. |
+| Zero travel | `travel = 0` is a valid hold for the door and body, including door-only. Two-step decks write explicit zero BCs (never an epsilon), keep both steps, references and contact continuity. The UI explains the hold; readiness no longer rejects it. |
+| Placement | The initial Y offset is applied before the assembled side and clearance are decided. Above/below/actual intersection/ambiguous side/no X overlap are distinct. The legacy door-only 1.80 mm gap is unchanged. |
+| Results | Stress opens by default with von Mises, element probing, cell colouring by maximum integration-point Mises, a fixed 0.00–0.50 MPa blue→red scale, saturation marking, run-wide/editable ranges with inline validation, independent mesh-edge and node-marker toggles, a 1× deformation scale, and a solid white canvas with no grid. Displacement opens on node probing and also supports element inspection. |
+| Element policy | Mesh shows an enforced, non-editable "Reduced integration for rubber quadrilaterals" setting, plain-language CPS4R/CPS3/R2D2 explanations and real per-region/component counts. The deck writer rejects a rubber quadrilateral written as CPS4. |
+| Integrity | Canonical step identity ignores case and whitespace (Abaqus stores `Body seating` as `Bodyseating`), shared by frames, histories, plot selection and CSV. Missing raw components stay null/empty rather than zero. |
+| Licensed evidence | Two-panel moving-body and held-body cases completed with extraction success; both RPs were read directly from both ODB steps; Mises and CSV values agree with the ODB. |
+
+### Gate status
+
+| Gate | Status | Evidence |
+|---|---|---|
+| A. Import and model isolation | PASS | `tests/test_units.py`, browser `import-units.spec.ts`, `isolation.spec.ts`; native DWG reader path covered by `tests/test_dwg.py` on this machine |
+| B. Defaults and element policy | PASS | defaults, CPS4R policy, compressible neo-Hookean C10/D1 (schema, library versions, bilingual editor, deck, licensed run) |
+| C. Zero travel and validation recovery | PASS | Python four-combination deck tests; browser `zero-travel.spec.ts` |
+| D. Placement and artifact integrity | PASS | offset/intersection/ambiguous/no-overlap; missing/corrupt active mesh is a named readiness blocker, deck preparation agrees, historical decks stay readable |
+| E. Numerical field correctness | PASS | Mises zero/uniaxial/shear, missing vs measured zero, canonical steps, and duplicate element labels across instances (`result-fields.spec.ts`) |
+| F. Actual Results browser behaviour | PASS | `results-retained.spec.ts` on retained licensed `39f696ee…` (white canvas, Mises, limits, saturation, probe value vs frame, toggles, deformation, step selection) |
+| G. Licensed two-panel acceptance | PASS (execution, extraction and viewer agreement) | runs `eca0c88e…`, `89fab9df…` and neo-Hookean `a8f47acc…`; direct ODB RP inspection; extractor Mises equals the ODB; two-step replay `62ce070f…`; see the validation record |
+| H. Regression and handoff | PASS | full suite counts and build identity recorded in [agent.md](../agent.md) |
+
+### Files changed
+
+`packages/engineering/model.py`, `geometry.py`, `units.py` (new), `dxf.py`, `dwg.py`,
+`__init__.py`; `integrations/abaqus/deck.py`, `results.py`, `interchange.py`, `extract_odb.py`;
+`services/api/main.py`, `contracts.py`, `readiness.py`, `store.py`, `material_library.py`;
+`apps/web/src/Workspace.tsx`, `MaterialsPage.tsx`,
+`RunView.tsx`, `Viewport.tsx`, `viewportModel.ts`, `viewportRenderer.ts`, `style.css`,
+`viewport.css`, `features/mesh/meshQuality.ts`, `features/mesh/MeshReview.tsx`,
+`features/run/fields.ts` (new), `features/materials/MaterialEditor.tsx`,
+`features/workspace/AssemblyDiagnostics.tsx`, `features/workspace/readiness.ts`,
+`features/workspace/workflowStates.ts`, `i18n/en.ts`, `i18n/ja.ts`, `generated.ts`;
+`tests/test_defaults.py` (new), `test_units.py` (new), `test_results_fields.py` (new),
+`test_two_step.py`, `test_abaqus.py`, `test_geometry.py`, `test_release_and_compatibility.py`,
+`test_material_library.py`;
+`apps/web/tests/import-units.spec.ts` (new), `zero-travel.spec.ts` (new),
+`offset-picking.spec.ts` (new), `two-step-results.spec.ts` (opt-in, new),
+`result-fields.spec.ts` (new), `assembly.spec.ts`, `materials.spec.ts`,
+`results-retained.spec.ts` (opt-in, new), `playback.spec.ts`,
+`numeric-guard.spec.ts`, `isolation.spec.ts`, `workflow.spec.ts`; docs.
+
+### Known gaps carried forward
+
+- Solver divergence/zero-force warnings on the licensed cases need engineering review; physical
+  correlation remains blocked (no independent reference or agreed tolerance).
+- Convergence and rate sensitivity are not studied.
+- Per-pair friction, oblique motion and partitions remain outside this delivery.
+
+Added after the first pass: the compressible neo-Hookean solid-rubber card (C10/D1) with versioned
+library persistence, bilingual editing and a licensed 2024 run (`a8f47acc…`); named readiness
+recovery for a missing/corrupt active mesh with deck refusal and readable history; a real Edge/WebGL
+offset-picking test through zoom and pan; a two-step licensed-result replay; and instance-qualified
+duplicate-label result tests. See the validation record.
+
 ## A6. Repair delivery — bottom-mounted body placement, contact orientation, motion projection
 
 Date: 2026-11-22. Baseline: `f1cb37b`, clean working tree. No licensed solver was launched, no

@@ -20,14 +20,14 @@ MAX_DRAWING = 8 * 1024 * 1024
 ARC_SEGMENTS = 4  # 90-degree analytic arcs share endpoints unambiguously in OCC
 
 
-def _millimetres(units):
-    """Accept only drawings whose declared unit is millimetres."""
-    if units in (4, "Millimeters", "Millimetres", "mm"):
-        return "millimetres (drawing header $INSUNITS = 4)"
-    raise ValueError(
-        f"The drawing declares {units} instead of millimetres. "
-        "Set $INSUNITS to millimetres in the CAD file before importing."
-    )
+def _drawing_units(source):
+    """Interpret the DWG unit header under the shared project unit policy."""
+    from . import units as units_policy
+
+    declared = source.get("insUnits")
+    if declared is None and source.get("insUnitsName"):
+        declared = source.get("insUnitsName")
+    return units_policy.interpret(declared, "DWG")
 
 
 def _arc_parts(center, radius, start, sweep):
@@ -74,9 +74,9 @@ def _bulge_arc(first, second, bulge):
 def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
     """Map a DWG inventory (see ``integrations/dwg``) onto a project and a report."""
     if units != "N-mm-s-tonne":
-        raise ValueError("Select N-mm-s-tonne and confirm drawing coordinates are in millimetres.")
+        raise ValueError("This application uses N-mm-s-tonne project units.")
     source = inventory.get("source", {})
-    note = _millimetres(source.get("insUnits"))
+    unit_basis, note = _drawing_units(source)
     builder = Builder(prefix=(digest or source.get("sha256") or "")[:10] + "_")
     counts = Counter()
     skipped = []
@@ -237,6 +237,7 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
         filename=source.get("path") or Path(name).name,
         digest=digest or source.get("sha256", ""),
         drawing_units=note,
+        unit_basis=unit_basis,
     )
     project, report = assemble(builder, name, source_model, allow_open_profiles=True)
     report.update(
@@ -245,6 +246,7 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
             "sourceSha256": source.get("sha256", digest),
             "sourceVersion": source.get("version", ""),
             "units": note,
+            "unitBasis": unit_basis,
             "entityCounts": dict(sorted(counts.items())),
             "skipped": skipped,
             "unknownEntities": inventory.get("unknown", {}),

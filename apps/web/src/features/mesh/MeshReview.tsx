@@ -81,8 +81,22 @@ export function MeshReview({
           </>
         )}
       </dl>
-      <h3>{t('mesh.components')}</h3>
-      <div className="mesh-components" data-testid="mesh-components">
+      <h3>{t('mesh.elementTypes')}</h3>
+      <dl className="element-legend" data-testid="element-legend">
+        <div>
+          <dt>CPS4R</dt>
+          <dd>{t('mesh.element.CPS4R')}</dd>
+        </div>
+        <div>
+          <dt>CPS3</dt>
+          <dd>{t('mesh.element.CPS3')}</dd>
+        </div>
+        <div>
+          <dt>R2D2</dt>
+          <dd>{t('mesh.element.R2D2')}</dd>
+        </div>
+      </dl>
+      <h3>{t('mesh.components')}</h3>      <div className="mesh-components" data-testid="mesh-components">
         {quality.components.map((row) => {
           const excluded = row.role === 'vehicle_body' && !row.included
           const status = excluded ? 'excluded' : row.count > 0 ? 'included' : 'notMeshed'
@@ -149,7 +163,17 @@ export function MeshReview({
             {quality.regions.map((region) => (
               <div key={region.id}>
                 <dt>{region.name}</dt>
-                <dd>{region.count.toLocaleString()}</dd>
+                <dd>
+                  {region.count.toLocaleString()}
+                  {region.types.length > 0 && (
+                    <small className="region-types">
+                      {' · '}
+                      {region.types
+                        .map((type) => `${type.type} ${type.count.toLocaleString()}`)
+                        .join(' + ')}
+                    </small>
+                  )}
+                </dd>
               </div>
             ))}
           </dl>

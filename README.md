@@ -69,7 +69,9 @@ project and its first model. **A new model starts with no drawing**: it opens at
 **図面読込** (Import) with “No drawing imported” and a DXF/DWG chooser. Nothing is seeded, and
 refreshing the browser or opening the workspace never invents geometry.
 
-1. At **Import**, confirm millimetres and choose a DXF or DWG. The native DWG reader needs no
+1. At **Import**, choose a DXF or DWG directly. There is no unit checkbox: the drawing header decides
+   (declared mm imports; unitless is interpreted as project mm and recorded; another declared unit is
+   rejected by name). The native DWG reader needs no
    separate converter; a missing reader is reported before the file is read. The imported drawing
    becomes a new revision and the workspace shows its group, model, drawing name and revision.
 2. In **材料設定** (Materials), select a region and assign a material card or a shared library
@@ -101,7 +103,8 @@ geometry only; it is not permission to start a simulation.
 
 **Create an empty model and import its drawing.** Dashboard → New project → name the project and its
 first model (leave the example checkbox clear) → Create project. The model opens at Import with no
-drawing. Confirm millimetres, choose the DXF or DWG, and wait for the new revision. The viewport
+drawing. Choose the DXF or DWG (no unit confirmation; a unitless drawing is interpreted as mm and the
+basis is shown). The viewport
 shows the returned geometry, and the original drawing stays downloadable from that revision.
 
 **Reopen another model or an earlier revision.** Dashboard → open the model card for its saved head,

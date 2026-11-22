@@ -42,11 +42,16 @@ export function workflowStates(input: WorkflowInput): Record<StageId, StepStatus
     p.faces.filter((f) => !f.cavity).every((f) => !!f.material)
   const fixtureReviewed = !!fixture && fixture.count > 0
   const twoStep = p.analysis.mode === 'body_then_door'
+  // Zero travel is a valid hold: the panel keeps its assembled position for
+  // the full positive step duration. Only the duration and a numeric travel
+  // are required here; the deck writer checks a nonzero travel's direction
+  // against the measured contact side.
   const motionValid =
-    p.motion.travel < 0 &&
+    Number.isFinite(p.motion.travel) &&
     p.motion.duration > 0 &&
     (!twoStep ||
-      ((p.motion.body?.travel ?? 0) !== 0 && (p.motion.body?.duration ?? 0) > 0))
+      (Number.isFinite(p.motion.body?.travel ?? 0) &&
+        (p.motion.body?.duration ?? 0) > 0))
   const contactValid =
     Number.isFinite(p.contact.friction) && p.contact.friction >= 0 && p.contact.friction <= 5
   const solved = runs.some((r) => r.status === 'Completed')

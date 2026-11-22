@@ -67,9 +67,10 @@ test('blank required numeric fields block save and restore only on Escape', asyn
   const saved = (await (await request.get('/api/revisions/' + (await head(request, revision.project)))).json()) as Revision
   expect(saved.setup.motion.travel).toBe(-4.2)
 
-  // Duration and initial offset use the same guard.
+  // Duration and initial offset use the same guard. The milestone default step
+  // duration is 1.0 s.
   for (const [label, value] of [
-    ['Step duration (s)', '1.3'],
+    ['Step duration (s)', '1'],
     ['Initial Y offset (mm)', '0'],
   ] as const) {
     const field = page.getByLabel(label)

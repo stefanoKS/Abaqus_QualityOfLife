@@ -43,6 +43,11 @@ export function Viewport(props: ViewportProps) {
       props.deformed,
       props.panelOffset,
       props.rigidInstances,
+      props.elementValues,
+      props.resultMin,
+      props.deformationScale,
+      props.nodeMarkers,
+      props.showMeshEdges,
       props.resultComponent,
       props.resultRange,
       colorsKey,
@@ -273,6 +278,7 @@ export function Viewport(props: ViewportProps) {
   useEffect(() => {
     if (!controller.current) return
     controller.current.lengthUnit = props.lengthUnit ?? 'mm'
+    controller.current.plain = !!props.plain
     try {
       controller.current.setScene(scene, props.dimension, lastFit.current !== fitKey)
       lastFit.current = fitKey
@@ -284,7 +290,7 @@ export function Viewport(props: ViewportProps) {
     } catch (e) {
       setError(translate.current('viewport.displayError') + ' ' + String(e))
     }
-  }, [scene, props.dimension, fitKey, props.lengthUnit])
+  }, [scene, props.dimension, fitKey, props.lengthUnit, props.plain])
 
   useEffect(() => {
     hover.current = null
@@ -296,11 +302,18 @@ export function Viewport(props: ViewportProps) {
   useEffect(() => {
     controller.current?.setSelection(props.selectedNodes ?? [])
   }, [fixtureKey, props.selectedNodes])
+  // Toolbar camera changes update the same signature pointer gestures record,
+  // so the viewport has one authoritative camera identity.
+  const recordCamera = () => {
+    if (host.current && controller.current)
+      host.current.dataset.camera = controller.current.cameraSignature()
+  }
 
   return (
     <div className="seal-viewport" data-testid="vtk-viewport" data-dimension={props.dimension}
       data-frame-time={props.results?.frame ? String(props.results.frame.time) : ''}
       data-scene-actors={scene.surfaces.length}
+      data-plain={props.plain ? 'true' : 'false'}
       data-scene-instances={[
         ...new Set(
           scene.surfaces
@@ -327,7 +340,10 @@ export function Viewport(props: ViewportProps) {
           type="button"
           title={t('viewport.zoomIn') + ' (+)'}
           aria-label={t('viewport.zoomIn')}
-          onClick={() => controller.current?.zoom(0.8)}
+          onClick={() => {
+            controller.current?.zoom(0.8)
+            recordCamera()
+          }}
         >
           <Plus size={15} />
         </button>
@@ -335,7 +351,10 @@ export function Viewport(props: ViewportProps) {
           type="button"
           title={t('viewport.zoomOut') + ' (−)'}
           aria-label={t('viewport.zoomOut')}
-          onClick={() => controller.current?.zoom(1.25)}
+          onClick={() => {
+            controller.current?.zoom(1.25)
+            recordCamera()
+          }}
         >
           <Minus size={15} />
         </button>
@@ -343,7 +362,10 @@ export function Viewport(props: ViewportProps) {
           type="button"
           title={t('viewport.fit') + ' (F)'}
           aria-label={t('viewport.fit')}
-          onClick={() => controller.current?.fit()}
+          onClick={() => {
+            controller.current?.fit()
+            recordCamera()
+          }}
         >
           <Maximize size={15} />
         </button>
@@ -394,12 +416,17 @@ export function Viewport(props: ViewportProps) {
                     ')',
                 }}
               />
-              <span>
-                0{' '}
+              <span data-testid="legend-limits">
+                <b>{formatNumber(props.resultMin ?? 0)}</b>
                 <b>
-                  {Number(scene.range.toPrecision(4))} {props.lengthUnit ?? 'mm'}
+                  {Number(scene.range.toPrecision(4))} {props.resultUnit ?? props.lengthUnit ?? 'mm'}
                 </b>
               </span>
+              {props.resultSaturated && (
+                <span className="legend-saturated" data-testid="legend-saturated">
+                  {t('viewport.saturated')}
+                </span>
+              )}
               {scene.surfaces.some((s) => !s.contour) && (
                 <span>{t('viewport.grayUnavailable')}</span>
               )}

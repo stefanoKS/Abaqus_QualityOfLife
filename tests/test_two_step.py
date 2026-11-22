@@ -70,6 +70,11 @@ def fixture_labels(project, mesh):
     return fixtures.from_edges(mesh, selection.entities)
 
 
+def metadata_for(project, mesh, labels):
+    nodes, ws, panel, body = deck._mesh_parts(project, mesh)
+    return results._metadata(project, nodes, ws, panel, labels, body)
+
+
 def steps_of(inp):
     blocks = []
     current = None
@@ -178,10 +183,14 @@ def test_mode_changes_mesh_identity_but_motion_does_not():
     assert engineering.mesh_compat(project) != before
 
 
-def test_two_step_validation_requires_a_body_and_body_travel():
+def test_two_step_validation_accepts_a_zero_body_hold_and_requires_a_body():
     project = two_step_project()
     project.motion.body.travel = 0
-    with pytest.raises(ValueError, match="body travel"):
+    validated = type(project).model_validate(project.model_dump(mode="json"))
+    assert validated.motion.body.travel == 0
+    # A true zero is distinct from an invalid duration.
+    project.motion.body.duration = 0
+    with pytest.raises(ValueError, match="duration"):
         type(project).model_validate(project.model_dump(mode="json"))
 
     project = engineering.synthetic("No body")
@@ -698,3 +707,132 @@ def test_readiness_exposes_the_bottom_body_measurement(monkeypatch, tmp_path):
         assert blocked["assembly"]["code"] == "initial_penetration"
         assert blocked["assembly"]["details"]["depth"] == pytest.approx(1.0)
         assert blocked["assembly"]["details"]["label"] == "body"
+
+
+def test_zero_body_travel_seats_only_the_door_in_step_two(bottom_body):
+    """0 body / -5.5 door: step 1 holds both, step 2 moves only the door."""
+    _, mesh, labels = bottom_body
+    project = two_step_project(body_y=-1.0, body_travel=0.0, door_travel=-5.5)
+    inp = deck.write_inp(project, mesh, labels)
+    body_step, door_step = ("\n".join(block) for block in steps_of(inp))
+    assert "BODY_RP, 2, 2, 0" in body_step
+    assert "PANEL_RP, 2, 2, 0." in body_step
+    # The body stays at its assembled position while the door closes.
+    assert "BODY_RP, 2, 2, 0" in door_step
+    assert "PANEL_RP, 2, 2, -5.5" in door_step
+    metadata = metadata_for(project, mesh, labels)
+    assert metadata["assembly"]["body"]["hold"] is True
+    assert metadata["assembly"]["body"]["travel_mm"] == 0
+    assert metadata["steps"][0]["direction"] == [0.0, 1.0]
+    assert metadata["steps"][1]["travel_mm"] == -5.5
+
+
+def test_zero_door_travel_holds_the_attained_assembly(bottom_body):
+    """+5 body / 0 door: step 1 seats the body, step 2 holds the assembly."""
+    _, mesh, labels = bottom_body
+    project = two_step_project(body_y=-1.0, body_travel=5.0, door_travel=0.0)
+    inp = deck.write_inp(project, mesh, labels)
+    body_step, door_step = ("\n".join(block) for block in steps_of(inp))
+    assert "BODY_RP, 2, 2, 5" in body_step
+    assert "PANEL_RP, 2, 2, 0." in body_step
+    assert "BODY_RP, 2, 2, 5" in door_step
+    assert "PANEL_RP, 2, 2, 0" in door_step
+    metadata = metadata_for(project, mesh, labels)
+    assert metadata["assembly"]["door"]["hold"] is True
+    assert metadata["assembly"]["door"]["side"] == "above"
+    assert metadata["assembly"]["door"]["direction"] == [0.0, -1.0]
+    assert metadata["steps"][0]["travel_mm"] == 5.0
+
+
+def test_zero_travel_on_both_steps_is_a_hold_only_analysis(bottom_body):
+    """0 body / 0 door: both steps hold their assembled positions."""
+    _, mesh, labels = bottom_body
+    project = two_step_project(body_y=-1.0, body_travel=0.0, door_travel=0.0)
+    inp = deck.write_inp(project, mesh, labels)
+    body_step, door_step = ("\n".join(block) for block in steps_of(inp))
+    for step in (body_step, door_step):
+        assert "BODY_RP, 2, 2, 0" in step
+        assert "PANEL_RP, 2, 2, 0" in step
+        # A hold is a true zero, never an epsilon motion.
+        assert "2, 2, 1e-" not in step
+    metadata = metadata_for(project, mesh, labels)
+    assert metadata["assembly"]["door"]["hold"] is True
+    assert metadata["assembly"]["body"]["hold"] is True
+    # A held panel still has a side and a defined reporting axis.
+    assert metadata["assembly"]["door"]["side"] == "above"
+    assert metadata["assembly"]["body"]["side"] == "below"
+    assert metadata["steps"][0]["direction"] == [0.0, 1.0]
+    assert metadata["steps"][1]["direction"] == [0.0, -1.0]
+
+
+def test_door_only_zero_travel_is_an_explicit_hold():
+    project = engineering.synthetic("Door hold")
+    project.motion.travel = 0.0
+    project.motion.duration = 1.0
+    mesh = generate_mesh(project)
+    labels = fixture_labels(project, mesh)
+    nodes, ws, panel = deck.mesh_parts(project, mesh)
+    metadata = results._metadata(project, nodes, ws, panel, labels)
+    assert metadata["steps"][0]["travel_mm"] == 0
+    assert metadata["assembly"]["door"]["hold"] is True
+    assert metadata["assembly"]["door"]["side"] == "above"
+    inp = deck.write_inp(project, mesh, labels)
+    assert "*Step, name=Closing" in inp
+    assert "PANEL_RP, 2, 2, 0" in inp
+    assert inp.count("*End Step") == 1
+
+
+def seal_box():
+    nodes = {
+        1: (0.0, 0.0, 0.0),
+        2: (10.0, 0.0, 0.0),
+        3: (10.0, 2.0, 0.0),
+        4: (0.0, 2.0, 0.0),
+    }
+    boundary = [(1, 2), (2, 3), (3, 4), (4, 1)]
+    return nodes, boundary
+
+
+def test_assembled_offset_decides_the_side_after_placement():
+    """A body drawn above but placed below is below, not a penetration error."""
+    nodes, boundary = seal_box()
+    nodes.update({5: (0.0, 3.0, 0.0), 6: (10.0, 3.0, 0.0)})
+    panel = [{"nodes": [5, 6]}]
+    report = deck.clearance_report(nodes, boundary, panel, -5.0)
+    assert report["side"] == "below"
+    assert report["clearance"] == pytest.approx(2.0)
+    assert report["direction"] == [0.0, 1.0]
+
+
+def test_placement_intersection_and_ambiguous_side_are_distinct():
+    nodes, boundary = seal_box()
+    nodes.update({5: (0.0, 3.0, 0.0), 6: (10.0, 3.0, 0.0)})
+    panel = [{"nodes": [5, 6]}]
+    # Offset -2 puts the profile at Y = 1, inside the 0-2 mm solid.
+    with pytest.raises(ClearanceError) as intersection:
+        deck.clearance_report(nodes, boundary, panel, -2.0)
+    assert intersection.value.code == "initial_penetration"
+    assert intersection.value.details["depth"] == pytest.approx(1.0)
+
+    # A seal with a hole: a profile inside the hole has no contact side.
+    cavity_nodes = {
+        1: (0.0, 0.0, 0.0),
+        2: (10.0, 0.0, 0.0),
+        3: (10.0, 4.0, 0.0),
+        4: (0.0, 4.0, 0.0),
+        5: (2.0, 1.0, 0.0),
+        6: (8.0, 1.0, 0.0),
+        7: (8.0, 3.0, 0.0),
+        8: (2.0, 3.0, 0.0),
+        9: (3.0, 2.0, 0.0),
+        10: (7.0, 2.0, 0.0),
+    }
+    cavity_boundary = [
+        (1, 2), (2, 3), (3, 4), (4, 1),
+        (5, 6), (6, 7), (7, 8), (8, 5),
+    ]
+    with pytest.raises(ClearanceError) as ambiguous:
+        deck.clearance_report(
+            cavity_nodes, cavity_boundary, [{"nodes": [9, 10]}], 0.0
+        )
+    assert ambiguous.value.code == "side_ambiguous"

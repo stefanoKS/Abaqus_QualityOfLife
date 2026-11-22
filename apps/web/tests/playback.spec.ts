@@ -25,11 +25,10 @@ async function completedRun(page: Page, revision: Revision) {
   return run
 }
 
-async function grid(page: Page) {
-  return page.locator('.seal-vtk-host').evaluate((el) => ({
-    size: el.style.backgroundSize,
-    position: el.style.backgroundPosition,
-  }))
+async function cameraSignature(page: Page) {
+  // Results use a plain white canvas (no section grid), so the camera identity
+  // is read from the renderer's recorded signature rather than grid spacing.
+  return page.locator('.seal-vtk-host').getAttribute('data-camera')
 }
 
 test('a delayed frame never blanks the view and the camera and scale stay fixed', async ({
@@ -55,7 +54,7 @@ test('a delayed frame never blanks the view and the camera and scale stay fixed'
 
   await slider.fill('9')
   await expect(page.locator('.playback')).toContainText(frames[9].time.toFixed(3))
-  const camera = await grid(page)
+  const cameraBefore = await cameraSignature(page)
   const legend = page.locator('.seal-vtk-legend')
   const magnitudeLegend = await legend.innerText()
   expect(magnitudeLegend).toContain(Number(metadata.ranges.magnitude.toPrecision(4)).toString())
@@ -85,7 +84,7 @@ test('a delayed frame never blanks the view and the camera and scale stay fixed'
   await expect.poll(frameTime).toBeCloseTo(frames[10].time)
   await expect(page.locator('.playback')).toContainText(frames[10].time.toFixed(3))
   expect(await sceneActors()).toBe(actorsBefore)
-  expect(await grid(page)).toEqual(camera)
+  expect(await cameraSignature(page)).toEqual(cameraBefore)
 
   // Pan and zoom deliberately, then step frames: the camera must not move.
   await viewport.hover()
@@ -95,16 +94,16 @@ test('a delayed frame never blanks the view and the camera and scale stay fixed'
   await page.mouse.move(box.x + box.width / 2 + 60, box.y + box.height / 2 + 30, { steps: 4 })
   await page.mouse.up()
   await page.getByRole('button', { name: 'Zoom in' }).click()
-  const moved = await grid(page)
-  expect(moved).not.toEqual(camera)
+  const moved = await cameraSignature(page)
+  expect(moved).not.toEqual(cameraBefore)
   await slider.fill('11')
   await expect(page.locator('.playback')).toContainText(frames[11].time.toFixed(3))
-  expect(await grid(page)).toEqual(moved)
+  expect(await cameraSignature(page)).toEqual(moved)
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
-  expect(await grid(page)).toEqual(camera)
+  expect(await cameraSignature(page)).toEqual(cameraBefore)
 
   // The colour scale is a run-wide constant, not a per-frame maximum.
-  await page.getByLabel('Component').selectOption('U2')
+  await page.getByLabel('Field').selectOption('U2')
   const u2Legend = await legend.innerText()
   expect(u2Legend).toContain(Number(metadata.ranges.U2.toPrecision(4)).toString())
   await slider.fill('0')

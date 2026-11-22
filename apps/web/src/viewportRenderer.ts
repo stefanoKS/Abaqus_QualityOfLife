@@ -51,24 +51,34 @@ function sameTopology(a: Surface, b: Surface) {
   )
 }
 
-function makeActor(surface: Surface, range: number | null, shade: boolean) {
+function makeActor(
+  surface: Surface,
+  range: number | null,
+  shade: boolean,
+  minimum = 0
+) {
   const data = vtkPolyData.newInstance()
   data.getPoints().setData(new Float32Array(surface.points.flat()), 3)
   const connectivity = Uint32Array.from(
     surface.cells.flatMap((cell) => [cell.length, ...cell])
   )
   if (surface.kind === 'edge') data.getLines().setData(connectivity)
+  else if (surface.kind === 'points') data.getVerts().setData(connectivity)
   else data.getPolys().setData(connectivity)
   const mapper = vtkMapper.newInstance()
+  const ratio = (value: number) =>
+    range === null || range <= minimum
+      ? 0
+      : (value - minimum) / (range - minimum)
   if (surface.contour) {
     const values = Uint8Array.from(
-      surface.magnitudes!.flatMap((v) => colorAt((v ?? 0) / (range || 1)))
+      surface.magnitudes!.flatMap((v) => colorAt(ratio(v ?? 0)))
     )
     data
       .getPointData()
       .setScalars(
         vtkDataArray.newInstance({
-          name: 'Displacement magnitude',
+          name: 'Field value',
           numberOfComponents: 3,
           values,
         })
@@ -88,13 +98,17 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
   property.setEdgeVisibility(surface.meshEdges)
   property.setEdgeColor(0.19, 0.28, 0.3)
   property.setLineWidth(surface.kind === 'edge' ? 2 : 1)
+  if (surface.kind === 'points') {
+    property.setRepresentationToPoints()
+    property.setPointSize(5)
+  }
   const item = {
     key: surface.key ?? '',
     surface,
     actor,
     data,
     mapper,
-    update: (next: Surface, range: number | null) => {
+    update: (next: Surface, range: number | null, minimum = 0) => {
       item.surface = next
       // Same topology: swap coordinates in place and refresh the colours.
       const points = data.getPoints()
@@ -113,9 +127,13 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
         parseInt(nextHex.slice(3, 5), 16) / 255,
         parseInt(nextHex.slice(5, 7), 16) / 255
       )
+      const ratio = (value: number) =>
+        range === null || range <= minimum
+          ? 0
+          : (value - minimum) / (range - minimum)
       if (next.contour && next.magnitudes) {
         const values = Uint8Array.from(
-          next.magnitudes.flatMap((v) => colorAt((v ?? 0) / (range || 1)))
+          next.magnitudes.flatMap((v) => colorAt(ratio(v ?? 0)))
         )
         const scalars = data.getPointData().getScalars()
         if (scalars && scalars.getNumberOfTuples() === next.magnitudes.length) {
@@ -126,7 +144,7 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
             .getPointData()
             .setScalars(
               vtkDataArray.newInstance({
-                name: 'Displacement magnitude',
+                name: 'Field value',
                 numberOfComponents: 3,
                 values,
               })
@@ -145,6 +163,7 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
       data.getPoints().delete()
       data.getPolys().delete()
       data.getLines().delete()
+      data.getVerts().delete()
       actor.getProperty().delete()
       actor.delete()
       mapper.delete()
@@ -174,6 +193,8 @@ export class ViewportRenderer {
   private ratio = 1
   private axes: ScreenPoint[] = []
   lengthUnit = 'mm'
+  /** Results viewport: solid white background, no section grid. */
+  plain = false
   private started = false
   constructor(
     private host: HTMLElement,
@@ -198,7 +219,7 @@ export class ViewportRenderer {
       const existing = surface.key ? reusable.get(surface.key) : undefined
       if (existing && sameTopology(existing.surface, surface)) {
         reusable.delete(surface.key!)
-        existing.update(surface, scene.range)
+        existing.update(surface, scene.range, scene.min ?? 0)
         next.push(existing)
         continue
       }
@@ -209,7 +230,7 @@ export class ViewportRenderer {
         this.renderer.removeActor(existing.actor)
         existing.delete()
       }
-      const created = makeActor(surface, scene.range, dimension === '3D')
+      const created = makeActor(surface, scene.range, dimension === '3D', scene.min ?? 0)
       this.renderer.addActor(created.actor)
       next.push(created)
     }
@@ -345,8 +366,9 @@ export class ViewportRenderer {
       (p) => [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]]
     )
     // A section grid sits behind the transparent GL canvas. Its spacing and
-    // phase track the model coordinates through zoom and pan.
-    if (this.dimension === '2D') {
+    // phase track the model coordinates through zoom and pan. The Results view
+    // asks for a plain white canvas instead, with no texture underneath.
+    if (this.dimension === '2D' && !this.plain) {
       const pixelsPerUnit =
         this.height / (2 * this.renderer.getActiveCamera().getParallelScale())
       const target = 40 / pixelsPerUnit,
@@ -360,7 +382,11 @@ export class ViewportRenderer {
       this.host.style.backgroundSize = step + 'px ' + step + 'px'
       this.host.style.backgroundPosition =
         origin[0] - step / 2 + 'px ' + (origin[1] - step / 2) + 'px'
-    } else this.host.style.backgroundImage = 'none'
+      this.host.style.backgroundColor = ''
+    } else {
+      this.host.style.backgroundImage = 'none'
+      this.host.style.backgroundColor = this.plain ? '#FFFFFF' : ''
+    }
     this.projected = this.scene.surfaces.map((surface) => ({
       surface,
       points: surface.points.map((p) => {

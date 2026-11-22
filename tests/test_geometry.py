@@ -130,10 +130,11 @@ def test_dxf_bulge_and_units(tmp_path):
         m.add_lwpolyline([(-1, 0, 0), (1, 0, 1)], format="xyb", close=True)
 
     p = import_dxf(save_drawing(tmp_path, bulge), "Semicircle")
+    assert p.source.unit_basis == "declared_mm"
     assert len(p.faces) == 1
     assert sum(e.sweep for e in p.edges if e.kind == "arc") == pytest.approx(math.pi)
     assert face_polygon(p.faces[0], sample_edges(p)).area == pytest.approx(math.pi / 2, rel=0.005)
-    with pytest.raises(ValueError, match="units"):
+    with pytest.raises(ValueError, match="inches"):
         import_dxf(save_drawing(tmp_path, bulge, units=1), "Inches")
 
 

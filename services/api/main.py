@@ -445,8 +445,14 @@ def create(body: NewProject):
     if body.group and store.group_archived(str(body.group)):
         raise store.Conflict("This project is archived. Restore it before adding a model.")
     # Creating a model never invents geometry. ``example`` is the only path to the
-    # public synthetic section, and it is an explicit user choice.
-    setup = engineering.synthetic(body.name) if body.example else engineering.empty(body.name)
+    # public synthetic section, and it is an explicit user choice. ``template``
+    # selects the named example without changing the default.
+    if body.example and body.template == "two-panel":
+        setup = engineering.two_panel_section(body.name)
+    elif body.example:
+        setup = engineering.synthetic(body.name)
+    else:
+        setup = engineering.empty(body.name)
     if body.dimension == "3D":
         setup.dimension, setup.formulation = "3D", "extrusion_preview"
     return revision_payload(
@@ -503,7 +509,10 @@ def save(pid: UUID, body: Save):
 
 @app.post("/api/projects/{pid}/drawing", response_model=Job, status_code=202)
 def drawing(
-    pid: UUID, base: UUID = Form(...), units: str = Form(...), file: UploadFile = File(...)
+    pid: UUID,
+    base: UUID = Form(...),
+    units: str = Form("N-mm-s-tonne"),
+    file: UploadFile = File(...),
 ):
     assert_editable(pid)
     previous = store.revision(base)
@@ -513,8 +522,14 @@ def drawing(
     if not original or len(original) > 200 or re.search(r'[\\/:*?"<>|\x00-\x1f]', original):
         raise ValueError("Choose a drawing with a simple filename.")
     ext = Path(original).suffix.lower()
-    if ext not in {".dwg", ".dxf"} or units != "N-mm-s-tonne":
-        raise ValueError("Select a DXF or DWG and confirm millimetre input units.")
+    if ext not in {".dwg", ".dxf"}:
+        raise ValueError("Select a DXF or DWG drawing.")
+    # The drawing's own unit header decides the import basis; the form field is
+    # the project unit system and is optional for current clients. No checkbox
+    # confirmation is required.
+    if units not in ("", "N-mm-s-tonne"):
+        raise ValueError("This application uses N-mm-s-tonne project units.")
+    units = "N-mm-s-tonne"
     if ext == ".dwg":
         dwg.helper()
     sid = store.new_id()

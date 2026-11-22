@@ -37,8 +37,12 @@ export function AssemblyDiagnostics({
   }
 
   function motionRows(motion: AssemblyMotion) {
-    const direction =
-      (motion.direction[1] ?? 0) < 0 ? t('assembly.directionDown') : t('assembly.directionUp')
+    const hold = motion.hold === true || motion.travel_mm === 0
+    const direction = hold
+      ? t('assembly.hold')
+      : (motion.direction[1] ?? 0) < 0
+        ? t('assembly.directionDown')
+        : t('assembly.directionUp')
     return (
       <dl data-testid={'assembly-' + motion.role}>
         <div>
@@ -63,14 +67,21 @@ export function AssemblyDiagnostics({
         </div>
         <div>
           <dt>{t('assembly.reachesGap')}</dt>
-          <dd>{motion.reaches_initial_gap ? t('assembly.yes') : t('assembly.no')}</dd>
+          <dd>
+            {hold
+              ? t('assembly.hold')
+              : motion.reaches_initial_gap
+                ? t('assembly.yes')
+                : t('assembly.no')}
+          </dd>
         </div>
       </dl>
     )
   }
 
   const shortfalls = [measured?.door, measured?.body].filter(
-    (motion): motion is AssemblyMotion => !!motion && !motion.reaches_initial_gap
+    (motion): motion is AssemblyMotion =>
+      !!motion && motion.hold !== true && motion.travel_mm !== 0 && !motion.reaches_initial_gap
   )
 
   return (

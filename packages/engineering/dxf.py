@@ -10,6 +10,7 @@ import ezdxf
 from .geometry import Builder
 from .model import Project, Source, SplineData
 from .section import assemble
+from . import units as units_policy
 
 PANEL_LAYERS = {"PANEL", "MOVING_PANEL"}
 MAX_DRAWING = 8 * 1024 * 1024
@@ -31,7 +32,7 @@ def _off_plane(ent):
 def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
     path = Path(path)
     if units != "N-mm-s-tonne":
-        raise ValueError("Select N-mm-s-tonne and confirm drawing coordinates are in millimetres.")
+        raise ValueError("This application uses N-mm-s-tonne project units.")
     if path.stat().st_size > MAX_DRAWING:
         raise ValueError("DXF exceeds the 8 MiB limit.")
     digest = sha256(path.read_bytes()).hexdigest()
@@ -39,10 +40,9 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
         doc = ezdxf.readfile(path)
     except (ezdxf.DXFError, OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Could not read drawing as DXF: {exc}") from exc
-    if doc.units not in (0, 4):
-        raise ValueError(
-            "DXF declares non-millimetre drawing units. Convert the drawing to mm before importing."
-        )
+    # The raw header distinguishes an explicit unitless drawing (0) from a
+    # missing header; decode_units rejects any other declared unit by name.
+    basis, unit_note = units_policy.interpret(doc.header.get("$INSUNITS", None), "DXF")
     builder = Builder(prefix=digest[:10] + "_")
     seen_poly = set()
     unsupported = Counter()
@@ -155,7 +155,8 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
             kind="dxf",
             filename=path.name,
             digest=digest,
-            drawing_units="millimetres" if doc.units == 4 else "unitless; confirmed as millimetres",
+            drawing_units=unit_note,
+            unit_basis=basis,
         ),
     )
     return project

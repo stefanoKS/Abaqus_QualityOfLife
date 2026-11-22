@@ -140,6 +140,14 @@ def initialize():
         for name in ("mesh", "mesh_digest", "mesh_compat", "fixture_hash", "fixture_labels"):
             if name not in jobs_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+        # Compressible neo-Hookean library cards add two parameters; older
+        # versions keep NULL and are read unchanged.
+        material_columns = {
+            row["name"] for row in db.execute("PRAGMA table_info(material_versions)")
+        }
+        for name in ("c10", "d1"):
+            if name not in material_columns:
+                db.execute(f"ALTER TABLE material_versions ADD COLUMN {name} REAL")
         # A DEMO job that never started cannot be executed any more. Retire it with
         # an explicit record instead of relabelling it or launching it as Abaqus.
         db.execute(
@@ -185,6 +193,28 @@ def new_id():
 
 def job_dir(jid):
     return root() / "jobs" / str(UUID(str(jid)))
+
+
+def mesh_artifact_state(jid, expected_digest=None):
+    """Classify the active mesh artifact: ``ok``, ``missing`` or ``corrupt``.
+
+    Read-only. A byte-level digest is compared with the digest recorded when the
+    mesh completed; a mismatch is corruption even if the JSON still parses.
+    Historical job directories are never modified.
+    """
+    path = job_dir(jid) / "mesh.json"
+    if not path.is_file():
+        return "missing"
+    try:
+        raw = path.read_bytes()
+        data = json.loads(raw.decode("utf-8"))
+    except (OSError, ValueError):
+        return "corrupt"
+    if not isinstance(data, dict) or not data.get("nodes") or not data.get("elements"):
+        return "corrupt"
+    if expected_digest and hashlib.sha256(raw).hexdigest() != str(expected_digest):
+        return "corrupt"
+    return "ok"
 
 
 def revision(rid):
@@ -777,6 +807,12 @@ def submit(
                 record = db.execute("SELECT * FROM jobs WHERE id=?", (mesh,)).fetchone()
                 if not record or record["mode"] != "MESH" or status(record) != "Completed":
                     raise Conflict("Generate the mesh for this model before preparing the input.")
+                if mesh_artifact_state(record["id"], record["mesh_digest"]) != "ok":
+                    raise Conflict(
+                        "The active mesh file is missing or unreadable. Generate the mesh again "
+                        "in Mesh, then review the fixed nodes. Review does not regenerate a mesh "
+                        "automatically."
+                    )
                 project = project_of(db, rev)
                 same_model = project_of(db, record["revision"]) == project
                 if not same_model:

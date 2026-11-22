@@ -15,7 +15,7 @@ import time
 from packages.engineering.model import Material, Project
 from services import store
 
-CARD_FIELDS = ("model", "color", "density", "young", "poisson", "test_data")
+CARD_FIELDS = ("model", "color", "density", "young", "poisson", "c10", "d1", "test_data")
 
 
 def _card_payload(card: dict) -> dict:
@@ -35,6 +35,8 @@ def _version_row(row) -> dict:
             "density": row["density"],
             "young": row["young"],
             "poisson": row["poisson"],
+            "c10": row["c10"],
+            "d1": row["d1"],
             "test_data": json.loads(row["test_data"]),
         },
         "created": row["created"],
@@ -137,7 +139,8 @@ def _insert_version(db, library_id, card, note):
         ).fetchone()[0]
     )
     db.execute(
-        "INSERT INTO material_versions VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO material_versions(library_id, version, model, color, density, young, "
+        "poisson, c10, d1, test_data, created, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             str(library_id),
             version,
@@ -146,6 +149,8 @@ def _insert_version(db, library_id, card, note):
             float(card["density"]),
             None if card.get("young") is None else float(card["young"]),
             None if card.get("poisson") is None else float(card["poisson"]),
+            None if card.get("c10") is None else float(card["c10"]),
+            None if card.get("d1") is None else float(card["d1"]),
             json.dumps(card.get("test_data") or [], separators=(",", ":")),
             time.time(),
             note,
@@ -238,6 +243,8 @@ def import_from_revision(revision_id, material_ids=()):
             "density": card.density,
             "young": card.young,
             "poisson": card.poisson,
+            "c10": card.c10,
+            "d1": card.d1,
             "test_data": [list(row) for row in card.test_data],
         }
         created = create(
@@ -264,5 +271,7 @@ def definition_for_material(material: Material) -> dict:
         "density": material.density,
         "young": material.young,
         "poisson": material.poisson,
+        "c10": material.c10,
+        "d1": material.d1,
         "test_data": [list(row) for row in material.test_data],
     }

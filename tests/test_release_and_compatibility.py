@@ -174,9 +174,10 @@ def test_readiness_never_reuses_a_mesh_after_mesh_inputs_change(monkeypatch, tmp
         assert ready["counts"]["deck"]
 
         # A mesh-control change makes the previous mesh incompatible. Readiness
-        # must fall back to Mesh even though an older mesh still exists.
+        # must fall back to Mesh even though an older mesh still exists. 0.75 is
+        # deliberately different from the 0.5 mm new-model default.
         setup = dict(revision["setup"])
-        setup["mesh"] = dict(setup["mesh"], size=0.5)
+        setup["mesh"] = dict(setup["mesh"], size=0.75)
         changed = api.put(
             f"/api/projects/{revision['project']}",
             json={"base": revision["id"], "setup": setup},
@@ -187,6 +188,49 @@ def test_readiness_never_reuses_a_mesh_after_mesh_inputs_change(monkeypatch, tmp
         codes = {f["code"] for f in after["findings"]}
         assert "mesh.missing" in codes
         assert after["first_blocker"]["stage"] == "mesh"
+
+
+def test_missing_or_corrupt_active_mesh_names_the_recovery(monkeypatch, tmp_path):
+    """Readiness, deck preparation and the history agree about a broken mesh."""
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    monkeypatch.setenv("SIMPLIFY_ABAQUS_LAUNCHER", str(tmp_path / "fake.bat"))
+    (tmp_path / "fake.bat").write_text("@echo off\n", encoding="utf-8")
+    with TestClient(app, base_url="http://127.0.0.1") as api:
+        revision = create_model(api, "Broken mesh", example=True)
+        _, deck_job, mesh = prepared(api, revision)
+        ready = api.get(f"/api/revisions/{revision['id']}/readiness").json()
+        assert ready["state"] == "ready", ready["findings"]
+        mesh_id = ready["counts"]["mesh"]
+        fixture_hash = ready["counts"]["fixture_hash"]
+        artifact = store.job_dir(mesh_id) / "mesh.json"
+        original = artifact.read_bytes()
+        payload = {
+            "revision": revision["id"],
+            "mesh": mesh_id,
+            "fixture_hash": fixture_hash,
+            "token": store.new_id(),
+        }
+
+        artifact.unlink()
+        missing = api.get(f"/api/revisions/{revision['id']}/readiness").json()
+        assert missing["first_blocker"]["code"] == "mesh.artifact_missing"
+        assert missing["first_blocker"]["stage"] == "mesh"
+        assert missing["first_blocker"]["artifact"] == "mesh:" + mesh_id
+        refused = api.post("/api/decks", json=payload)
+        assert refused.status_code == 409, refused.text
+        assert "mesh file is missing" in refused.text
+
+        artifact.write_text("{not a mesh", encoding="utf-8")
+        corrupt = api.get(f"/api/revisions/{revision['id']}/readiness").json()
+        assert corrupt["first_blocker"]["code"] == "mesh.artifact_corrupt"
+        refused = api.post("/api/decks", json=payload)
+        assert refused.status_code == 409, refused.text
+        assert "unreadable" in refused.text
+
+        # Historical decks and their completed jobs remain readable; the broken
+        # active mesh is not silently replaced or removed.
+        assert api.get(f"/api/jobs/{deck_job['id']}").json()["status"] == "Completed"
+        artifact.write_bytes(original)
 
 def test_a_stale_fixture_and_a_stale_deck_are_rejected_without_mutation(monkeypatch, tmp_path):
     monkeypatch.setenv("SEAL_DATA", str(tmp_path))

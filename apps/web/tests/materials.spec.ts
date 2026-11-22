@@ -237,6 +237,51 @@ test('workspace assigns a library material, adopts a newer version and reuses th
   expect(saved.mesh_compat).toBe(revision.mesh_compat)
 })
 
+test('a compressible neo-Hookean card is edited in both languages and versioned', async ({
+  page,
+  request,
+}) => {
+  const name = 'Synthetic neo-Hookean ' + Date.now()
+  await page.goto('/#materials')
+  await page.getByRole('button', { name: 'New material' }).click()
+  // Wait for the created card to load into the editor before editing it.
+  await expect(page.getByLabel('Library material name')).toHaveValue('New material')
+  await expect(page.getByTestId('version-history')).toContainText('v1')
+  await page.getByLabel('Library material name').fill(name)
+  const model = page.getByLabel('Material model')
+  await model.selectOption('neo_hookean')
+  await expect(model).toHaveValue('neo_hookean')
+  await expect(page.getByLabel(/C10/)).toHaveValue('0.5')
+  await expect(page.getByLabel(/D1/)).toHaveValue('0.01')
+  await page.getByLabel(/C10/).fill('0.75')
+  await page.getByLabel(/C10/).press('Tab')
+  await page.getByRole('button', { name: 'Save material' }).click()
+  await expect(page.getByTestId('version-history')).toContainText('v2')
+  await expect(row(page, name)).toContainText('neo-Hookean')
+
+  const rowId = await row(page, name).getAttribute('data-material-id')
+  const saved = await detail(request, rowId!)
+  expect(saved.card.model).toBe('neo_hookean')
+  expect(saved.card.c10).toBe(0.75)
+  expect(saved.card.d1).toBe(0.01)
+  // v1 remains the original linear card; the model change created v2.
+  expect(saved.versions[0].card.model).toBe('linear_elastic')
+  expect(saved.versions[1].card.model).toBe('neo_hookean')
+
+  // The same fields and law are localized, and editing creates another version.
+  await page.locator('.lang-button').click()
+  await expect(page.getByLabel('材料モデル')).toBeVisible()
+  await expect(row(page, name)).toContainText('圧縮性 neo-Hookean')
+  await page.getByLabel(/C10/).fill('0.9')
+  await page.getByLabel(/C10/).press('Tab')
+  await page.getByRole('button', { name: '材料を保存' }).click()
+  await expect(page.getByTestId('version-history')).toContainText('v3')
+  const versions = (await detail(request, rowId!)).versions
+  expect(versions[1].card.c10).toBe(0.75)
+  expect(versions[2].card.c10).toBe(0.9)
+  expect(versions[2].card.d1).toBe(0.01)
+})
+
 test('the material library is localized in Japanese', async ({ page }) => {
   await page.goto('/#materials')
   await page.getByRole('button', { name: /日本語/ }).click()

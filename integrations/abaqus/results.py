@@ -9,7 +9,14 @@ from .deck import (
     mesh_parts,
     motion_assessment,
 )
-from .interchange import align_histories, finish, result_header, save_frame, write_json
+from .interchange import (
+    align_histories,
+    canonical_step,
+    finish,
+    result_header,
+    save_frame,
+    write_json,
+)
 
 
 def _metadata(project, nodes, ws, panel, fixture=None, body=None):
@@ -66,6 +73,9 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
     steps = [
         {
             "name": "Closing",
+            # Canonical identity shared by ODB steps, frames, histories, the
+            # plot selector and CSV rows; the display name is preserved above.
+            "id": canonical_step("Closing"),
             "role": "door",
             "instance": "PANEL-1",
             "reference_label": reference,
@@ -84,6 +94,7 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
         "door_direction": door["direction"],
         "initial_door_clearance_mm": door["clearance_mm"],
         "door_reaches_initial_gap": door["reaches_initial_gap"],
+        "door_hold": door["hold"],
     }
     regions = {
         "WS-1": {str(e["id"]): e["entity"] for e in ws},
@@ -144,11 +155,13 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
                 "body_direction": seated["direction"],
                 "initial_body_clearance_mm": seated["clearance_mm"],
                 "body_reaches_initial_gap": seated["reaches_initial_gap"],
+                "body_hold": seated["hold"],
             }
         )
         steps = [
             {
                 "name": "Body seating",
+                "id": canonical_step("Body seating"),
                 "role": "body",
                 "instance": "BODY-1",
                 "reference_label": body_block["reference_label"],

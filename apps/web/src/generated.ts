@@ -869,7 +869,10 @@ export interface components {
              * Format: uuid
              */
             base: string;
-            /** Units */
+            /**
+             * Units
+             * @default N-mm-s-tonne
+             */
             units: string;
             /**
              * File
@@ -1456,13 +1459,17 @@ export interface components {
              * Model
              * @enum {string}
              */
-            model: "linear_elastic" | "hyperfoam_test";
+            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean";
             /** Density */
             density: number;
             /** Young */
             young?: number | null;
             /** Poisson */
             poisson?: number | null;
+            /** C10 */
+            c10?: number | null;
+            /** D1 */
+            d1?: number | null;
             /** Test Data */
             test_data?: [
                 number,
@@ -1491,13 +1498,17 @@ export interface components {
              * Model
              * @enum {string}
              */
-            model: "linear_elastic" | "hyperfoam_test";
+            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean";
             /** Density */
             density: number;
             /** Young */
             young: number | null;
             /** Poisson */
             poisson: number | null;
+            /** C10 */
+            c10: number | null;
+            /** D1 */
+            d1: number | null;
             /** Test Data */
             test_data: [
                 number,
@@ -1518,7 +1529,7 @@ export interface components {
              * Model
              * @enum {string}
              */
-            model: "linear_elastic" | "hyperfoam_test";
+            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean";
             /** Color */
             color: string;
             /** Density */
@@ -1527,6 +1538,10 @@ export interface components {
             young?: number | null;
             /** Poisson */
             poisson?: number | null;
+            /** C10 */
+            c10?: number | null;
+            /** D1 */
+            d1?: number | null;
             /** Test Data */
             test_data?: [
                 number,
@@ -1559,7 +1574,7 @@ export interface components {
         "MeshSpec-Input": {
             /**
              * Size
-             * @default 1
+             * @default 0.5
              */
             size: number;
             /** Local */
@@ -1576,7 +1591,7 @@ export interface components {
         "MeshSpec-Output": {
             /**
              * Size
-             * @default 1
+             * @default 0.5
              */
             size: number;
             /** Local */
@@ -1609,7 +1624,7 @@ export interface components {
             offset: number;
             /**
              * Duration
-             * @default 1.3
+             * @default 1
              */
             duration: number;
             body?: components["schemas"]["BodyMotion-Input"];
@@ -1634,7 +1649,7 @@ export interface components {
             offset: number;
             /**
              * Duration
-             * @default 1.3
+             * @default 1
              */
             duration: number;
             body: components["schemas"]["BodyMotion-Output"];
@@ -1677,6 +1692,12 @@ export interface components {
              * @default false
              */
             example: boolean;
+            /**
+             * Template
+             * @default hollow
+             * @enum {string}
+             */
+            template: "hollow" | "two-panel";
         };
         /**
          * NewProjectGroup
@@ -1804,10 +1825,9 @@ export interface components {
         "Project-Input": {
             /**
              * Schema Version
-             * @default 1
-             * @constant
+             * @default 2
              */
-            schema_version: 1;
+            schema_version: number;
             /** Name */
             name: string;
             /**
@@ -1853,10 +1873,9 @@ export interface components {
         "Project-Output": {
             /**
              * Schema Version
-             * @default 1
-             * @constant
+             * @default 2
              */
-            schema_version: 1;
+            schema_version: number;
             /** Name */
             name: string;
             /**
@@ -1994,6 +2013,11 @@ export interface components {
              * @default millimetres
              */
             drawing_units: string;
+            /**
+             * Unit Basis
+             * @default
+             */
+            unit_basis: string;
         };
         /** Source */
         "Source-Output": {
@@ -2017,6 +2041,11 @@ export interface components {
              * @default millimetres
              */
             drawing_units: string;
+            /**
+             * Unit Basis
+             * @default
+             */
+            unit_basis: string;
         };
         /**
          * SplineData

@@ -20,7 +20,12 @@ export interface MeshQuality {
   nodes: number
   elements: number
   byType: { type: string; count: number }[]
-  regions: { id: string; name: string; count: number }[]
+  regions: {
+    id: string
+    name: string
+    count: number
+    types: { type: string; count: number }[]
+  }[]
   edgeSegments: { id: string; name: string; segments: number }[]
   /** One row per component: role, inclusion, element type and count. */
   components: {
@@ -105,6 +110,12 @@ export function meshQuality(mesh: MeshFile, project: Project): MeshQuality {
   })
   const names = new Map(project.faces.map((face) => [face.id, face.name]))
   const edgeNames = new Map(project.edges.map((edge) => [edge.id, edge.name]))
+  const regionTypes = new Map<string, Map<string, number>>()
+  for (const element of mesh.elements) {
+    const counts = regionTypes.get(element.entity) ?? new Map<string, number>()
+    counts.set(element.type, (counts.get(element.type) ?? 0) + 1)
+    regionTypes.set(element.entity, counts)
+  }
   return {
     nodes: mesh.nodes.length,
     elements: mesh.elements.length,
@@ -113,6 +124,7 @@ export function meshQuality(mesh: MeshFile, project: Project): MeshQuality {
       id,
       name: names.get(id) ?? id,
       count: list.length,
+      types: [...(regionTypes.get(id) ?? new Map())].map(([type, count]) => ({ type, count })),
     })),
     components,
     edgeSegments: Object.entries(mesh.edge_nodes ?? {}).map(([id, list]) => ({

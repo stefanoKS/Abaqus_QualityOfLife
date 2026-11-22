@@ -15,21 +15,30 @@ import { artifact, elapsed, err, go, request, type Job, type Revision } from './
 import { Badge, JobActions } from './Dashboard'
 import Viewport from './Viewport'
 import type { Picked, ResultFrame, ResultInstance } from './viewportModel'
+import {
+  elementDisplayValues,
+  misesFrom,
+  stressCells,
+  type FieldId,
+  type StressCell,
+} from './features/run/fields'
+export type { FieldId } from './features/run/fields'
 import { Plot } from './Plot'
 import { ProgressSummary } from './features/run/ProgressSummary'
-import { labelFrom, useI18n } from './i18n'
+import { labelFrom, useI18n, type TranslationKey } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 
 interface HistoryRow {
   time: number
   step?: string | null
+  step_id?: string | null
   displacement: number
   force: number
   total_force_N?: number
-  u1?: number
-  u2?: number
-  rf1?: number
-  rf2?: number
+  u1?: number | null
+  u2?: number | null
+  rf1?: number | null
+  rf2?: number | null
 }
 
 interface Closing {
@@ -40,13 +49,14 @@ interface Closing {
   direction?: number[]
   distance_mm?: number
   measure_from_step_start?: boolean
-  steps?: { name: string; role: string }[]
+  steps?: { name: string; id?: string; role: string }[]
 }
 
 interface Index {
   notice: string
   mode: string
-  frames: { time: number; step?: string; file: string }[]
+  units?: string
+  frames: { time: number; step?: string; step_id?: string; file: string }[]
   history: HistoryRow[]
   force_unit: string
   instances: ResultInstance[]
@@ -56,7 +66,13 @@ interface Index {
   force_normalization?: 'total' | 'per_mm'
   closing?: Closing | null
   body?: Closing | null
-  steps?: { name: string; role: string; instance?: string; direction?: number[] }[]
+  steps?: {
+    name: string
+    id?: string
+    role: string
+    instance?: string
+    direction?: number[]
+  }[]
   history_components?: string[]
 }
 
@@ -70,13 +86,17 @@ interface Frame extends ResultFrame {
 interface DisplayMeta {
   version: number
   bounds: { undeformed: number[]; deformed: number[]; extent: number[] }
-  ranges: Partial<Record<Component, number>>
+  ranges: Partial<Record<Component | 'mises' | 'S11' | 'S22' | 'S33' | 'S12', number>>
   source: string
 }
 
 type Component = 'magnitude' | 'U1' | 'U2' | 'U3'
 
 const COMPONENTS: Component[] = ['magnitude', 'U1', 'U2', 'U3']
+
+const STRESS_FIELDS: FieldId[] = ['mises', 'S11', 'S22', 'S33', 'S12']
+const DISPLACEMENT_FIELDS: FieldId[] = ['Umag', 'U1', 'U2']
+const isStressField = (field: FieldId) => STRESS_FIELDS.includes(field)
 
 /**
  * Display-only sign controls. They transform the projected curve for reading
@@ -109,15 +129,19 @@ function download(name: string, text: string) {
 }
 
 /** Nearest sample in the same step: a curve point must match its own step, not just a time. */
-function nearestIndex<T extends { time: number; step?: string | null }>(
+function nearestIndex<T extends { time: number; step?: string | null; step_id?: string | null }>(
   samples: T[],
   time: number,
   step?: string | null,
+  stepName?: string | null,
 ) {
   if (!samples.length) return 0
+  const inStep = (sample: T) =>
+    !step ||
+    (sample.step_id ? sample.step_id === step : !stepName || sample.step === stepName)
   const eligible = samples
     .map((sample, index) => ({ sample, index }))
-    .filter(({ sample }) => !step || !sample.step || sample.step === step)
+    .filter(({ sample }) => inStep(sample))
   const pool = eligible.length
     ? eligible
     : samples.map((sample, index) => ({ sample, index }))
@@ -149,12 +173,20 @@ export function RunView({
   const [sel, select] = useState<Picked | null>(null),
     [mode, setMode] = useState<'node' | 'element'>('node'),
     [deformed, deform] = useState(true)
+  const [field, setField] = useState<FieldId>('Umag')
+  const [rangeMode, setRangeMode] = useState<'fixed' | 'auto' | 'manual'>('fixed')
+  const [limits, setLimits] = useState({ min: 0, max: 0.5 })
+  const [manual, setManual] = useState({ min: '0', max: '0.5' })
+  // Independent display toggles. They never touch the solver artifacts.
+  const [edges, setEdges] = useState(false)
+  const [markers, setMarkers] = useState(false)
+  const [deformationScale, setDeformationScale] = useState(1)
+  const [scaleDraft, setScaleDraft] = useState('1')
   const [displayedFrame, setDisplayedFrame] = useState<number | null>(null)
   const [pendingFrame, setPendingFrame] = useState<number | null>(null)
   const [frameError, setFrameError] = useState<number | null>(null)
   const [displayMeta, setDisplayMeta] = useState<DisplayMeta | null>(null)
   const frameCache = useRef(new Map<string, Frame>())
-  const [component, setComponent] = useState<Component>('magnitude')
   const [setup, setSetup] = useState<Revision['setup'] | null>(null)
   const [now, setNow] = useState(() => Date.now() / 1000)
   const [logs, setLogs] = useState(''),
@@ -307,16 +339,24 @@ export function RunView({
     }
   }, [resultView, id, hasLog, logFile, notify])
   // Two-step runs open on the door-closing step, not the body-seating step.
-  const closingStep =
-    index?.closing?.steps?.find((step) => step.role === 'door')?.name ??
-    index?.closing?.steps?.[0]?.name ??
+  const closingStepEntry =
+    index?.steps?.find((step) => step.role === 'door') ??
+    index?.closing?.steps?.find((step) => step.role === 'door') ??
+    index?.steps?.[0] ??
+    index?.closing?.steps?.[0] ??
     null
+  const closingStepId = closingStepEntry?.id ?? closingStepEntry?.name ?? null
+  const closingStepName = closingStepEntry?.name ?? null
   // Open on the door-closing step by default in both modes.
   useEffect(() => {
     if (!index) return
-    const first = index.frames.findIndex((frame) => !closingStep || frame.step === closingStep)
+    const first = index.frames.findIndex(
+      (frame) =>
+        !closingStepId ||
+        (frame.step_id ? frame.step_id === closingStepId : frame.step === closingStepName),
+    )
     setN(Math.max(0, first))
-  }, [index, closingStep])
+  }, [index, closingStepId, closingStepName])
   const [curveStep, setCurveStep] = useState<string | null>(null)
   const stepOptions = index?.steps?.length
     ? index.steps
@@ -325,12 +365,21 @@ export function RunView({
     if (!index) return
     const options = index.steps?.length ? index.steps : (index.closing?.steps ?? [])
     const preferred = options.find((step) => step.role === 'door') ?? options[options.length - 1]
-    setCurveStep(preferred?.name ?? null)
+    setCurveStep(preferred ? (preferred.id ?? preferred.name) : null)
   }, [index])
-  const stepRole = stepOptions.find((step) => step.name === curveStep)?.role
+  const curveStepEntry = stepOptions.find(
+    (step) => (step.id ?? step.name) === curveStep,
+  )
+  const curveStepName = curveStepEntry?.name ?? curveStep
+  const stepRole = curveStepEntry?.role
   const historyRows = useMemo(
-    () => (curveStep ? (index?.history ?? []).filter((row) => row.step === curveStep) : (index?.history ?? [])),
-    [index, curveStep],
+    () =>
+      curveStep
+        ? (index?.history ?? []).filter((row) =>
+            row.step_id ? row.step_id === curveStep : row.step === curveStepName,
+          )
+        : (index?.history ?? []),
+    [index, curveStep, curveStepName],
   )
   const curve = useMemo(
     () => displayedCurve(historyRows, reverseX, reverseY),
@@ -341,16 +390,105 @@ export function RunView({
   const shownEntry = index?.frames[shownFrame]
   const frameStep = shownEntry?.step
   const activeSample =
-    index && shownEntry ? nearestIndex(historyRows, shownEntry.time, frameStep) : undefined
-  // A fixed per-quantity scale from the run-wide metadata. ``null`` means this
-  // quantity has no measurement and must be shown as unavailable, never as zero.
-  const resultRange = displayMeta ? (displayMeta.ranges[component] ?? null) : undefined
-  const rangeUnavailable = resultRange === null
+    index && shownEntry
+      ? nearestIndex(
+          historyRows,
+          shownEntry.time,
+          shownEntry.step_id ?? shownEntry.step,
+          shownEntry.step,
+        )
+      : undefined
+  const stressAvailable = !!displayMeta && displayMeta.ranges.mises !== undefined
+  // Default to von Mises with element probing whenever the run carries stress.
+  useEffect(() => {
+    if (!displayMeta) return
+    const stress = displayMeta.ranges.mises !== undefined
+    setField(stress ? 'mises' : 'Umag')
+    setMode(stress ? 'element' : 'node')
+    select(null)
+  }, [displayMeta])
+  const fieldIsStress = isStressField(field)
+  useEffect(() => {
+    setMode(fieldIsStress ? 'element' : 'node')
+    select(null)
+  }, [fieldIsStress])
+  const stressSampleCells = useMemo(
+    () => (fieldIsStress ? stressCells(frame, field) : new Map<string, StressCell>()),
+    [fieldIsStress, frame, field],
+  )
+  const elementValues = useMemo(
+    () => (fieldIsStress ? elementDisplayValues(stressSampleCells, field) : undefined),
+    [fieldIsStress, stressSampleCells, field],
+  )
+  const displacementKey: Component =
+    field === 'U1' ? 'U1' : field === 'U2' ? 'U2' : 'magnitude'
+  const rangeKey: Component | 'mises' | 'S11' | 'S22' | 'S33' | 'S12' = fieldIsStress
+    ? field === 'mises'
+      ? 'mises'
+      : (field as 'S11' | 'S22' | 'S33' | 'S12')
+    : displacementKey
+  const autoRange = displayMeta ? (displayMeta.ranges[rangeKey] ?? null) : undefined
+  const effectiveMax = fieldIsStress
+    ? rangeMode === 'fixed'
+      ? 0.5
+      : rangeMode === 'auto'
+        ? (autoRange ?? 0.5)
+        : limits.max
+    : autoRange
+  const effectiveMin = fieldIsStress && rangeMode === 'manual' ? limits.min : 0
+  const resultRange = effectiveMax
+  const rangeUnavailable = resultRange === null || resultRange === undefined
+  const unit = fieldIsStress
+    ? index?.units === 'N-mm-s-tonne'
+      ? 'MPa'
+      : t('run.unitUnknown')
+    : 'mm'
+  const fieldLabel = t(('run.field.' + field) as TranslationKey)
+  const frameMax = fieldIsStress
+    ? Math.max(
+        0,
+        ...Object.values(elementValues ?? {}).flatMap((values) => Object.values(values)),
+      )
+    : 0
+  const saturated =
+    fieldIsStress && resultRange != null && frameMax > resultRange + 1e-12
+  const manualMin = Number(manual.min),
+    manualMax = Number(manual.max)
+  const manualInvalid =
+    rangeMode === 'manual' &&
+    (!Number.isFinite(manualMin) ||
+      !Number.isFinite(manualMax) ||
+      manualMax <= manualMin)
+  const stressOptions = STRESS_FIELDS.filter((option) => {
+    const key = (option === 'mises' ? 'mises' : option) as
+      | 'mises'
+      | 'S11'
+      | 'S22'
+      | 'S33'
+      | 'S12'
+    return displayMeta?.ranges[key] !== undefined
+  })
+  const fieldOptions: FieldId[] = stressAvailable
+    ? [...stressOptions, ...DISPLACEMENT_FIELDS]
+    : DISPLACEMENT_FIELDS
+  function applyManual(next: { min: string; max: string }) {
+    setManual(next)
+    const min = Number(next.min),
+      max = Number(next.max)
+    if (Number.isFinite(min) && Number.isFinite(max) && max > min) setLimits({ min, max })
+  }
   const plotPick = useCallback(
     (i: number) => {
       if (index && historyRows[i]) {
         playing(false)
-        setN(nearestIndex(index.frames, historyRows[i].time, historyRows[i].step))
+        setN(
+          nearestIndex(
+            index.frames,
+            historyRows[i].time,
+            historyRows[i].step_id ?? historyRows[i].step,
+            historyRows[i].step,
+          ),
+        )
       }
     },
     [index, historyRows],
@@ -358,7 +496,7 @@ export function RunView({
   function exportCurve() {
     if (!index) return
     const direction =
-      index.steps?.find((step) => step.name === curveStep)?.direction ??
+      index.steps?.find((step) => (step.id ?? step.name) === curveStep)?.direction ??
       index.closing?.direction ??
       [0, -1]
     const subject = stepRole === 'body' ? index.body : index.closing
@@ -367,7 +505,8 @@ export function RunView({
       ['# Abaqus QOL displayed ' + (stepRole === 'body' ? 'body' : 'door') + ' response'],
       ['# panel', subject?.panel_name ?? subject?.panel ?? 'panel'],
       ['# instance', subject?.instance ?? 'PANEL-1'],
-      ['# closing_step', curveStep ?? closingStep ?? 'all steps'],
+      ['# closing_step', curveStepName ?? closingStepName ?? 'all steps'],
+      ['# closing_step_id', curveStep ?? closingStepId ?? 'all steps'],
       ['# direction', direction.join(' ')],
       ['# length_unit', 'mm'],
       ['# force_unit', index.force_unit],
@@ -417,30 +556,76 @@ export function RunView({
   if (!job) return <main className="page">{t('run.opening')}</main>
   const disabled = index?.unavailable ?? []
   const displacementAvailable = !!frame && !!index && !disabled.includes('U')
-  const probe =
-    sel?.kind === 'node' &&
-    sel.instance &&
-    frame?.displacements[sel.instance]?.find((r) => r[0] === sel.label)
+  const stressUnavailable = !stressAvailable
   const probeText = (() => {
     if (!sel) return t('run.probePrompt')
     const identity = sel.instance + ' · ' + sel.kind + ' ' + sel.label
-    if (sel.kind !== 'node') return identity
+    if (sel.kind === 'element' && fieldIsStress) {
+      const cell =
+        sel.instance && sel.label !== undefined
+          ? stressSampleCells.get(sel.instance + ':' + sel.label)
+          : undefined
+      if (!cell || !cell.samples.length)
+        return identity + ' · ' + t('run.stressUnavailable')
+      const maximum = Math.max(...cell.samples.map((sample) => sample.value))
+      const samples = cell.samples
+        .map(
+          (sample) =>
+            (sample.ip === undefined ? '' : 'IP ' + sample.ip + ': ') +
+            sample.value.toPrecision(4) +
+            (sample.section === undefined ? '' : ' (SP ' + sample.section + ')'),
+        )
+        .join(', ')
+      return (
+        identity +
+        ' · ' +
+        t('run.misesMaxIp', { value: maximum.toPrecision(4), unit }) +
+        ' · ' +
+        t('run.samples') +
+        ': ' +
+        samples
+      )
+    }
+    if (sel.kind === 'element') {
+      const instance = index?.instances.find((item) => item.name === sel.instance)
+      const element = instance?.elements.find((item) => item.label === sel.label)
+      if (!element) return identity
+      const rows = (sel.instance ? frame?.displacements[sel.instance] : undefined) ?? []
+      const nodes = element.connectivity.map((label) => {
+        const row = rows.find((item) => item[0] === label)
+        return (
+          label +
+          ': ' +
+          (row ? Math.hypot(...row.slice(1)).toPrecision(4) + ' mm' : t('run.uUnavailable'))
+        )
+      })
+      return (
+        identity +
+        ' · ' +
+        t('run.elementNodes', { count: element.connectivity.length }) +
+        ' · ' +
+        nodes.join(', ')
+      )
+    }
+    const probe =
+      sel.instance && frame?.displacements[sel.instance]?.find((r) => r[0] === sel.label)
     if (!probe) return identity + ' · ' + t('run.uUnavailable')
     // A quantity with no run-wide measurement is unavailable, even if the frame
     // carries a placeholder value.
-    if (rangeUnavailable && component !== 'magnitude')
-      return identity + ' · ' + component + ' ' + t('run.uUnavailable')
-    if (component === 'magnitude')
+    if (rangeUnavailable && field !== 'Umag')
+      return identity + ' · ' + field + ' ' + t('run.uUnavailable')
+    if (field === 'Umag')
       return identity + ' · |U| ' + Math.hypot(...probe.slice(1)).toPrecision(4) + ' mm'
-    const axis = component === 'U1' ? 1 : component === 'U2' ? 2 : 3
+    const axis = field === 'U1' ? 1 : 2
     const value = probe[axis]
     // A missing component stays identifiable instead of becoming a zero.
     if (value === undefined || value === null)
-      return identity + ' · ' + component + ' ' + t('run.uUnavailable')
-    return identity + ' · ' + component + ' ' + value.toPrecision(4) + ' mm'
+      return identity + ' · ' + field + ' ' + t('run.uUnavailable')
+    return identity + ' · ' + field + ' ' + value.toPrecision(4) + ' mm'
   })()
-  const componentLabel = component === 'magnitude' ? t('run.magnitude') : component
-  const legendLabel = t('run.legendTitle', { variable: 'U', component: componentLabel })
+  const legendLabel = fieldIsStress
+    ? t('run.legendStress', { field: fieldLabel, unit })
+    : t('run.legendTitle', { variable: 'U', component: fieldLabel })
   return (
     <main className="page run-view">
       <div className="crumb">
@@ -474,28 +659,17 @@ export function RunView({
           <section className="card">
             <div className="panel-title">
               <ScanLine />
-              {t('run.displacementField')}
+              {t('run.field')}
               <div className="spacer" />
               <select
-                aria-label={t('run.variable')}
-                value="U"
-                onChange={() => undefined}
-                disabled={!displacementAvailable}
+                aria-label={t('run.field')}
+                value={field}
+                onChange={(e) => setField(e.target.value as FieldId)}
+                disabled={!fieldOptions.length}
               >
-                <option value="U">U</option>
-              </select>
-              <select
-                aria-label={t('run.component')}
-                value={component}
-                onChange={(e) => {
-                  setComponent(e.target.value as Component)
-                  select(null)
-                }}
-                disabled={!displacementAvailable}
-              >
-                {COMPONENTS.map((option) => (
+                {fieldOptions.map((option) => (
                   <option key={option} value={option}>
-                    {option === 'magnitude' ? t('run.magnitude') : '|' + option + '|'}
+                    {t(('run.field.' + option) as TranslationKey)}
                   </option>
                 ))}
               </select>
@@ -507,10 +681,20 @@ export function RunView({
                   select(null)
                 }}
               >
-                <option value="node">{t('run.probeNode')}</option>
+                {!fieldIsStress && <option value="node">{t('run.probeNode')}</option>}
                 <option value="element">{t('run.probeElement')}</option>
               </select>
             </div>
+            {fieldIsStress && stressUnavailable && (
+              <p className="notice" data-testid="stress-unavailable">
+                {t('run.stressUnavailable')}
+              </p>
+            )}
+            {!fieldIsStress && !displacementAvailable && frame && (
+              <p className="notice" data-testid="displacement-unavailable">
+                {t('run.uUnavailable')}
+              </p>
+            )}
             <div className="result-viewport">
               <Viewport
                 display={null}
@@ -520,9 +704,17 @@ export function RunView({
                 onSelect={select}
                 results={{ instances: index.instances, frame, bounds: displayMeta?.bounds?.extent ?? null }}
                 deformed={deformed}
-                resultComponent={component}
-                resultRange={rangeUnavailable ? null : resultRange}
+                deformationScale={deformationScale}
+                elementValues={fieldIsStress ? elementValues : undefined}
+                resultComponent={fieldIsStress ? 'magnitude' : displacementKey}
+                resultRange={rangeUnavailable ? null : (resultRange ?? null)}
+                resultMin={effectiveMin}
+                resultUnit={unit}
+                resultSaturated={saturated}
                 resultLabel={legendLabel}
+                showMeshEdges={edges}
+                nodeMarkers={markers}
+                plain
               />
             </div>
             <div className="playback">
@@ -559,15 +751,98 @@ export function RunView({
                 </span>
               )}
             </div>
+            <div className="result-controls" data-testid="result-controls">
+              {fieldIsStress && (
+                <fieldset>
+                  <legend>{t('run.range')}</legend>
+                  <label>
+                    {t('run.rangeMode')}
+                    <select
+                      aria-label={t('run.rangeMode')}
+                      value={rangeMode}
+                      onChange={(e) => {
+                        const next = e.target.value as 'fixed' | 'auto' | 'manual'
+                        setRangeMode(next)
+                        if (next === 'manual') applyManual(manual)
+                      }}
+                    >
+                      <option value="fixed">{t('run.rangeFixed')}</option>
+                      <option value="auto">{t('run.rangeAuto')}</option>
+                      <option value="manual">{t('run.rangeManual')}</option>
+                    </select>
+                  </label>
+                  <label>
+                    {t('run.rangeMin')}
+                    <input
+                      type="number"
+                      step="any"
+                      aria-label={t('run.rangeMin')}
+                      value={manual.min}
+                      disabled={rangeMode !== 'manual'}
+                      onChange={(e) => applyManual({ ...manual, min: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    {t('run.rangeMax')}
+                    <input
+                      type="number"
+                      step="any"
+                      aria-label={t('run.rangeMax')}
+                      value={manual.max}
+                      disabled={rangeMode !== 'manual'}
+                      onChange={(e) => applyManual({ ...manual, max: e.target.value })}
+                    />
+                  </label>
+                  {manualInvalid && (
+                    <small className="error-text" role="alert" data-testid="range-error">
+                      {t('run.rangeInvalid')}
+                    </small>
+                  )}
+                </fieldset>
+              )}
+              <div className="control-row">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={edges}
+                    onChange={(e) => setEdges(e.target.checked)}
+                  />
+                  {t('run.meshEdges')}
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={markers}
+                    onChange={(e) => setMarkers(e.target.checked)}
+                  />
+                  {t('run.nodeMarkers')}
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={deformed}
+                    onChange={(e) => deform(e.target.checked)}
+                  />
+                  {t('run.deformed')}
+                </label>
+                <label>
+                  {t('run.deformationScale')}
+                  <input
+                    type="number"
+                    min={0.01}
+                    step="0.5"
+                    aria-label={t('run.deformationScale')}
+                    value={scaleDraft}
+                    onChange={(e) => {
+                      setScaleDraft(e.target.value)
+                      const value = Number(e.target.value)
+                      if (Number.isFinite(value) && value > 0) setDeformationScale(value)
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
             <div className="legend">
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={deformed}
-                  onChange={(e) => deform(e.target.checked)}
-                />
-                {t('run.deformed')}
-              </label>
               <span>{probeText}</span>
               {displayMeta === null && (
                 <span className="notice">{t('run.displayMetadataFallback')}</span>
@@ -591,7 +866,7 @@ export function RunView({
                     onChange={(e) => setCurveStep(e.target.value || null)}
                   >
                     {stepOptions.map((step) => (
-                      <option key={step.name} value={step.name}>
+                      <option key={step.id ?? step.name} value={step.id ?? step.name}>
                         {step.name} · {t(step.role === 'body' ? 'run.roleBody' : 'run.roleDoor')}
                       </option>
                     ))}

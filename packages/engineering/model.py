@@ -117,10 +117,15 @@ class Material(Model):
     name: Name
     version: Annotated[int, Field(ge=1)] = 1
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
-    model: Literal["linear_elastic", "hyperfoam_test"]
+    # ``neo_hookean`` is a compressible solid-rubber law: C10 in stress units
+    # (MPa) and D1 in inverse stress units (MPa^-1). It is distinct from the
+    # hyperfoam test-data law and from linear elasticity; no card is relabelled.
+    model: Literal["linear_elastic", "hyperfoam_test", "neo_hookean"]
     density: Positive
     young: Positive | None = None
     poisson: Annotated[float, Field(gt=-1, lt=0.5)] | None = None
+    c10: Positive | None = None
+    d1: Positive | None = None
     test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
     # Optional pin to a global library version. The card values above remain the
     # immutable snapshot a saved revision and its deck actually use.
@@ -133,6 +138,10 @@ class Material(Model):
             raise ValueError("Enter Young's modulus and Poisson's ratio for the elastic card.")
         if self.model == "hyperfoam_test" and len(self.test_data) < 3:
             raise ValueError("Supply at least three uniaxial test samples for hyperfoam.")
+        if self.model == "neo_hookean" and (self.c10 is None or self.d1 is None):
+            raise ValueError(
+                "A compressible neo-Hookean card needs C10 (MPa) and D1 (MPa^-1)."
+            )
         if (self.library_id is None) != (self.library_version is None):
             raise ValueError("A library pin needs both the material id and its version.")
         return self
@@ -158,27 +167,29 @@ class BodyMotion(Model):
     """Step-1 motion of the moving body in the two-panel template."""
 
     offset: Coord = 0
-    # Signed Y travel. The sign follows the mounted side: a body above the seal
-    # seats downward (negative), a body below it seats upward (positive). The
-    # deck writer checks the sign against the measured side.
+    # Signed Y travel. Zero holds the body at its assembled position for the
+    # full step; otherwise the sign follows the mounted side: a body above the
+    # seal seats downward (negative), a body below it seats upward (positive).
+    # The deck writer checks the sign against the measured side.
     travel: Annotated[float, Field(ge=-10000, le=10000)] = 0
     duration: Positive = 1.0
 
 
 class Motion(Model):
     axis: Literal["Y"] = "Y"
-    # The door template closes from above the seal, so its travel is negative.
-    # A bottom-mounted profile belongs to the moving-body role, whose travel is
-    # signed independently.
-    travel: Annotated[float, Field(ge=-10000, lt=0)] = -5.5
+    # A signed Y travel of 0 is a valid hold: the panel keeps its assembled
+    # position for the full positive step duration. A nonzero travel must move
+    # toward the measured contact side; the deck writer checks that against the
+    # geometry. A bottom-mounted profile can use the moving-body role.
+    travel: Annotated[float, Field(ge=-10000, le=10000)] = -5.5
     offset: Coord = 0
-    duration: Positive = 1.3
+    duration: Positive = 1.0
     # Used only when analysis.mode == "body_then_door".
     body: BodyMotion = Field(default_factory=BodyMotion)
 
 
 class MeshSpec(Model):
-    size: BoundedSize = 1.0
+    size: BoundedSize = 0.5
     local: dict[Id, BoundedSize] = Field(default_factory=dict, max_length=4096)
     recombine: bool = True
 
@@ -214,10 +225,16 @@ class Source(Model):
     filename: str = Field(default="", max_length=255)
     digest: str = Field(default="", max_length=64)
     drawing_units: str = Field(default="millimetres", max_length=128)
+    # How the drawing's declared unit header was interpreted. Empty on
+    # revisions that predate the recorded policy.
+    unit_basis: str = Field(default="", max_length=40)
 
 
 class Project(Model):
-    schema_version: Literal[1] = 1
+    # Version 2 changed the new-model defaults (0.5 mm mesh, 1.0 s steps).
+    # Version 1 revisions keep their original effective values when a defaulted
+    # field is absent from the stored payload.
+    schema_version: int = 2
     name: Name
     dimension: Literal["2D", "3D"] = "2D"
     formulation: Literal["plane_stress", "extrusion_preview"] = "plane_stress"
@@ -243,6 +260,38 @@ class Project(Model):
     def is_empty(self):
         """True only for an explicit model that has not imported a drawing yet."""
         return self.source.kind == "empty"
+
+    @model_validator(mode="before")
+    @classmethod
+    def legacy_defaults(cls, data):
+        """Keep version-1 revisions on their original defaulted values.
+
+        Version 2 sets the new-model mesh size to 0.5 mm and a new step to
+        1.0 s. A stored version-1 payload that omitted those fields must still
+        read as 1.0 mm / 1.3 s; explicitly saved values are never rewritten.
+        """
+        if not isinstance(data, dict):
+            return data
+        try:
+            version = int(data.get("schema_version", 1))
+        except (TypeError, ValueError):
+            return data
+        if version >= 2:
+            return data
+        changed = dict(data)
+        mesh = changed.get("mesh")
+        if isinstance(mesh, dict) and "size" not in mesh:
+            changed["mesh"] = {**mesh, "size": 1.0}
+        motion = changed.get("motion")
+        if isinstance(motion, dict):
+            motion = dict(motion)
+            if "duration" not in motion:
+                motion["duration"] = 1.3
+            body = motion.get("body")
+            if isinstance(body, dict) and "duration" not in body:
+                motion["body"] = {**body, "duration": 1.0}
+            changed["motion"] = motion
+        return changed
 
     @property
     def material_regions(self):
@@ -350,8 +399,7 @@ class Project(Model):
             if not any(not face.cavity for face in self.faces):
                 raise ValueError("Body-then-door analysis needs at least one seal region.")
             body = self.motion.body
-            if body.travel == 0:
-                raise ValueError("Set a non-zero body travel for body-then-door analysis.")
+            # Zero travel is a valid hold; only a non-positive duration is invalid.
             if body.duration <= 0:
                 raise ValueError("Body seating duration must be positive.")
             if self.motion.duration <= 0:

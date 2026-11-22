@@ -79,6 +79,24 @@ export interface ViewportProps {
   /** Nodal displacement quantity used for contouring. */
   resultComponent?: 'magnitude' | 'U1' | 'U2' | 'U3'
   /**
+   * Per-instance element values for a cell-coloured field (stress). Each cell is
+   * flat-coloured with one value and keeps one parent element identity.
+   */
+  elementValues?: Record<string, Record<number, number>>
+  /** Lower bound of the colour scale; defaults to 0. */
+  resultMin?: number
+  /** Deformation multiplier; 1 is true scale. */
+  deformationScale?: number
+  /** Draw independent node markers on top of a result. */
+  nodeMarkers?: boolean
+  /** Show element edges without changing the cell colours. */
+  showMeshEdges?: boolean
+  /** Results canvas: solid white, no grid or decorative background. */
+  plain?: boolean
+  resultUnit?: string
+  /** True when a measured value exceeds the display maximum. */
+  resultSaturated?: boolean
+  /**
    * Recorded colour maximum for this quantity. ``null`` means the quantity is
    * unavailable for this run and must not be painted with a fabricated zero;
    * ``undefined`` asks the viewport to derive a bounded fallback.
@@ -104,7 +122,7 @@ export interface ViewportProps {
 export interface Surface {
   /** Stable identity of this surface across frames, used to reuse the actor. */
   key?: string
-  kind: 'face' | 'edge'
+  kind: 'face' | 'edge' | 'points'
   points: number[][]
   cells: number[][]
   color: string
@@ -119,6 +137,8 @@ export interface Surface {
 export interface Scene {
   surfaces: Surface[]
   range: number | null
+  /** Lower bound of the colour scale. */
+  min?: number
   /** Bounds covering the whole run, so the camera is fitted once. */
   extent?: number[] | null
 }
@@ -162,6 +182,8 @@ function instanceSurfaces(
   // signed value, so a reader never mistakes the ramp for a signed field.
   const component = props.resultComponent ?? 'magnitude'
   const axis = component === 'U1' ? 0 : component === 'U2' ? 1 : component === 'U3' ? 2 : -1
+  const scale = props.deformationScale ?? 1
+  const cellValues = isResult ? props.elementValues : undefined
   const groups = new Map<
     string,
     { surface: Surface; indices: Map<number, number> }
@@ -178,8 +200,12 @@ function instanceSurfaces(
     // Volume connectivity must go through an exterior-face extractor before rendering.
     if (!line && !['CPS3', 'CPS4', 'CPS4R'].includes(element.type)) continue
     if (!element.connectivity.every((id) => coords.has(id))) continue
-    const complete =
-      isResult && element.connectivity.every((id) => displacement.has(id))
+    const cellValue = cellValues
+      ? cellValues[source.instance]?.[element.id]
+      : undefined
+    const complete = cellValues
+      ? cellValue !== undefined
+      : isResult && element.connectivity.every((id) => displacement.has(id))
     const color =
       isResult && !complete
         ? '#a3a9ae'
@@ -190,9 +216,14 @@ function instanceSurfaces(
               element.component ?? '',
               props.colors ?? {}
             )
-    const key = [element.entity, element.component, line, complete, color].join(
-      '|'
-    )
+    const key = [
+      element.entity,
+      element.component,
+      line,
+      complete,
+      color,
+      cellValues ? 'cell' : 'node',
+    ].join('|')
     let group = groups.get(key)
     if (!group) {
       group = {
@@ -209,13 +240,29 @@ function instanceSurfaces(
           contour: complete,
           instance: source.instance,
           color,
-          meshEdges: !line && !isResult,
+          meshEdges: !line && (isResult ? !!props.showMeshEdges : true),
         },
       }
       groups.set(key, group)
     }
     const surface = group.surface
     const cell = element.connectivity.map((label) => {
+      if (cellValues) {
+        // A stress cell is flat: every corner carries the same value and the
+        // points are private to this element, so a shared mesh node cannot
+        // blend two different element values.
+        const index = surface.points.length
+        const xyz = coords.get(label)!
+        const u = displacement.get(label)
+        surface.points.push(
+          complete && props.deformed && u
+            ? xyz.map((x, i) => x + (u[i] ?? 0) * scale)
+            : xyz
+        )
+        surface.nodeIds!.push(label)
+        surface.magnitudes!.push(complete ? cellValue : undefined)
+        return index
+      }
       let index = group.indices.get(label)
       if (index === undefined) {
         index = surface.points.length
@@ -224,7 +271,7 @@ function instanceSurfaces(
         const u = displacement.get(label)
         surface.points.push(
           complete && props.deformed && u
-            ? xyz.map((x, i) => x + (u[i] ?? 0))
+            ? xyz.map((x, i) => x + (u[i] ?? 0) * scale)
             : xyz
         )
         surface.nodeIds!.push(label)
@@ -305,7 +352,43 @@ export function makeScene(props: ViewportProps): Scene {
           for (const value of surface.magnitudes ?? [])
             if (value !== undefined) range = Math.max(range ?? 0, value)
         }
-    return { surfaces, range, extent: runExtent(props) }
+    if (props.nodeMarkers) {
+      // Node markers are an independent overlay: element mode ignores them and
+      // node probing still resolves the original instance-qualified label.
+      const scale = props.deformationScale ?? 1
+      for (const instance of props.results.instances) {
+        const displacement = new Map(
+          (props.results.frame?.displacements[instance.name] ?? []).map((row) => [
+            row[0],
+            row.slice(1),
+          ])
+        )
+        const points = instance.nodes.map((node) => {
+          const u = displacement.get(node[0])
+          return props.deformed && u
+            ? [node[1] + (u[0] ?? 0) * scale, node[2] + (u[1] ?? 0) * scale, node[3] + (u[2] ?? 0) * scale]
+            : [node[1], node[2], node[3]]
+        })
+        surfaces.push({
+          key: instance.name + '#nodes',
+          kind: 'points',
+          points,
+          cells: points.map((_, index) => [index]),
+          color: '#24343b',
+          meshEdges: false,
+          instance: instance.name,
+          nodeIds: instance.nodes.map((node) => node[0]),
+          magnitudes: [],
+          contour: false,
+        })
+      }
+    }
+    return {
+      surfaces,
+      range,
+      min: props.resultMin ?? 0,
+      extent: runExtent(props),
+    }
   }
   const surfaces: Surface[] = []
   if (props.mesh && props.dimension === '2D') {

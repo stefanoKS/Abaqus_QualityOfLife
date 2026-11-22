@@ -46,7 +46,9 @@ The header shows one language button labelled with the destination language (`En
 2. **Add more models** with **New model** inside the group header. Each model keeps its own revision
    history and runs; **Revisions** lists them and **Duplicate model** creates an independent copy in the
    same group.
-3. **Import** a DXF/DWG after confirming the drawing coordinates are in millimetres. DWG files are read
+3. **Import** a DXF/DWG directly — there is no unit checkbox. The drawing's own header decides:
+   millimetres import directly; a unitless drawing is interpreted as project millimetres and recorded
+   as such; a drawing declaring another unit is rejected with that unit named. DWG files are read
    **natively** — no CAD converter, no ODA configuration, no upload to a third party. The import runs in
    the background and creates a new revision when it finishes. `LINE`, `ARC`, `CIRCLE`, closed
    `LWPOLYLINE` and `SPLINE` entities are supported. A spline is kept as an exact B-spline
@@ -55,11 +57,16 @@ The header shows one language button labelled with the destination language (`En
    A failed import leaves the last good drawing usable; a first failed import leaves the model empty
    with an error you can act on.
 4. **Components** — assign each component a role: weatherstrip seal, moving panel, and so on.
-5. **Materials** — assign a material card to each region and edit card properties as needed.
-6. **Motion** — set the initial Y offset, the prescribed Y travel (negative) and the step duration.
-   **Contact** sets the contact law and friction. Press **Save revision**; unsaved changes are flagged
-   in the footer.
-7. **Mesh → Generate mesh** meshes the section. Mesh owns sizing, generation and regeneration only.
+5. **Materials** — assign a material card to each region and edit card properties as needed. The
+   library supports linear elastic, hyperfoam test data and a **compressible neo-Hookean** solid
+   rubber card (C10 in MPa, D1 in MPa⁻¹).
+6. **Motion** — set the initial Y offset, the signed Y travel and the step duration. A travel of
+   **0 mm is a valid hold**: the panel keeps its assembled position for the whole step (positive
+   duration). A new step defaults to 1.0 s. **Contact** sets the contact law and friction. Press
+   **Save revision**; unsaved changes are flagged in the footer.
+7. **Mesh → Generate mesh** meshes the section. A new model defaults to 0.5 mm. Rubber
+   quadrilaterals always use reduced integration (CPS4R); the enforced setting and the CPS4R/CPS3/R2D2
+   explanations are shown beside the controls. Mesh owns sizing, generation and regeneration only.
 8. **Mounting** — tick **Fixed-node box mode**, then drag a rectangle over the weatherstrip mesh nodes
    you want to hold. Left drag selects, **Shift + drag** pans and the wheel zooms. Choose
    **Replace / Add / Subtract** for the rectangle, use **Clear selection** to start over, and check
@@ -70,14 +77,19 @@ The header shows one language button labelled with the destination language (`En
    materials, contact and motion. It never enqueues a mesh job.
 10. **Review / Run** — check the summary, then submit an **Abaqus** analysis. A missing prerequisite
     names the stage that owns it instead of leaving a disabled button unexplained.
-11. **Results** — play frames, probe nodes and elements, read the door-response curve, export the
-    displayed curve, and download the raw history CSV.
+11. **Results** — opens on **von Mises** and element probing when the run contains stress (otherwise
+    on displacement magnitude and node probing). Switch the **Field**, set the stress range
+    (fixed 0.00–0.50 MPa by default, run-wide automatic, or editable limits), toggle mesh edges and
+    node markers independently, scale the deformation, and probe cells or nodes. The canvas is solid
+    white. Play frames, read the door-response curve, export the displayed curve, and download the
+    raw history CSV (missing measurements stay empty, not zero).
 
 ### Operator workflows
 
 **Create an empty model and import its drawing.** Dashboard → New project → name the project and its
 first model (leave the example checkbox clear) → Create project. The model opens at Import with no
-drawing. Confirm millimetres, choose the DXF or DWG, and wait for the new revision. The viewport shows
+drawing. Choose the DXF or DWG directly (no unit confirmation); a unitless drawing is interpreted as
+mm and the basis is shown in the import summary. The viewport shows
 the returned geometry, and that revision's original drawing stays downloadable.
 
 **Archive or delete a model/project.** The dashboard has **Show archived** and an Archive/Restore
@@ -247,6 +259,7 @@ output for design decisions or material-model validation.
 | Every seal edge must belong to a material region | Fix the drawing so every edge belongs to a region. |
 | Assign the seal role and a material to every section region | Resolve unassigned regions in Materials. |
 | Requested mesh exceeds the pilot mesh budget | Increase the global element size. |
+| The active mesh file is missing or unreadable | Generate the mesh again in Mesh, then review and save the fixed nodes; Review never remeshes automatically. Completed runs stay readable. |
 | Degenerate or inverted element | Change the element size or repair the boundary. |
 | Unknown / worker disconnected | Inspect the run directory logs and processes; see the recovery document. |
 

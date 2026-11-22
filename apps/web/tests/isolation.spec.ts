@@ -31,7 +31,6 @@ async function upload(page: Page, revision: Revision, file: string, fresh = true
     .getByRole('button', { name: 'Import' })
     .click()
   if (fresh) await expect(page.getByTestId('no-drawing')).toBeVisible()
-  await page.getByLabel('Drawing coordinates are in mm').check()
   await page.locator('input[type=file]').setInputFiles(file)
   await expect(page.locator('.subtitle')).toContainText('section.dxf', { timeout: 60000 })
   await expect(page.locator('.crumb')).toContainText(
@@ -166,7 +165,6 @@ test('a cancelled or failed import never replaces the last good drawing', async 
   await expect(page.locator('.crumb')).toContainText('Revision 02')
 
   // A failed replacement keeps the model, its bytes and its head unchanged.
-  await page.getByLabel('Drawing coordinates are in mm').check()
   await page.locator('input[type=file]').setInputFiles({
     name: 'section.dxf',
     mimeType: 'application/dxf',
@@ -223,7 +221,6 @@ test('an import that finishes in A stays in A while B is open', async ({ page, r
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Import' })
     .click()
-  await page.getByLabel('Drawing coordinates are in mm').check()
   const posted = page.waitForResponse(
     (response) =>
       response.url().includes('/drawing') && response.request().method() === 'POST',

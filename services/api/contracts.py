@@ -17,9 +17,12 @@ class NewProject(Contract):
     # Models live in a project group. Omitted (legacy clients) lands in the
     # default group instead of failing.
     group: UUID | None = None
-    # An explicit opt-in to the public demonstration section. Creating a model
+    # An explicit opt-in to a public synthetic section. Creating a model
     # never seeds geometry by default: a new model starts empty.
     example: bool = False
+    # Named example; ``two-panel`` adds a moving body below the seal and the
+    # explicit 1.0 s / 1.3 s two-step durations.
+    template: Literal["hollow", "two-panel"] = "hollow"
 
 
 class NewGroup(Contract):
@@ -29,11 +32,14 @@ class NewGroup(Contract):
 class MaterialCard(Contract):
     """A validated constitutive card independent of any model."""
 
-    model: Literal["linear_elastic", "hyperfoam_test"]
+    model: Literal["linear_elastic", "hyperfoam_test", "neo_hookean"]
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
     density: float = Field(gt=0, le=1e9)
     young: float | None = Field(default=None, gt=0, le=1e9)
     poisson: float | None = Field(default=None, gt=-1, lt=0.5)
+    # Compressible neo-Hookean: C10 in MPa, D1 in MPa^-1.
+    c10: float | None = Field(default=None, gt=0, le=1e9)
+    d1: float | None = Field(default=None, gt=0, le=1e9)
     test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
 
     def checked(self, name="Library material"):

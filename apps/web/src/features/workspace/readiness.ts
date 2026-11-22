@@ -23,6 +23,8 @@ export interface AssemblyMotion {
   clearance_mm: number
   travel_mm: number
   duration_s: number
+  /** True when travel is exactly 0: the panel holds its assembled position. */
+  hold?: boolean
   reaches_initial_gap: boolean
 }
 

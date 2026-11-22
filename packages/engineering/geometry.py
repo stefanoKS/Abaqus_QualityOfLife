@@ -183,6 +183,39 @@ def synthetic(name="Hollow bulb section"):
     )
 
 
+def two_panel_section(name="Two-panel seating section", body_y=-1.0, body_travel=5.0):
+    """Door above the seal and a moving body below it.
+
+    A named, intentionally specified example: the body sits 1 mm below the
+    seal foot and the historical two-panel scenario's explicit 1.0 s body /
+    1.3 s door durations are preserved. It is used by the API template, the
+    acceptance harness and the two-step tests instead of a hand-built fixture.
+    """
+    project = synthetic(name)
+    panel = next(edge for edge in project.edges if edge.component == "panel")
+    start = next(vertex for vertex in project.vertices if vertex.id == panel.start)
+    end = next(vertex for vertex in project.vertices if vertex.id == panel.end)
+    project.components.append(
+        Component(id="body", name="Body profile", role="vehicle_body")
+    )
+    project.vertices.append(Vertex(id="body-v1", xyz=(start.xyz[0], body_y, 0)))
+    project.vertices.append(Vertex(id="body-v2", xyz=(end.xyz[0], body_y, 0)))
+    project.edges.append(
+        Edge(
+            id="body-profile",
+            name="Body contact profile",
+            component="body",
+            start="body-v1",
+            end="body-v2",
+        )
+    )
+    project.analysis.mode = "body_then_door"
+    project.motion.body.travel = body_travel
+    project.motion.body.duration = 1.0
+    project.motion.duration = 1.3
+    return Project.model_validate(project.model_dump(mode="json"))
+
+
 def empty(name="Untitled model", dimension="2D"):
     """An explicit model with no drawing yet.
 

@@ -760,6 +760,46 @@ td .mode-label,
 .result-viewport {
   position: relative;
   height: clamp(320px, 45vh, 680px);
+  background: #ffffff;
+}
+.result-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 15px;
+  border-top: 1px solid var(--color-border-subtle);
+}
+.result-controls fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+}
+.result-controls fieldset legend {
+  padding: 0 4px;
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+}
+.result-controls label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-meta);
+}
+.result-controls input[type='number'] {
+  width: 96px;
+}
+.control-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+}
+.legend-saturated {
+  color: #9a5b00;
 }
 .result-view select {
   max-width: 100%;
@@ -1116,6 +1156,28 @@ input[type='color'] {
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--color-border-subtle);
+}
+.enforced-setting {
+  margin: 12px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+}
+.enforced-setting legend {
+  padding: 0 4px;
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+}
+.enforced-setting small {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-text-muted);
+}
+.element-legend dt {
+  font-family: ui-monospace, Consolas, monospace;
+}
+.region-types {
+  color: var(--color-text-muted);
 }
 .assembly-diagnostics h3 {
   display: flex;

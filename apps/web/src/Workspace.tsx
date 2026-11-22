@@ -128,8 +128,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     mesh: null,
     error: '',
   })
-  const [unitConfirmed, confirmUnit] = useState(false),
-    [expanded, expand] = useState<string[]>([])
+  const [expanded, expand] = useState<string[]>([])
   const [library, setLibrary] = useState<LibrarySummary[]>([])
   const [placement, setPlacement] = useState<{ initial_vertical_mesh_clearance_mm: number } | null>(
     null,
@@ -243,18 +242,27 @@ export default function Workspace({ initial, locked, notify }: Props) {
     void resolve()
     return () => ac.abort()
   }, [locked, t])
+  // Last revision whose geometry was successfully rendered. A draft-only
+  // validation error must never clear a drawing the engineer already had.
+  const displayedRevision = useRef<string | null>(null)
   useEffect(() => {
     const ac = new AbortController()
     request<Display>('/api/display', 'POST', p, ac.signal)
-      .then(setDisplay)
+      .then((next) => {
+        displayedRevision.current = rev.id
+        setDisplay(next)
+      })
       .catch((e) => {
-        if (!ac.signal.aborted) {
-          setDisplay(null)
-          problem(e)
-        }
+        if (ac.signal.aborted) return
+        // The draft is the last valid geometry until Save, so keep it visible.
+        // Only a failure before this revision rendered anything is a real
+        // empty scene worth reporting.
+        if (displayedRevision.current === rev.id) return
+        setDisplay(null)
+        problem(e)
       })
     return () => ac.abort()
-  }, [p, problem])
+  }, [p, rev.id, problem])
   const active = anyActive([...meshJobs, ...deckJobs, ...related])
   useEffect(() => {
     let live = true
@@ -306,7 +314,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // A changed or cleared selection must block preparation and submission until
   // it is saved or discarded.
   const fixturePending = pendingFixture !== null
-  const motionValid = p.motion.travel < 0 && p.motion.duration > 0
+  // Zero travel is a valid hold; only a non-positive duration (or a blank
+  // numeric draft, handled separately) blocks the motion step.
+  const motionValid = p.motion.travel <= 0 && p.motion.duration > 0
   const deck = pendingDeck
     ? (deckJobs.find((j) => j.id === pendingDeck) ?? null)
     : (deckJobs.find(
@@ -459,6 +469,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
     [p, meshJob, compatibleMesh, fixture, deck, deckReady, related, dirty],
   )
   const twoStep = p.analysis.mode === 'body_then_door'
+  // A measured motion rejection (penetration, wrong direction, missing X
+  // overlap) is shown next to the motion fields, not only as a toast.
+  const motionFinding =
+    readiness?.findings.find(
+      (finding) => finding.stage === 'motion' && finding.severity === 'blocker',
+    ) ?? null
   const participantNames = useMemo(
     () =>
       p.components
@@ -635,7 +651,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
     go('diagnostics/' + r.id)
   }
   async function importFile(f: File) {
-    if (!unitConfirmed) throw new Error(t('import.needsUnits'))
     const r = await save(),
       form = new FormData()
     form.append('base', r.id)
@@ -674,6 +689,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
             density: detail.card.density,
             young: detail.card.young ?? null,
             poisson: detail.card.poisson ?? null,
+            c10: detail.card.c10 ?? null,
+            d1: detail.card.d1 ?? null,
             test_data: (detail.card.test_data ?? []).map(
               (row) => [row[0], row[1], row[2]] as [number, number, number],
             ),
@@ -698,6 +715,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
         card.density = detail.card.density
         card.young = detail.card.young ?? null
         card.poisson = detail.card.poisson ?? null
+        card.c10 = detail.card.c10 ?? null
+        card.d1 = detail.card.d1 ?? null
         card.test_data = (detail.card.test_data ?? []).map(
           (row) => [row[0], row[1], row[2]] as [number, number, number],
         )
@@ -1009,6 +1028,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       [t('import.units'), 'N–mm–s–tonne'],
                     ]}
                   />
+                  {p.source.unit_basis && (
+                    <p className="notice" data-testid="import-unit-basis">
+                      {t('import.drawingUnitBasis')}
+                      {': '}
+                      {t(
+                        ('import.unitBasis.' + p.source.unit_basis) as TranslationKey,
+                      )}
+                    </p>
+                  )}
                   {p.source.kind === 'empty' && (
                     <p className="notice" data-testid="no-drawing">
                       {t('import.noDrawing')}
@@ -1021,14 +1049,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     </a>
                   )}
                   <p>{t('import.help')}</p>
-                  <label className="check">
-                    <input
-                      type="checkbox"
-                      checked={unitConfirmed}
-                      onChange={(e) => confirmUnit(e.target.checked)}
-                    />
-                    {t('import.confirmUnits')}
-                  </label>
+                  <p className="quality-note subtle" data-testid="import-unit-policy">
+                    {t('import.unitPolicy')}
+                  </p>
                   <input
                     ref={file}
                     hidden
@@ -1040,7 +1063,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       e.target.value = ''
                     }}
                   />
-                  <button disabled={!unitConfirmed} onClick={() => file.current?.click()}>
+                  <button onClick={() => file.current?.click()}>
                     <FileInput />
                     {t('import.action')}
                   </button>
@@ -1381,7 +1404,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     label={t('motion.travel')}
                     unit="mm"
                     max={0}
-                    rangeHint="< 0 (closing direction)"
+                    rangeHint={t('motion.doorTravelHint')}
                     value={p.motion.travel}
                     onChange={(v) =>
                       edit((n) => {
@@ -1401,6 +1424,17 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     }
                   />
                   <p>{t('motion.help')}</p>
+                  <p className="quality-note subtle" data-testid="motion-zero-hold">
+                    {t('motion.zeroHolds')}
+                  </p>
+                  {motionFinding && !dirty && (
+                    <p className="error-text" role="alert" data-testid="motion-error">
+                      {t(
+                        findingKey(motionFinding.code),
+                        findingVars(motionFinding, t),
+                      )}
+                    </p>
+                  )}
                   <AssemblyDiagnostics
                     assessment={readiness?.assembly ?? null}
                     dirty={dirty}
@@ -1521,6 +1555,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       }
                     />
                   )}
+                  <fieldset className="enforced-setting" data-testid="reduced-integration-policy">
+                    <legend>{t('mesh.reducedIntegration')}</legend>
+                    <label className="check">
+                      <input type="checkbox" checked disabled readOnly />
+                      {t('mesh.reducedIntegrationLabel')}
+                    </label>
+                    <small>{t('mesh.reducedIntegrationHelp')}</small>
+                  </fieldset>
                 </>
               )}
               {stage === STAGE.review && !dimension && (
@@ -1548,7 +1590,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       [t('review.panels'), participantNames.join(', ') || t('contact.none')],
                       [
                         t('review.stepSequence'),
-                        twoStep ? t('review.stepBodyThenDoor') : t('review.stepDoorOnly'),
+                        twoStep
+                          ? p.motion.body.travel === 0 && p.motion.travel === 0
+                            ? t('review.stepHoldOnly')
+                            : p.motion.travel === 0
+                              ? t('review.stepBodyThenHold')
+                              : t('review.stepBodyThenDoor')
+                          : p.motion.travel === 0
+                            ? t('review.stepDoorHold')
+                            : t('review.stepDoorOnly'),
                       ],
                       ...(twoStep
                         ? [

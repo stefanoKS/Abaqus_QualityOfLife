@@ -180,7 +180,21 @@ def evaluate(rid):
         findings.append(finding("material.none", "materials", BLOCKER))
 
     active, latest, compat = _mesh_state(project, setup, mesh_jobs)
-    fixture = store.fixture(active["id"]) if active else None
+    artifact = (
+        store.mesh_artifact_state(active["id"], active.get("mesh_digest")) if active else None
+    )
+    if active is not None and artifact != "ok":
+        findings.append(
+            finding(
+                "mesh.artifact_missing" if artifact == "missing" else "mesh.artifact_corrupt",
+                "mesh",
+                BLOCKER,
+                {"job": active["id"]},
+                artifact="mesh:" + active["id"],
+            )
+        )
+    mesh_usable = active is not None and artifact == "ok"
+    fixture = store.fixture(active["id"]) if mesh_usable else None
     fixture_count = len(fixture["labels"]) if fixture else 0
 
     if active is None:
@@ -206,9 +220,9 @@ def evaluate(rid):
             )
         )
 
-    if active and fixture_count == 0:
+    if mesh_usable and fixture_count == 0:
         findings.append(finding("mounting.missing", "mounting", BLOCKER))
-    if fixture_count:
+    if mesh_usable and fixture_count:
         findings.append(
             finding(
                 "mounting.reviewed",
@@ -219,14 +233,9 @@ def evaluate(rid):
             )
         )
 
-    if setup.motion.travel >= 0:
-        findings.append(finding("motion.travel_not_closing", "motion", BLOCKER))
-    if setup.analysis.mode == "body_then_door" and setup.motion.body.travel == 0:
-        findings.append(finding("motion.body_travel_missing", "motion", BLOCKER))
-
-    # Measured after the coarse motion checks so a missing travel keeps its own
-    # specific reason instead of reading as a direction error.
-    assembly = _assembly(active, setup, findings)
+    # Motion is measured after the mesh exists: side, clearance and direction
+    # depend on the assembled geometry, and a zero travel is a valid hold.
+    assembly = _assembly(active if mesh_usable else None, setup, findings)
 
     deck = next((j for j in deck_jobs if j["status"] == "Completed"), None)
     if deck is None:
@@ -294,6 +303,7 @@ def evaluate(rid):
         "materials": len(setup.materials),
         "mesh": active["id"] if active else None,
         "mesh_digest": active.get("mesh_digest") if active else None,
+        "mesh_artifact": artifact,
         "fixture_count": fixture_count,
         "fixture_hash": fixture["hash"] if fixture else None,
         "deck": deck["id"] if deck else None,

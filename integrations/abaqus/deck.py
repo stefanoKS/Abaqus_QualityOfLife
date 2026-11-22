@@ -123,13 +123,14 @@ def _mesh_parts(project, mesh):
         raise ValueError("Only the 2D plane-stress closing template can generate a solver input.")
     if project.units != "N-mm-s-tonne":
         raise ValueError("Confirm N-mm-s-tonne units before generating this input.")
-    if project.motion.travel >= 0:
-        raise ValueError("Set a negative Y travel for the vertical closing template.")
+    # Travel 0 is a valid hold; a nonzero travel is checked against the measured
+    # contact side below, so the template never substitutes an epsilon motion.
     nodes = {n["id"]: n["xyz"] for n in mesh["nodes"]}
     if len(nodes) != len(mesh["nodes"]):
         raise ValueError("Duplicate mesh node label.")
     roles = {c.id: c.role for c in project.components}
     faces = {f.id: f for f in project.faces}
+    materials = {m.id: m for m in project.materials}
     if sum(role == "moving_panel" for role in roles.values()) != 1:
         raise ValueError("Select exactly one moving panel.")
     if any(role not in ("seal", "moving_panel", "vehicle_body") for role in roles.values()):
@@ -168,6 +169,19 @@ def _mesh_parts(project, mesh):
                 or face.component != e["component"]
             ):
                 raise ValueError("Every continuum element must refer to a CAD region of its seal.")
+            # Rubber quadrilaterals are always reduced integration. A forged or
+            # legacy mesh that reaches the writer as CPS4 is rejected rather
+            # than silently relabelled.
+            material = materials.get(face.material) if face.material else None
+            if (
+                kind == "CPS4"
+                and material is not None
+                and material.model in ("hyperfoam_test", "neo_hookean")
+            ):
+                raise ValueError(
+                    f"Rubber quadrilateral element {e['id']} is CPS4; rubber uses "
+                    "reduced integration (CPS4R). Regenerate the mesh."
+                )
             points = [nodes[n] for n in node_ids]
             for i, point in enumerate(points):
                 prev, nxt = points[i - 1], points[(i + 1) % len(points)]
@@ -276,20 +290,55 @@ def _separation(profile, seal, label):
     return minimum, maximum
 
 
-def _contact_side(minimum, maximum, label):
-    """Which side of the seal the drawn profile occupies: ``above`` or ``below``."""
+def _profile_points(profile):
+    """Sample points along the assembled profile, including segment midpoints."""
+    points = []
+    for x0, y0, x1, y1 in profile:
+        points.append((x0, y0))
+        points.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+    if profile:
+        points.append((profile[-1][2], profile[-1][3]))
+    return points
+
+
+def _inside_material(points, seal):
+    """Even-odd point-in-region test against the seal's exterior sides.
+
+    The exterior set includes the cavity boundary, so a point inside a hole is
+    outside the material. This is what separates a real intersection from a
+    profile that merely sits between the upper and lower exterior surfaces.
+    """
+    for x, y in points:
+        inside = False
+        for x0, y0, x1, y1 in seal:
+            if (y0 > y) != (y1 > y):
+                crossing = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+                if crossing > x:
+                    inside = not inside
+        if inside:
+            return True
+    return False
+
+
+def _assembled_side(profile, seal, minimum, maximum, label):
+    """Assembled contact side, or a specific intersection/ambiguity rejection."""
     if minimum >= -CLEARANCE_TOLERANCE:
         return "above"
     if maximum <= CLEARANCE_TOLERANCE:
         return "below"
-    # The drawn profile crosses the seal boundary. The dominant side still
-    # identifies the mounting side so the offset measurement can report a real
-    # penetration instead of pretending the panel is mounted on the other side.
-    center = (minimum + maximum) / 2.0
-    if center > CLEARANCE_TOLERANCE:
-        return "above"
-    if center < -CLEARANCE_TOLERANCE:
-        return "below"
+    # The profile has points on both sides of some exterior surface. If it
+    # actually enters the material it is an initial penetration; a profile that
+    # only lies between the upper and lower surfaces (for example inside a
+    # cavity) has no unambiguous contact side.
+    if _inside_material(_profile_points(profile), seal):
+        depth = min(-minimum, maximum)
+        raise ClearanceError(
+            "initial_penetration",
+            f"The {label} intersects the seal: {format(depth, '.6g')} mm initial "
+            "penetration. Review its initial Y offset.",
+            label=label,
+            depth=round(depth, 9),
+        )
     raise ClearanceError(
         "side_ambiguous",
         f"The {label} profile is neither clearly above nor below the seal, so its "
@@ -308,6 +357,10 @@ def motion_direction(side):
 
 
 def _require_motion_toward_seal(side, travel, label):
+    # Zero travel is a hold: the panel keeps its assembled position for the
+    # full positive step duration. Only a nonzero travel must point at the seal.
+    if travel == 0:
+        return
     if (side == "above" and travel < 0) or (side == "below" and travel > 0):
         return
     raise ClearanceError(
@@ -323,28 +376,23 @@ def _require_motion_toward_seal(side, travel, label):
 def clearance_report(nodes, boundary, panel, offset, travel=None, label="panel"):
     """Role-aware initial clearance of one rigid profile against the seal.
 
-    The contact side comes from the drawn profile (offset 0), so a body mounted
-    below the seal is a valid bottom panel and never reads as a negative door
-    clearance. ``clearance`` is a positive separation convention for both
-    sides; a real initial penetration, an ambiguous side, a missing X overlap
-    and motion away from the seal are rejected with distinct codes.
+    The initial Y offset is applied *before* the side and the signed clearance
+    are decided: the assembled placement is what the solver and the reader see.
+    A horizontal body drawn above the seal and offset below it is therefore a
+    valid bottom panel with a positive clearance, not a penetration. A profile
+    that genuinely crosses the seal after its offset is reported as an initial
+    penetration; an ambiguous side and a missing X overlap have their own
+    errors. ``clearance`` is a positive separation convention for both sides.
     """
     profile = _profile_segments(nodes, panel)
+    if offset:
+        # A rigid translation along Y shifts every segment exactly; it also
+        # decides the assembled side, so it cannot be applied afterwards.
+        profile = [(x0, y0 + offset, x1, y1 + offset) for x0, y0, x1, y1 in profile]
     seal = _boundary_segments(nodes, boundary)
     minimum, maximum = _separation(profile, seal, label)
-    side = _contact_side(minimum, maximum, label)
-    # The initial offset is a rigid translation along Y, so it shifts both
-    # extremes exactly; no re-evaluation of the surfaces is required.
-    signed = minimum + offset if side == "above" else -(maximum + offset)
-    if signed < -CLEARANCE_TOLERANCE:
-        raise ClearanceError(
-            "initial_penetration",
-            f"The {label} starts inside the seal: {format(-signed, '.6g')} mm initial "
-            "penetration. Review its initial Y offset.",
-            label=label,
-            side=side,
-            depth=round(-signed, 9),
-        )
+    side = _assembled_side(profile, seal, minimum, maximum, label)
+    signed = minimum if side == "above" else -maximum
     if travel is not None:
         _require_motion_toward_seal(side, travel, label)
     return {"side": side, "clearance": max(0.0, signed), "direction": motion_direction(side)}
@@ -354,16 +402,16 @@ def vertical_gap(nodes, boundary, panel, offset):
     """Minimum positive vertical separation between assembled FE profiles.
 
     Compatibility wrapper for the door template. The sign follows the measured
-    contact side, so a profile below the seal reports the same positive
+    assembled side, so a profile below the seal reports the same positive
     clearance as one above it; it is not an absolute value.
     """
     return clearance_report(nodes, boundary, panel, offset)["clearance"]
 
 
 def motion_assessment(nodes, boundary, elements, motion, role, instance, label):
-    """Clearance, contact side, direction and gap reach for one moving profile."""
-    # A zero travel has its own validation elsewhere; measuring it here must not
-    # be reported as motion away from the seal.
+    """Clearance, assembled side, direction and hold/gap reach for one profile."""
+    # Zero travel is a hold and has no direction check; measuring it here must
+    # not be reported as motion away from the seal.
     report = clearance_report(
         nodes, boundary, elements, motion.offset, motion.travel or None, label
     )
@@ -376,8 +424,10 @@ def motion_assessment(nodes, boundary, elements, motion, role, instance, label):
         "clearance_mm": report["clearance"],
         "travel_mm": motion.travel,
         "duration_s": motion.duration,
+        "hold": motion.travel == 0,
         # Necessary to cross the measured gap, never a guarantee of contact.
-        "reaches_initial_gap": abs(motion.travel) >= report["clearance"],
+        "reaches_initial_gap": motion.travel != 0
+        and abs(motion.travel) >= report["clearance"],
     }
 
 
@@ -423,6 +473,14 @@ def material_cards(material, name):
             )
         lines += ["*Hyperfoam, N=1, test data input", "*Uniaxial Test Data"]
         lines.extend(", ".join(map(scalar, row)) for row in material.test_data)
+    elif material.model == "neo_hookean":
+        # Abaqus/Standard 2024 compressible neo-Hookean: C10 in MPa and D1 in
+        # MPa^-1 on one data line. D1 > 0 keeps the law compressible.
+        if material.c10 is None or material.d1 is None or material.c10 <= 0 or material.d1 <= 0:
+            raise ValueError(
+                "A compressible neo-Hookean card needs C10 (MPa) and D1 (MPa^-1), both > 0."
+            )
+        lines += ["*Hyperelastic, neo Hooke", f"{scalar(material.c10)}, {scalar(material.d1)}"]
     else:
         raise ValueError("Unsupported material model.")
     return lines
@@ -586,13 +644,12 @@ def write_two_step_inp(project, mesh, fixture=None):
     """Body seating followed by door closing in one analysis.
 
     Step 1 moves the body reference point and holds the door; step 2 holds the
-    body at its attained position and moves the door. Boundary conditions are
-    propagated by Abaqus, so the seal deformation and contact state from step 1
-    are the starting state of step 2. No second analysis or ``op=NEW`` reset is
-    used.
+    body at its attained position and moves the door. A zero body or door travel
+    is a valid hold, written as an explicit zero displacement, never an epsilon.
+    Boundary conditions are propagated by Abaqus, so the seal deformation and
+    contact state from step 1 are the starting state of step 2. No second
+    analysis or ``op=NEW`` reset is used.
     """
-    if project.motion.body.travel == 0:
-        raise ValueError("Set a non-zero body travel for body-then-door analysis.")
     nodes, ws, panel, body = _mesh_parts(project, mesh)
     boundary = exterior(ws)
     door = motion_assessment(

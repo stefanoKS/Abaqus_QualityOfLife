@@ -17,6 +17,7 @@ export interface MaterialIssues {
 const MODELS: { id: Material['model']; labelKey: TranslationKey }[] = [
   { id: 'linear_elastic', labelKey: 'materials.modelLinear' },
   { id: 'hyperfoam_test', labelKey: 'materials.modelHyperfoam' },
+  { id: 'neo_hookean', labelKey: 'materials.modelNeoHookean' },
 ]
 
 /**
@@ -39,6 +40,11 @@ export function materialIssues(material: Material): MaterialIssues {
       material.poisson >= 0.5
     )
       errors.push('materials.err.poisson')
+  } else if (material.model === 'neo_hookean') {
+    if (material.c10 === null || !Number.isFinite(material.c10) || material.c10 <= 0)
+      errors.push('materials.err.c10')
+    if (material.d1 === null || !Number.isFinite(material.d1) || material.d1 <= 0)
+      errors.push('materials.err.d1')
   } else {
     const rows = material.test_data
     if (rows.length < 3) errors.push('materials.err.samples')
@@ -75,6 +81,8 @@ function freshCard(materials: Material[], name: string): Material {
     density: 1.1e-9,
     young: 5,
     poisson: 0.49,
+    c10: null,
+    d1: null,
     test_data: [],
     library_id: null,
     library_version: null,
@@ -504,6 +512,8 @@ export function MaterialEditor({
                   test_data: rows as Triple[],
                   young: model === 'linear_elastic' ? (card.young ?? 5) : card.young,
                   poisson: model === 'linear_elastic' ? (card.poisson ?? 0.49) : card.poisson,
+                  c10: model === 'neo_hookean' ? (card.c10 ?? 0.5) : card.c10,
+                  d1: model === 'neo_hookean' ? (card.d1 ?? 0.01) : card.d1,
                 })
               }}
             >
@@ -561,6 +571,35 @@ export function MaterialEditor({
                   disabled={disabled}
                   onChange={(e) => onUpdate(card.id, { poisson: Number(e.target.value) })}
                 />
+              </label>
+            </>
+          ) : card.model === 'neo_hookean' ? (
+            <>
+              <label>
+                {t('materials.c10')}
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="any"
+                  min={0}
+                  value={card.c10 ?? ''}
+                  disabled={disabled}
+                  onChange={(e) => onUpdate(card.id, { c10: Number(e.target.value) })}
+                />
+                <small>{t('materials.c10Hint')}</small>
+              </label>
+              <label>
+                {t('materials.d1')}
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  step="any"
+                  min={0}
+                  value={card.d1 ?? ''}
+                  disabled={disabled}
+                  onChange={(e) => onUpdate(card.id, { d1: Number(e.target.value) })}
+                />
+                <small>{t('materials.d1Hint')}</small>
               </label>
             </>
           ) : (
