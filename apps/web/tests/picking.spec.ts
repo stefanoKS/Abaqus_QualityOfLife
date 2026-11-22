@@ -4,7 +4,7 @@ import type { Display, ViewMesh } from '../src/viewportModel'
 
 async function openSection(page: Page) {
   const response = await page.request.post('/api/projects', {
-    data: { name: 'Picking · ' + test.info().title, dimension: '2D' },
+    data: { name: 'Picking · ' + test.info().title, dimension: '2D', example: true },
   })
   expect(response.ok()).toBeTruthy()
   const revision: Revision = await response.json()
@@ -57,16 +57,15 @@ test('CAD picking honors the cavity, mount, camera and extruded region identity'
     properties.getByRole('heading', { name: 'Select a region' })
   ).toBeVisible()
 
-  await stage.getByRole('button', { name: 'Mounting / Contact' }).click()
+  // Mounting owns fixed nodes, but CAD edge picking must stay exact in this stage.
+  await stage.getByRole('button', { name: 'Mounting' }).click()
+  await page.getByLabel('Selection mode').selectOption('edge')
   await pick(0, 4.5)
-  await expect(page.getByLabel('Selected boundary')).toHaveValue('Cavity floor')
+  await expect(page.getByRole('status')).toContainText('Cavity floor')
   // Within CSS-pixel tolerance of a thin boundary, outside the solid.
   const bottom = await screen(0, 0)
   await page.mouse.click(bottom.x, bottom.y + 4)
-  await expect(page.getByLabel('Selected boundary')).toHaveValue(
-    'Mounting foot'
-  )
-  await expect(page.getByLabel('Fix this edge')).toBeChecked()
+  await expect(page.getByRole('status')).toContainText('Mounting foot')
 
   const foot = await screen(0, 1.6)
   await stage.getByRole('button', { name: 'Materials' }).click()
@@ -87,6 +86,7 @@ test('CAD picking honors the cavity, mount, camera and extruded region identity'
   ).toBeVisible()
 
   await page.getByRole('button', { name: '3D', exact: true }).click()
+  await page.getByLabel('Selection mode').selectOption('face')
   const segment = page.getByRole('application', {
     name: '3D engineering viewport',
   })

@@ -68,7 +68,14 @@ def write_metadata(project, mesh, job_dir, fixture=None):
     )
 
 
-def write_demo(project, mesh, job_dir, fixture=None):
+def write_playback(project, mesh, job_dir, fixture=None, mode="DEMO", notice=None):
+    """Write a deterministic playback dataset.
+
+    ``mode="DEMO"`` is the retained historical format. Tests use
+    ``mode="ABAQUS"`` with a manufactured result at the extractor boundary;
+    ``notice`` then makes the manufactured provenance explicit. The library is
+    never reachable through the HTTP API for a new submission.
+    """
     nodes, ws, panel = mesh_parts(project, mesh)
     metadata = _metadata(project, nodes, ws, panel, fixture)
     instances = []
@@ -97,7 +104,10 @@ def write_demo(project, mesh, job_dir, fixture=None):
             }
         )
 
-    result = result_header(metadata, "DEMO", instances)
+    result = result_header(metadata, mode, instances)
+    if notice:
+        result["notice"] = notice
+        result["manufactured"] = True
     result["averaging"] = "Analytic synthetic nodal displacements for playback."
     result["unavailable"] = ["RF field", "S", "LE", "CPRESS"]
     seal = instances[0]["nodes"]
@@ -146,3 +156,7 @@ def write_demo(project, mesh, job_dir, fixture=None):
         result["unavailable"].append("U")
     result["history"] = align_histories(travel, metadata, step="Closing")
     finish(job_dir, result)
+
+
+def write_demo(project, mesh, job_dir, fixture=None):
+    write_playback(project, mesh, job_dir, fixture, mode="DEMO")

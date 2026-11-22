@@ -1,10 +1,36 @@
 # Abaqus QOL implementation handoff
 
-**Snapshot - 2026-11-21 (fifth pass, release candidate).** The local branch reference was `main` at
-`b250789`. Commits `dabffe3` (fixture correctness + splines), `b1c3db6` (native DWG) and the current
-release candidate carry the work. Preserve them when resuming.
+**Snapshot - 2026-11-22 (repair pass).** The local branch is `main`; this pass started at `d7b6728`
+(parent `240460c`) with a clean working tree. Commits `dabffe3` (fixture correctness + splines),
+`b1c3db6` (native DWG) and `d7b6728` (result actor reuse) are preserved. No new solver process was
+launched; the retained licensed run was replayed read-only from an isolated copy.
 
-**Workflow order is now** `Import -> Components -> Materials -> Mesh -> Mounting -> Contact -> Motion ->
+**Delivered in this pass** (details and gate table in the
+[implementation report](docs/implementation-report.md#a4-repair-delivery--drawing-ownership-review-authority-playback-abaqus-only-execution)):
+
+- New models are explicitly empty (`source.kind = "empty"`), open at Import, and never seed geometry.
+  The public example is opt-in. Empty models save, rename, duplicate and reopen; mesh/deck/run reject
+  them with a specific message.
+- Navigation no longer substitutes `projects[0]` or `ps[0]`. The Workspace button restores the last
+  explicitly opened model; invalid links name the revision and offer Back to Projects. Save/import
+  update the history entry and the router, and the remembered stage survives the remount.
+- Imports are bound to the model, base revision, job and source digest; a same-named drawing in
+  another model is independent. Dimension (including a 3D preview) and model-level settings survive an
+  import. A failed import leaves the last good drawing and head untouched.
+- Review cannot generate or regenerate a mesh. Mesh owns regeneration, with an explicit
+  Regenerate/Cancel choice and an affected-node count. A just-queued deck becomes authoritative before
+  submission. Historical replay resolves the deck's own mesh and verifies the digest chain.
+- Renderer actors are keyed by instance/entity/component/kind and reused only when cell topology and
+  rendering class match. Run-wide camera bounds and per-quantity colour ranges are recorded by
+  extraction or derived into a cache for retained results.
+- Playback keeps requested and displayed frames separate, waits for the displayed frame before
+  advancing, survives out-of-order responses, and updates the Plotly cursor without purging or
+  resetting the reader's zoom.
+- New execution is Abaqus-only. Explicit DEMO returns 422 and queues nothing; queued legacy DEMO jobs
+  are retired with a diagnostic; historical DEMO evidence stays readable.
+- The launcher lock is per port, so a custom-port launch no longer joins the default instance.
+
+**Workflow order is** `Import -> Components -> Materials -> Mesh -> Mounting -> Contact -> Motion ->
 Review / Run -> Results`, with ids in [stages.ts](apps/web/src/features/workspace/stages.ts). Mesh,
 Mounting and Contact are independent stages; the language control is one button.
 
@@ -13,20 +39,21 @@ cavity 0.11288 -> 0.01974 mm, door 0.01423 mm, fit points beyond 0.02 mm 10/21 -
 mesh ran licensed as `d0d409c2-6fc9-4e69-95a1-c75069075d68` (door-only, completed, contact at 5.70 mm,
 +0.016966 N projected).
 
-**Open:** in-viewport drawing-role review, body-first/door-second two-panel analysis, the historical
-view pairing a run's own mesh with its labels, duplication mesh verification, and the API-restart and
-double-click-startup gates. See the gate table in the implementation report (section A3).
+**Open:** in-viewport drawing-role review, body-first/door-second two-panel analysis, and per-pair
+friction. The historical view now pairs a run with its own archived mesh and verified labels; the
+API-restart, custom-port startup and double-click-wrapper gates were exercised in this pass. See the
+gate table in the implementation report (section A4).
 
 **Two acceptance commands.**
 
 ```powershell
-.\venv\Scripts\python.exe scripts\acceptance_dwg.py
+.\.venv\Scripts\python.exe scripts\acceptance_dwg.py
 ```
 Native read -> import -> roles -> mesh -> fixture -> deck on `examples/hollow-section_2.dwg`; zero
 solver tokens; evidence in `.local/dwg-acceptance/`; exits non-zero on any failed check.
 
 ```powershell
-$env:SIMPLIFY_ABAQUS_LAUNCHER = "C:\SIMULIA\Commands\abq2024.bat"; .\venv\Scripts\python.exe scripts\acceptance_dwg.py --licensed --travel -6.5 --evidence .local\dwg-acceptance-contact2
+$env:SIMPLIFY_ABAQUS_LAUNCHER = "C:\SIMULIA\Commands\abq2024.bat"; .\.venv\Scripts\python.exe scripts\acceptance_dwg.py --licensed --travel -6.5 --evidence .local\dwg-acceptance-contact2
 ```
 Licensed door-only acceptance run; ODB, extraction and history land in `.local/dwg-acceptance-contact2/`.
 
@@ -38,7 +65,7 @@ Licensed door-only acceptance run; ODB, extraction and history land in `.local/d
 | 2 · Project grouping | `groups` owns model histories through `projects.group_id`. Creation, sibling duplication, revision browsing, additive migration and legacy links exist. The existing [group migration tests](tests/test_grouping.py) and [browser tests](apps/web/tests/groups.spec.ts) are regression assets. |
 | 8 · Door curve | The shipped negative-Y, single-step door template requests U1/U2/RF1/RF2. A displayed-curve transform supports reversing either sign, with a separate raw artifact download. Keep the existing displacement contours, signed probes and legacy U2/RF2 interpretation. Multi-panel, missing-history and CSV caveats are below. |
 | 5 · Mesh-first fixture | `POST /api/meshes` and `POST /api/decks` are separate durable operations. The worker records `mesh.json`'s digest and the mesh-compatibility digest; `PUT /api/meshes/{id}/fixture` stores validated `WS-1:n` labels bound to that digest. The viewport has a rectangular node-selection mode, and the deck writer writes `WSFIX` from exactly the saved set. Tests: [fixture API tests](tests/test_fixture.py), [fixture browser tests](apps/web/tests/fixture.spec.ts). |
-| 9 · Verification | The [delivery report](docs/implementation-report.md) records 54 Python tests passed, one opt-in test skipped, 19 browser tests passed, 391 translation keys checked, typecheck and build passed. These are historical counts; the current totals are 81 Python tests, 22 browser tests and 422 keys (sections A1 and A2). |
+| 9 · Verification | The [delivery report](docs/implementation-report.md) records historical counts from earlier passes. Current totals after the 2026-11-22 repair: 105 Python tests passed, one opt-in test skipped, 33 browser tests passed, 463 translation keys checked, typecheck and build passed. |
 | · Native DWG import | [dwg.py](packages/engineering/dwg.py) maps an ACadSharp inventory onto the canonical model; [section.py](packages/engineering/section.py) is the assembler both readers share; [integrations/dwg](integrations/dwg) holds the prebuilt helper and its runner. `POST /api/projects/{id}/drawing` accepts `.dwg` with no converter configured. Tests: [tests/test_dwg.py](tests/test_dwg.py). |
 | · Fixture correctness and splines | `store.active_mesh` makes the newest compatible mesh authoritative for both deck preparation and submission; `jobs.fixture_labels` snapshots the label set at queue time; a run requires the deck's mesh to be active and the deck to be the newest for that revision; a locked setup replays `locked.fixture_labels`. `SPLINE` is imported as canonical NURBS ([spline.py](packages/engineering/spline.py)), tessellated within a declared chord tolerance, meshed exactly with `occ.addBSpline` where OCC accepts it, and included in the mesh-compatibility digest. Tests: [spline tests](tests/test_spline.py), [fixture API tests](tests/test_fixture.py), [fixture browser tests](apps/web/tests/fixture.spec.ts). |
 
@@ -70,11 +97,11 @@ on another machine. The fixture patch changes the force curve, so neither value 
 | ~~High · [raw history writer](integrations/abaqus/interchange.py)~~ | **Fixed.** `panel_RF2_N` and `panel_total_RF2_N` now carry the signed global `RF2`; the projected total has its own `closing_total_force_N` column. Covered by `tests/test_abaqus.py::test_demo_csv_keeps_signed_rf2_and_separates_the_projected_total`. Original historical files are untouched. |
 | High · [history alignment](integrations/abaqus/interchange.py) and [results view](apps/web/src/RunView.tsx) | **Partly fixed.** The projection now requires only the components the direction uses (an X-only direction no longer needs U2/RF2), and an empty history no longer crashes sample matching. Still to do: represent genuinely missing raw components as unavailable rather than `0.0`, require a common step-start sample for the origin, and add cases for partial components and mismatched time domains. |
 | Before two-step delivery · [RunView](apps/web/src/RunView.tsx) | The default step comes from `steps[0]` and plot/export iterate the entire history. Select the door step by role and filter by panel and step before plotting, exporting and frame matching. Avoid crossing steps on identical cumulative timestamps. The existing [curve test](apps/web/tests/curve.spec.ts) checks plain and both-flipped output. Add X-only, Y-only, equal-time boundary and legacy cases; compare CSV columns according to their header names. |
-| Startup reliability · [Python launcher](scripts/serve.py) and [CMD wrapper](start-abaqus-qol.cmd) | The lock records the default port even for a custom launch and removes an existing lock when health is still unavailable. A second process can claim it during a healthy first startup. Dependency preparation also precedes lock acquisition. Exercise simultaneous cold launches and owner-specific cleanup on default/custom ports. The CMD wrapper uses `%ERRORLEVEL%` inside parenthesized blocks; check that a failing child status propagates and its message remains visible after double-click. |
+| Startup reliability · [Python launcher](scripts/serve.py) and [CMD wrapper](start-abaqus-qol.cmd) | **Lock fixed 2026-11-22:** one lock per port (`<repo>/.local/serve-<port>.lock`) records the requested port, so a custom-port launch starts its own instance. A healthy same-port instance is still reused; a stale lock is taken over. Verified with `start-abaqus-qol.cmd --port 8897 --no-browser` on isolated data (health ready, build/frontend matched `dist`, empty project list). Remaining: simultaneous cold-launch stress and the CMD wrapper's `%ERRORLEVEL%` propagation inside parenthesized blocks. |
 | Group creation recovery · [dashboard](apps/web/src/Dashboard.tsx) | Group and first model are created by two HTTP requests. A failed second request leaves a group and a retry can create another. Test a mid-operation failure and offer atomic creation or an idempotent resume path using the original group. |
 
 ## Handover verification
 
 Use the [repository instructions](AGENTS.md) for normal commands and the [recovery guide](docs/migration-and-recovery.md) before investigating an unknown worker. Preserve the current licensed door-only runs as regression comparisons. Use an isolated data directory for new cases. For each completed slice, record the new API/schema behavior, historical compatibility, browser action exercised, test results, and any licensed run ID in the [implementation report](docs/implementation-report.md) and [validation record](docs/engineering-validation.md).
 
-Last verified on this machine: `python -m pytest tests -q` → 75 passed, 1 skipped; `node scripts/check-translations.mjs` → 422 keys; `typecheck` and `build` → pass; `playwright test` → 22 passed; one licensed Abaqus/Standard 2024 case through the mesh → fixture → deck path → solver and extraction succeeded (run `54b7be8c-d260-4a65-adcf-0205263032f3`), and its ODB was re-extracted with the current extractor into `.local/licensed-evidence/54b7be8c-reextract/` so both result files carry the 18 fixture labels.
+Last verified on this machine (2026-11-22): `python -m pytest tests -q` → 105 passed, 1 skipped; `node scripts/check-translations.mjs` → 463 keys; `typecheck` and `build` → pass; `playwright test` → 33 passed; the packaged CMD launcher on `--port 8897` with isolated data served the built bundle and an empty project list. No new solver process was launched. The retained licensed run `989fec4a-98fa-4a61-999a-e16ec886ac68` was replayed from an isolated copy: 66 frames, camera stable after pan+zoom, final 1.300 s, travel 6.5 mm, signed `RF2` −0.0169664863 N, matching `history.csv`. The earlier licensed runs `54b7be8c-d260-4a65-adcf-0205263032f3` and `39f696ee-c757-44ba-bb42-9e8f9671bfe6` remain the fixture regression anchors.

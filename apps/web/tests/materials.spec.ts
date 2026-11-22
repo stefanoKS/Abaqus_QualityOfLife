@@ -11,7 +11,7 @@ test('material cards are editable, validated, versioned and written to the deck'
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Material edit' } })
+    await request.post('/api/projects', { data: { name: 'Material edit', example: true } })
   ).json()
   await page.goto('/#workspace/' + revision.id)
   await page

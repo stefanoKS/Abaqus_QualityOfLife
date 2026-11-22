@@ -30,7 +30,11 @@ ROOT = Path(__file__).resolve().parents[1]
 WEB = ROOT / "apps" / "web"
 PRODUCT = "Abaqus QOL"
 DEFAULT_PORT = 8765
-LOCK = ROOT / ".local" / "serve.lock"
+
+
+def lock_path(port):
+    """One lock per port, so a custom-port launch never joins the default instance."""
+    return ROOT / ".local" / f"serve-{port}.lock"
 
 # Imported by the API, the worker and the engineering package. Every name must
 # resolve before the server starts, otherwise the failure is a bare traceback.
@@ -267,23 +271,24 @@ def open_when_ready(port, label):
     print(f"{PRODUCT}: {label} did not report ready within 60 s.", flush=True)
 
 
-def acquire_lock():
-    """Return ``True`` when this launch owns the lock, or the owner's details."""
-    LOCK.parent.mkdir(parents=True, exist_ok=True)
+def acquire_lock(port):
+    """Return ``True`` when this launch owns the port lock, or the owner's details."""
+    path = lock_path(port)
+    path.parent.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
         try:
-            with LOCK.open("x", encoding="utf-8") as handle:
-                handle.write(json.dumps({"pid": os.getpid(), "port": DEFAULT_PORT}))
+            with path.open("x", encoding="utf-8") as handle:
+                handle.write(json.dumps({"pid": os.getpid(), "port": port}))
             return True
         except FileExistsError:
             try:
-                owner = json.loads(LOCK.read_text(encoding="utf-8"))
+                owner = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 owner = {}
-            if health(owner.get("port", DEFAULT_PORT), timeout=0.5):
+            if health(owner.get("port", port), timeout=0.5):
                 return owner
             # A crashed launch left the lock behind; take it over.
-            LOCK.unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
     return None
 
 
@@ -308,6 +313,13 @@ def serve(port, test_data=None, browser=True):
             "ABAQUS_QOL_ODA",
         ):
             os.environ.pop(name, None)
+        # Automated tests exercise the real API, queue, worker and artifacts
+        # against a launcher double. No solver, license or ODA conversion runs.
+        sys.path.insert(0, str(ROOT / "tests"))
+        from fake_abaqus import install as install_double
+
+        os.environ["SIMPLIFY_ABAQUS_LAUNCHER"] = str(install_double(store_root()))
+        os.environ.setdefault("ABAQUS_QOL_FAKE_SOLVE_SECONDS", "3")
     import uvicorn
 
     stop = store_root() / ("stop-" + uuid4().hex)
@@ -422,7 +434,7 @@ def main(argv=None):
             f"{PRODUCT}: port {args.port} is used by another application.\n"
             f"Choose a free port, for example: start-abaqus-qol.cmd --port {args.port + 1}"
         )
-    lock = acquire_lock()
+    lock = acquire_lock(args.port)
     if lock is not True:
         # A simultaneous launch won the race; join it instead of starting another worker.
         port = lock.get("port", args.port) if isinstance(lock, dict) else args.port
@@ -437,7 +449,7 @@ def main(argv=None):
     try:
         serve(args.port, browser=not args.no_browser)
     finally:
-        LOCK.unlink(missing_ok=True)
+        lock_path(args.port).unlink(missing_ok=True)
     return 0
 
 

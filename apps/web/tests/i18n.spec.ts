@@ -74,7 +74,7 @@ test('engineer-entered values and the active step survive a language switch', as
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Locale edit' } })
+    await request.post('/api/projects', { data: { name: 'Locale edit', example: true } })
   ).json()
   await page.goto('/#workspace/' + revision.id)
   const workflow = page.getByRole('navigation', { name: 'ワークフロー' })
@@ -110,7 +110,7 @@ test('job states are translated while the stored value stays machine-readable', 
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Localized states' } })
+    await request.post('/api/projects', { data: { name: 'Localized states', example: true } })
   ).json()
   const { deck } = await meshAndDeck(request, revision)
   const run: Job = await (
@@ -120,8 +120,7 @@ test('job states are translated while the stored value stays machine-readable', 
         deck: deck.id,
         token: randomUUID(),
         name: 'Localized run',
-        scenario: 'success',
-        mode: 'DEMO',
+        mode: 'ABAQUS',
       },
     })
   ).json()
@@ -142,9 +141,8 @@ test('job states are translated while the stored value stays machine-readable', 
   await expect(page.getByLabel('Filter by status')).toBeVisible()
 })
 
-test('accessibility labels are localized in both languages', async ({ page, request }) => {
-  const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'A11y labels' } })
+test('accessibility labels are localized in both languages', async ({ page, request }) => {  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: 'A11y labels', example: true } })
   ).json()
   await page.goto('/#workspace/' + revision.id)
   await expect(page.getByRole('application', { name: '2D 形状ビューポート' })).toBeVisible()
@@ -156,4 +154,71 @@ test('accessibility labels are localized in both languages', async ({ page, requ
   await expect(page.getByRole('application', { name: '2D engineering viewport' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Zoom in' })).toBeVisible()
   await expect(page.getByRole('combobox', { name: 'Selection mode' })).toBeVisible()
+})
+
+test('Japanese Create, Import, Mesh, Mounting, Review and Results labels are readable', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/#dashboard')
+  await page.getByRole('button', { name: '新規プロジェクト' }).click()
+  await expect(page.getByLabel('プロジェクト名')).toBeVisible()
+  await expect(page.getByLabel('モデル名')).toBeVisible()
+  await expect(page.getByLabel('公開サンプル断面から開始する')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'プロジェクトを作成' })).toBeVisible()
+  await page.getByRole('button', { name: 'キャンセル' }).click()
+
+  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: '日本語確認', example: true } })
+  ).json()
+  await page.goto('/#workspace/' + revision.id)
+  const workflow = page.getByRole('navigation', { name: 'ワークフロー' })
+
+  await workflow.getByRole('button', { name: '図面読込' }).click()
+  await expect(page.getByRole('heading', { name: '図面ソース' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'DXF / DWG を読み込む' })).toBeVisible()
+
+  await workflow.getByRole('button', { name: 'メッシュ' }).click()
+  await expect(page.getByRole('heading', { name: '断面メッシュ' })).toBeVisible()
+  await expect(page.getByLabel('全体サイズ (mm)')).toBeVisible()
+  await page.getByRole('button', { name: 'メッシュを生成' }).click()
+  await expect(page.getByTestId('mesh-status')).toContainText('メッシュ準備完了', {
+    timeout: 60000,
+  })
+
+  await workflow.getByRole('button', { name: '固定条件' }).click()
+  await expect(page.getByRole('heading', { name: '固定条件' })).toBeVisible()
+  await expect(page.getByText('固定節点（WSFIX）').first()).toBeVisible()
+  await expect(page.getByLabel('矩形選択モード')).toBeVisible()
+  await expect(page.getByLabel('矩形選択の動作')).toBeVisible()
+
+  await workflow.getByRole('button', { name: '解析条件確認・実行' }).click()
+  await expect(page.getByRole('heading', { name: 'メッシュ識別情報' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeVisible()
+  await expect(page.getByText('「入力デッキを作成」はメッシュ生成ジョブを一切投入しません。')).toBeVisible()
+  // The language button names the destination language in readable Japanese UI.
+  await expect(page.locator('.lang-button')).toHaveText('English')
+
+  const { deck } = await meshAndDeck(request, revision)
+  const run: Job = await (
+    await request.post('/api/runs', {
+      data: {
+        revision: revision.id,
+        deck: deck.id,
+        token: randomUUID(),
+        name: '日本語結果',
+        mode: 'ABAQUS',
+      },
+    })
+  ).json()
+  await expect
+    .poll(
+      async () => ((await (await request.get('/api/jobs/' + run.id)).json()) as Job).status,
+      { timeout: 90000 },
+    )
+    .toBe('Completed')
+  await page.goto('/#results/' + run.id)
+  await expect(page.getByRole('heading', { name: '荷重－変位' })).toBeVisible()
+  await expect(page.getByText('ドア応答').first()).toBeVisible()
+  await expect(page.locator('.lang-button')).toHaveText('English')
 })

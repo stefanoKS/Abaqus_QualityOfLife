@@ -112,6 +112,18 @@ def initialize():
         for name in ("mesh", "mesh_digest", "mesh_compat", "fixture_hash", "fixture_labels"):
             if name not in jobs_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+        # A DEMO job that never started cannot be executed any more. Retire it with
+        # an explicit record instead of relabelling it or launching it as Abaqus.
+        db.execute(
+            "UPDATE jobs SET solver='Failed', extraction='Cancelled', phase='Withdrawn', "
+            "ended=coalesce(ended,?), diagnostic=? "
+            "WHERE mode='DEMO' AND owner IS NULL AND solver='Queued' AND cancelled=0",
+            (
+                time.time(),
+                "Legacy DEMO job retired: synthetic execution is no longer available. "
+                "Submit an ABAQUS analysis for new evidence.",
+            ),
+        )
 
 
 LEGACY_GROUP_NAME = "Imported projects"
@@ -368,6 +380,11 @@ def submit(
     compat=None,
 ):
     jid = token if mode == "IMPORT" else new_id()
+    if mode == "DEMO":
+        raise Conflict(
+            "DEMO execution is no longer available for new submissions. "
+            "Historical DEMO evidence remains readable."
+        )
     with connection(True) as db:
         existing = db.execute("SELECT * FROM jobs WHERE token=?", (token,)).fetchone()
         if existing:
@@ -492,7 +509,10 @@ def submit(
 
 def claim(owner):
     with connection(True) as db:
+        # Synthetic DEMO execution is withdrawn. A queued legacy DEMO row is never
+        # converted into a licensed job, relocated or relaunched.
         row = db.execute("""SELECT id,solver FROM jobs WHERE owner IS NULL AND cancelled=0
+          AND mode IN ('ABAQUS', 'MESH', 'DECK', 'IMPORT')
           AND (solver='Queued' OR (solver='Succeeded' AND extraction='Queued'))
           ORDER BY created LIMIT 1""").fetchone()
         if not row:

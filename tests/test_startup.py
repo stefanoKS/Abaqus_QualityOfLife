@@ -5,6 +5,7 @@ compatibility check works on recorded health payloads.
 """
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 
@@ -146,6 +147,15 @@ def test_instance_compatibility_distinguishes_releases(monkeypatch):
     assert serve.compatibility({"product": "Abaqus QOL", "pid": 1}) == "legacy"
     assert serve.compatibility({"product": "Abaqus QOL", "build": "old", "api": 2}) == "different-build"
     assert serve.compatibility(None) == "not-ours"
+
+
+def test_custom_port_has_its_own_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(serve, "lock_path", lambda port: tmp_path / f"serve-{port}.lock")
+    monkeypatch.setattr(serve, "health", lambda port, timeout=1.0: None)
+    assert serve.acquire_lock(8897) is True
+    record = json.loads((tmp_path / "serve-8897.lock").read_text(encoding="utf-8"))
+    assert record["port"] == 8897
+    assert not (tmp_path / "serve-8765.lock").exists()
 
 
 def test_stale_instance_is_not_reused_and_explains_why(monkeypatch, capsys):

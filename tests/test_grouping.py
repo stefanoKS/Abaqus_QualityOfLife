@@ -16,7 +16,7 @@ from services.api.main import app
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
     monkeypatch.setenv("SEAL_DATA", str(tmp_path))
-    monkeypatch.delenv("SIMPLIFY_ABAQUS_LAUNCHER", raising=False)
+    monkeypatch.setenv("SIMPLIFY_ABAQUS_LAUNCHER", str(__import__("fake_abaqus").install(tmp_path)))
     monkeypatch.delenv("SEAL_ODA", raising=False)
     with TestClient(app, base_url="http://127.0.0.1") as api:
         yield api
@@ -26,9 +26,9 @@ def test_group_holds_named_models_and_duplicate_stays_inside(client):
     group = client.post("/api/groups", json={"name": "5q45"})
     assert group.status_code == 201
     gid = group.json()["id"]
-    two = client.post("/api/projects", json={"name": "Door 2D", "group": gid}).json()
+    two = client.post("/api/projects", json={"name": "Door 2D", "group": gid, "example": True}).json()
     three = client.post(
-        "/api/projects", json={"name": "Door 3D", "dimension": "3D", "group": gid}
+        "/api/projects", json={"name": "Door 3D", "dimension": "3D", "group": gid, "example": True}
     ).json()
     assert two["project"] != three["project"]
 
@@ -36,8 +36,8 @@ def test_group_holds_named_models_and_duplicate_stays_inside(client):
     (only,) = [g for g in listing if g["id"] == gid]
     assert {m["name"] for m in only["models"]} == {"Door 2D", "Door 3D"}
     assert all(m["group"] == gid and m["group_name"] == "5q45" for m in only["models"])
-    # The legacy singleton group still exists and is not the new group.
-    assert any(g["name"] == store.LEGACY_GROUP_NAME for g in listing)
+    # A clean installation has no implicit group: the new group is the only one.
+    assert [g["name"] for g in listing] == ["5q45"]
 
     copy = client.post("/api/projects/" + two["project"] + "/duplicate", json={}).json()
     assert copy["project"] != two["project"]
@@ -57,7 +57,7 @@ def test_group_holds_named_models_and_duplicate_stays_inside(client):
 
 
 def test_model_revision_history_is_newest_first(client):
-    r = client.post("/api/projects", json={"name": "History"}).json()
+    r = client.post("/api/projects", json={"name": "History", "example": True}).json()
     first, second = r["setup"], json.loads(json.dumps(r["setup"]))
     second["motion"]["travel"] = -4
     saved = client.put(

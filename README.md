@@ -44,48 +44,71 @@ original name so existing installations keep their projects.
 
 ## First run
 
-1. The first launch creates **Hollow bulb section**, a fictional two-material seal with a rigid panel
-   and a fixed mounting foot. Use **ダッシュボード → 新規プロジェクト** (Dashboard → New project) for
-   another section or extrusion.
+A clean installation opens an empty dashboard. Select **新規プロジェクト** (New project) to create a
+project and its first model. **A new model starts with no drawing**: it opens at
+**図面読込** (Import) with “No drawing imported” and a DXF/DWG chooser. Nothing is seeded, and
+refreshing the browser or opening the workspace never invents geometry.
+
+1. At **Import**, confirm millimetres and choose a DXF or DWG. The native DWG reader needs no
+   separate converter; a missing reader is reported before the file is read. The imported drawing
+   becomes a new revision and the workspace shows its group, model, drawing name and revision.
 2. In **材料設定** (Materials), select a region and pick a material card; edit the card's density,
-   elastic constants or hyperfoam test data directly. **固定条件・接触条件** (Mounting / Contact) lets
-   you pick edges and fix or release them. **移動条件** (Motion) sets the initial Y offset, signed
-   panel travel and duration. **リビジョンを保存** (Save revision) keeps your changes.
-3. In **メッシュ** (Mesh), choose a global size or select an edge for local sizing. Click
-   **メッシュと入力を生成** (Generate mesh & input). Review element counts, edge lengths, per-region
-   counts, initial vertical clearance and the concrete INP. Edits require a fresh build.
-4. In **解析条件確認・実行** (Review / Run), select **DEMO** and submit. The demonstration uses the real
-   queue, saved input deck and artifact store, but its field values and force curve are **synthetic**.
-   The scenario selector also provides a solver failure, a slow run for cancellation and a one-time
-   extraction failure.
+   elastic constants or hyperfoam test data directly. **移動条件** (Motion) sets the initial Y offset,
+   signed panel travel and duration. **リビジョンを保存** (Save revision) keeps your changes.
+3. In **メッシュ** (Mesh), choose a global size or select an edge for local sizing, then generate the
+   mesh. Review element counts, edge lengths, per-region counts, initial vertical clearance and the
+   concrete INP. **Mounting** owns fixed-node selection, so a reviewed fixture is never edited in
+   Review.
+4. In **解析条件確認・実行** (Review / Run), prepare the input deck and submit an **Abaqus** analysis.
+   Deck preparation writes an `.inp` from the reviewed mesh, fixed nodes, materials, contact and
+   motion; it never enqueues a mesh job. A missing prerequisite names the stage that owns it.
 5. Open **解析結果** (Results) from the run or dashboard. Play frames, probe nodes or elements, switch
    the contoured displacement component, select a force-curve sample, or download signed panel
    history. **設定** (Setup) opens the submitted revision. **設定を複製** (Duplicate setup) creates an
    independently editable project from that revision.
 6. Switch the viewport to **3D** to inspect section caps and side faces. Side-face material
    selection maps back to its section region. 3D is a preview only — solving requires a 2D section.
+   An imported section keeps a 3D preview model in its 3D mode.
 
 The public drawing in [examples/hollow-section.dxf](examples/hollow-section.dxf) exercises LINE, ARC,
-CIRCLE and polyline bulges. Under **図面読込** (Import), confirm millimetres and select the drawing.
-Assign section and panel roles, materials and a mounting edge before meshing. Empty nested cells can
-be selected from the assembly tree and explicitly filled. Replacing a drawing creates a revision and
-resets geometry assignments.
+CIRCLE and polyline bulges and remains available from the opt-in **公開サンプル断面から開始する**
+(Start from the public example section) checkbox when creating a model. Loading that example is
+geometry only; it is not permission to start a simulation.
 
-## DEMO versus Abaqus
+### Operator workflows
 
-| | DEMO | ABAQUS |
-|---|---|---|
-| Process | Real queue, worker, artifacts and extraction contract | Real licensed Abaqus/Standard run |
-| Field values | Synthetic playback curves | Solver output from the ODB |
-| Labelling | `DEMO — synthetic results, not an Abaqus analysis.` on the dashboard, run banner, result page, legend, CSV and metadata | `ABAQUS` |
-| Use | Workflow, UI and queue verification only | Engineering evaluation |
+**Create an empty model and import its drawing.** Dashboard → New project → name the project and its
+first model (leave the example checkbox clear) → Create project. The model opens at Import with no
+drawing. Confirm millimetres, choose the DXF or DWG, and wait for the new revision. The viewport
+shows the returned geometry, and the original drawing stays downloadable from that revision.
 
-DEMO output must never be used as engineering evidence or as validation of the material model.
+**Reopen another model or an earlier revision.** Dashboard → open the model card for its saved head,
+or **リビジョン** (Revisions) → choose an earlier revision. Reload, Back/Forward, the logo and the
+Workspace button all resolve the same way; an invalid link names the missing revision and offers
+**Back to Projects** instead of opening a different model.
+
+**Change travel and rerun with the same mounting.** Open the model → Motion → change the signed
+travel → Save revision. The mesh stays compatible; Review / Run prepares a new deck with the same
+reviewed fixed nodes, then submits Abaqus. The previous revision, deck, fixture and result stay
+readable.
+
+**Intentionally regenerate the mesh and review the fixed nodes again.** Open Mesh and choose
+Generate mesh. When a reviewed fixture exists, the app names how many fixed nodes are affected and
+requires **Regenerate** or **Cancel**. Cancel leaves everything untouched; a successful regeneration
+starts with zero reviewed nodes, so Mounting must be reviewed before a deck is prepared.
+
+## Abaqus only, with identifiable history
+
+New submissions run Abaqus/Standard. The execution-mode and synthetic-scenario selectors are gone.
+An explicit `DEMO` submission returns an actionable validation error and queues nothing; a queued
+legacy DEMO job is retired with a written diagnostic instead of being converted or relaunched.
+Historical DEMO rows, result views, exports and their `DEMO — synthetic results, not an Abaqus
+analysis.` label remain readable. DEMO output must never be used as engineering evidence.
 
 ## Configuration
 
-Optional variables are read from the process environment at startup. A fresh installation defaults
-to DEMO. Installing Abaqus on the machine does not automatically enable paid submissions.
+Optional variables are read from the process environment at startup. Submissions are Abaqus-only;
+a missing launcher is reported in Diagnostics and on Review / Run before anything is queued.
 
 ~~~powershell
 # Data directory. SEAL_DATA wins when both are set (documented precedence).
@@ -96,14 +119,15 @@ $env:ABAQUS_QOL_DATA = 'C:\SealWorkbench\data'    # newer alias
 $env:SIMPLIFY_ABAQUS_LAUNCHER = 'C:\SIMULIA\Commands\abq2024.bat'
 $env:ABAQUS_QOL_LAUNCHER = 'C:\SIMULIA\Commands\abq2024.bat'
 
-# DWG converter. SEAL_ODA wins when both are set.
+# Optional ODA converter, needed only for the optional DXF round-trip tooling.
 $env:SEAL_ODA = 'C:\path-to-installed-ODA\ODAFileConverter.exe'
 $env:ABAQUS_QOL_ODA = 'C:\path-to-installed-ODA\ODAFileConverter.exe'
 ~~~
 
-Set only the options you use. The data path must be on a local disk. Select **ABAQUS** and
-**ライセンス解析を投入** (Submit licensed analysis) to request real solver execution. A missing launcher
-or converter produces a diagnostic. Direct solver runs use the installation's solver license.
+Set only the options you use. The data path must be on a local disk. Native DXF and DWG import needs
+no ODA installation; the DWG reader reports exactly which packaged component is missing if the
+helper is incomplete. Select **ライセンス解析を投入** (Submit Abaqus analysis) to request real solver
+execution. Direct solver runs use the installation's solver license.
 [Abaqus adapter and troubleshooting](integrations/abaqus/README.md) ·
 [configuration and recovery](docs/migration-and-recovery.md)
 
@@ -126,11 +150,11 @@ npm --prefix apps/web run build
 npm --prefix apps/web run test:browser
 ~~~
 
-The Playwright suite starts its own API and worker on port 8876 with disposable local data and
-disabled paid execution. It uses installed Edge, an executable specified with `SEAL_BROWSER`, or
-Playwright Chromium. If neither browser is installed, run `npx playwright install chromium` from
-`apps/web`. Regenerate the checked-in TypeScript API contract after schema changes with
-`.\.venv\Scripts\python scripts/schema.py`.
+The Playwright suite starts its own API and worker on port 8876 with disposable local data and a
+license-free launcher double at the solver/extractor boundary. It uses installed Edge, an executable
+specified with `SEAL_BROWSER`, or Playwright Chromium. If neither browser is installed, run
+`npx playwright install chromium` from `apps/web`. Regenerate the checked-in TypeScript API contract
+after schema changes with `.\.venv\Scripts\python scripts/schema.py`.
 
 For the optional installed-runtime test, set `SIMPLIFY_ABAQUS_TEST_LAUNCHER` to the Abaqus 2024
 launcher and run pytest. It creates and reads a manufactured ODB using `abaqus python` and submits no
@@ -168,5 +192,5 @@ recorded in [docs/engineering-validation.md](docs/engineering-validation.md).
 **Not yet implemented:** drawing-role review before region construction, the material-region
 partition tool, role-aware arbitrary in-plane motion, and per-pair friction overrides. **Not yet
 verified:** physical solution accuracy, contact convergence, mesh convergence and production license
-behaviour — these need a trusted reference curve and an agreed engineering tolerance. DEMO output is
-not evidence. 3D remains a preview.
+behaviour — these need a trusted reference curve and an agreed engineering tolerance. Historical DEMO
+output is not evidence. New submissions are Abaqus-only. 3D remains a preview.

@@ -9,6 +9,14 @@ def post(api, path, data):
     return res.json()
 
 
+def create_model(api, name, example=True, dimension="2D", group=None):
+    """Create a model. Tests that need geometry opt in to the example section."""
+    body = {"name": name, "dimension": dimension, "example": example}
+    if group:
+        body["group"] = str(group)
+    return post(api, "/api/projects", body)
+
+
 def run_worker(owner="test"):
     from services.worker.__main__ import once
 
@@ -47,9 +55,25 @@ def prepare_deck(api, revision, mesh_id, owner="test"):
 def prepared(api, revision=None, owner="test"):
     """Create (if needed) a model with a completed mesh, fixture and deck."""
     if revision is None:
-        revision = post(api, "/api/projects", {"name": "Section"})
+        revision = create_model(api, "Section")
     mesh = prepare_mesh(api, revision, owner)
     labels = legacy_fixture(api, mesh["id"])["labels"]
     save_fixture(api, mesh["id"], labels)
     deck = prepare_deck(api, revision, mesh["id"], owner)
     return revision, deck, mesh
+
+
+def start_run(api, revision, deck, name="Test run", cpus=1):
+    """Submit an ABAQUS run. The test launcher double supplies manufactured results."""
+    return post(
+        api,
+        "/api/runs",
+        {
+            "revision": revision["id"],
+            "deck": deck["id"],
+            "token": store.new_id(),
+            "name": name,
+            "mode": "ABAQUS",
+            "cpus": cpus,
+        },
+    )

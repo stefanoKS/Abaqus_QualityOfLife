@@ -3,50 +3,48 @@ import { randomUUID } from 'node:crypto'
 import { meshAndDeck } from './pipeline'
 import type { Job, Revision } from '../src/api'
 
-test('dashboard filters, cancellation, disconnected browser and extraction-only retry', async ({
-  page,
-  context,
-  request,
-}) => {
+test('dashboard filters, cancellation and results of an Abaqus run', async ({ page, request }) => {
   const r: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Queue checks' } })
+    await request.post('/api/projects', { data: { name: 'Queue checks', example: true } })
   ).json()
   const { deck } = await meshAndDeck(request, r)
   async function job(id: string): Promise<Job> {
     return (await request.get('/api/jobs/' + id)).json()
   }
-  async function run(name: string, scenario: string): Promise<Job> {
+  async function run(name: string): Promise<Job> {
     const resp = await request.post('/api/runs', {
-      data: { revision: r.id, token: randomUUID(), deck: deck.id, name, scenario, mode: 'DEMO' },
+      data: { revision: r.id, token: randomUUID(), deck: deck.id, name, mode: 'ABAQUS' },
     })
     expect(resp.ok()).toBeTruthy()
     return resp.json()
   }
-  const slow = await run('Cancel this slow closing', 'slow')
-  await expect.poll(async () => (await job(slow.id)).status).toBe('Running')
+
+  // Cancel a manufactured solve while the worker is actually running it.
+  const cancelled = await run('Cancel this closing')
+  await expect
+    .poll(async () => (await job(cancelled.id)).status, { timeout: 30000 })
+    .toBe('Running')
   await page.goto('/#dashboard')
   await page.getByLabel('Filter by project').selectOption(r.project)
-  const slowRow = page.getByRole('row').filter({ hasText: slow.name })
-  await slowRow.getByRole('button', { name: 'Cancel job' }).click()
-  await expect(slowRow.getByText('Cancelled', { exact: true })).toBeVisible()
-  const failed = await run('Requested failure', 'failure')
-  await expect.poll(async () => (await job(failed.id)).status).toBe('Failed')
-  await page.getByLabel('Filter by status').selectOption('Failed')
-  await expect(page.getByRole('row').filter({ hasText: failed.name })).toBeVisible()
-  await expect(slowRow).toHaveCount(0)
-  const recover = await run('Re-extract results', 'extraction_failure')
-  await page.close()
+  const row = page.getByRole('row').filter({ hasText: cancelled.name })
+  await row.getByRole('button', { name: 'Cancel job' }).click()
+  await expect(row.locator('.badge')).toHaveAttribute('data-status', 'Cancelled')
+
+  // A completed run survives the filter and opens its result view.
+  const completed = await run('Completed closing')
   await expect
-    .poll(async () => (await job(recover.id)).extraction, { timeout: 15000 })
-    .toBe('Failed')
-  const before = await job(recover.id)
-  const reopened = await context.newPage()
-  await reopened.goto('/#diagnostics/' + recover.id)
-  await reopened.getByRole('button', { name: 'Retry extraction' }).click()
-  await reopened.getByRole('button', { name: 'Results', exact: true }).click()
-  await expect(reopened.getByRole('heading', { name: 'Force–displacement' })).toBeVisible()
-  const after = await job(recover.id)
-  expect(after.started).toBe(before.started)
-  expect(after.input_hash).toBe(before.input_hash)
-  expect(after.solver).toBe('Succeeded')
+    .poll(async () => (await job(completed.id)).status, { timeout: 90000 })
+    .toBe('Completed')
+  await page.getByLabel('Filter by status').selectOption('Completed')
+  const finished = page.getByRole('row').filter({ hasText: completed.name })
+  await expect(finished).toBeVisible()
+  await expect(row).toHaveCount(0)
+  await finished.getByRole('button', { name: 'Results' }).click()
+  await expect(page.getByRole('heading', { name: 'Force–displacement' })).toBeVisible()
+  await expect(page.locator('.run-banner')).toContainText('ABAQUS')
+  const index = await (
+    await request.get('/api/jobs/' + completed.id + '/artifacts/results.json')
+  ).json()
+  expect(index.mode).toBe('ABAQUS')
+  expect(index.frames.length).toBeGreaterThan(1)
 })

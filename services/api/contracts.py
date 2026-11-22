@@ -17,6 +17,9 @@ class NewProject(Contract):
     # Models live in a project group. Omitted (legacy clients) lands in the
     # default group instead of failing.
     group: UUID | None = None
+    # An explicit opt-in to the public demonstration section. Creating a model
+    # never seeds geometry by default: a new model starts empty.
+    example: bool = False
 
 
 class NewGroup(Contract):
@@ -102,7 +105,10 @@ class FixtureInfo(Contract):
 class Submit(Build):
     name: Name
     deck: UUID
-    mode: Literal["DEMO", "ABAQUS"] = "DEMO"
+    # New submissions are Abaqus-only. ``DEMO`` remains in the vocabulary so an
+    # explicit legacy value can be rejected with an actionable message instead of
+    # an opaque 422, and so historical rows keep their recorded mode.
+    mode: Literal["DEMO", "ABAQUS"] = "ABAQUS"
     scenario: Literal["success", "failure", "slow", "extraction_failure"] = "success"
     cpus: int = Field(default=1, ge=1, le=32)
 

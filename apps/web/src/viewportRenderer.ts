@@ -36,6 +36,21 @@ function extent(scene: Scene): Bounds {
   return Number.isFinite(box[0]) ? box : identityBounds
 }
 
+/** Reuse is only safe when the primitive, its cells and its rendering class match. */
+function sameTopology(a: Surface, b: Surface) {
+  return (
+    a.kind === b.kind &&
+    a.contour === b.contour &&
+    a.meshEdges === b.meshEdges &&
+    a.points.length === b.points.length &&
+    a.cells.length === b.cells.length &&
+    a.cells.every((cell, index) => {
+      const other = b.cells[index]
+      return cell.length === other.length && cell.every((value, i) => value === other[i])
+    })
+  )
+}
+
 function makeActor(surface: Surface, range: number | null, shade: boolean) {
   const data = vtkPolyData.newInstance()
   data.getPoints().setData(new Float32Array(surface.points.flat()), 3)
@@ -73,12 +88,14 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
   property.setEdgeVisibility(surface.meshEdges)
   property.setEdgeColor(0.19, 0.28, 0.3)
   property.setLineWidth(surface.kind === 'edge' ? 2 : 1)
-  return {
+  const item = {
     key: surface.key ?? '',
+    surface,
     actor,
     data,
     mapper,
     update: (next: Surface, range: number | null) => {
+      item.surface = next
       // Same topology: swap coordinates in place and refresh the colours.
       const points = data.getPoints()
       const existing = points.getData() as (Float32Array & { delete?: () => void }) | undefined
@@ -90,6 +107,12 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
         existing?.delete?.()
         points.setData(flat, 3)
       }
+      const nextHex = /^#[a-f0-9]{6}$/i.test(next.color) ? next.color : '#62a7a1'
+      property.setColor(
+        parseInt(nextHex.slice(1, 3), 16) / 255,
+        parseInt(nextHex.slice(3, 5), 16) / 255,
+        parseInt(nextHex.slice(5, 7), 16) / 255
+      )
       if (next.contour && next.magnitudes) {
         const values = Uint8Array.from(
           next.magnitudes.flatMap((v) => colorAt((v ?? 0) / (range || 1)))
@@ -110,6 +133,8 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
             )
         }
         mapper.setColorModeToDirectScalars()
+      } else {
+        mapper.setScalarVisibility(false)
       }
       data.modified()
       points.modified()
@@ -126,6 +151,7 @@ function makeActor(surface: Surface, range: number | null, shade: boolean) {
       data.delete()
     },
   }
+  return item
 }
 
 /** Owns the GL context, render objects, screen projection and camera. */
@@ -162,17 +188,26 @@ export class ViewportRenderer {
   }
   setScene(scene: Scene, dimension: '2D' | '3D', fit: boolean) {
     // A frame change keeps the same topology: reuse each actor and only push new
-    // coordinates and colours into it. Rebuilding actors per frame is what made
-    // playback blank the view and reset the camera.
-    const reusable = new Map(this.actors.map((item) => [String(item.key), item]))
+    // coordinates and colours into it. An actor with no key, or with different
+    // cells, is replaced instead of having new coordinates written against old
+    // connectivity.
+    const reusable = new Map<string, ReturnType<typeof makeActor>>()
+    for (const item of this.actors) if (item.key) reusable.set(item.key, item)
     const next: ReturnType<typeof makeActor>[] = []
     for (const surface of scene.surfaces) {
-      const existing = reusable.get(String(surface.key ?? ''))
-      if (existing) {
-        reusable.delete(String(surface.key ?? ''))
+      const existing = surface.key ? reusable.get(surface.key) : undefined
+      if (existing && sameTopology(existing.surface, surface)) {
+        reusable.delete(surface.key!)
         existing.update(surface, scene.range)
         next.push(existing)
         continue
+      }
+      if (existing) {
+        // The key is the same but the primitive changed: the old actor cannot
+        // carry the new connectivity, so it is disposed exactly once here.
+        reusable.delete(surface.key!)
+        this.renderer.removeActor(existing.actor)
+        existing.delete()
       }
       const created = makeActor(surface, scene.range, dimension === '3D')
       this.renderer.addActor(created.actor)
@@ -185,13 +220,16 @@ export class ViewportRenderer {
     this.actors = next
     this.scene = scene
     this.dimension = dimension
-    this.bounds = extent(scene)
-    // Fit to the whole run so later frames of the same result cannot be clipped.
-    const motion = typeof this.scene.extent === 'number' ? this.scene.extent : 0
-    if (motion > 0) {
-      const b = this.bounds
-      this.bounds = [b[0] - motion, b[1] + motion, b[2] - motion, b[3] + motion, b[4], b[5]]
-    }
+    // Observable actor count for regression tests: a leaked or collided actor
+    // shows up here before it can be seen as a wrong pick.
+    this.host.dataset.actors = String(next.length)
+    const recorded = scene.extent
+    this.bounds =
+      Array.isArray(recorded) &&
+      recorded.length === 6 &&
+      recorded.every((value) => Number.isFinite(value))
+        ? (recorded as Bounds)
+        : extent(scene)
     this.hovered = null
     if (fit || !this.started) this.fit()
     else {

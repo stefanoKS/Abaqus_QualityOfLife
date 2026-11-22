@@ -183,6 +183,20 @@ def synthetic(name="Hollow bulb section"):
     )
 
 
+def empty(name="Untitled model", dimension="2D"):
+    """An explicit model with no drawing yet.
+
+    No placeholder vertex, component, material region, filename or digest is
+    invented: the absence of geometry is the state the engineer sees at Import.
+    """
+    return Project(
+        name=name,
+        dimension=dimension,
+        formulation="plane_stress" if dimension == "2D" else "extrusion_preview",
+        source=Source(kind="empty", filename=""),
+    )
+
+
 def sample_edges(p):
     """Fixed engineering tessellation. Neither mesh nor screen zoom changes CAD.
 
@@ -299,9 +313,15 @@ def display(project):
                 material=face.material if face else None,
             )
     points = [point for obj in primitives for point in obj["points"]]
-    bounds = [
-        v for axis in range(3) for v in (min(p[axis] for p in points), max(p[axis] for p in points))
-    ]
+    bounds = (
+        [
+            v
+            for axis in range(3)
+            for v in (min(p[axis] for p in points), max(p[axis] for p in points))
+        ]
+        if points
+        else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    )
     return dict(
         primitives=primitives, bounds=bounds, solids=[s.model_dump() for s in project.solids]
     )

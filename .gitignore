@@ -18,6 +18,7 @@ fixtures/private/
 *.dwg
 *.dxf
 !examples/*.dxf
+!apps/web/tests/fixtures/*/*.dxf
 test-results/
 playwright-report/
 *.tsbuildinfo

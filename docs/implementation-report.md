@@ -7,6 +7,79 @@ Repository: `stefanoKS/Abaqus_QualityOfLife`
 Environment: Windows, Python 3.11.9 (`.venv`), Node.js 24.16.0, npm 11.13.0, Edge with WebGL,
 Abaqus/Standard 2024 installed at `C:\SIMULIA\Commands\abq2024.bat`.
 
+## A4. Repair delivery — drawing ownership, Review authority, playback, Abaqus-only execution
+
+Date: 2026-11-22. Baseline: `d7b6728` (parent `240460c`), clean tree. No new solver process was
+launched for this repair. The retained licensed run was replayed read-only from an isolated copy.
+
+### Delivered behaviour
+
+- **Empty models are explicit.** `Source.kind` now includes `empty`; a new model carries no vertices,
+  components, regions, selections, material cards, filename or digest. `POST /api/projects` creates an
+  empty model unless `example: true` is supplied. Startup no longer seeds geometry. Save, rename,
+  close, reopen and duplicate all work before an import. Mesh, deck and run endpoints reject an empty
+  model with a specific message.
+- **Drawing identity is model-bound.** Two uploads named `section.dxf` coexist as separate source
+  digests and revision identities. The original bytes download from the owning revision. Import
+  preserves the model's dimension (including a 3D preview), motion, contact and analysis settings, and
+  a failed import leaves the last good revision and head untouched.
+- **Navigation is deterministic.** `main.tsx` no longer falls back to `projects[0]` or `ps[0]`. The
+  Workspace button restores the last explicitly opened model or opens the dashboard. An invalid link
+  names the missing revision and offers **Back to Projects**. Save and import completion replace the
+  history entry and notify the router; the remembered step survives the resulting remount.
+- **Review cannot remesh.** Generate mesh is rendered only in Mesh. A reviewed fixture turns
+  regeneration into an explicit Regenerate/Cancel choice that names the affected node count. Review
+  shows mesh identity, node/element counts, quality and a Go to Mesh link, plus copy stating that deck
+  preparation writes an `.inp` and never enqueues a mesh job. A just-queued deck becomes the visible
+  deck before submission, so an older deck can no longer be submitted by accident.
+- **Historical replay uses its own mesh.** A submitted setup resolves the mesh job recorded by its
+  deck and verifies the digest chain before drawing archived labels. An unverifiable archive reports
+  why the overlay is unavailable; a newer compatible mesh is never substituted.
+- **Renderer reuse is topology-safe.** Every actor has a stable key derived from instance, entity,
+  component, primitive kind and rendering class. Reuse also requires equal cells, point count,
+  contour and edge-visibility flags; otherwise the old actor is disposed exactly once and replaced.
+  CAD, mesh, 2D and 3D displays no longer collide on an empty key.
+- **Camera and colour scale are run-wide.** Extraction records `display.bounds` and `display.ranges`
+  for each supported nodal quantity. Retained results without it get a derived cache keyed by run and
+  index digest; original artifacts are not rewritten and no solver runs. The renderer consumes the
+  six-value array bounds, fits once, and keeps camera/zoom/pan through frames. A missing quantity is
+  reported unavailable instead of being painted with a fabricated zero.
+- **Frames are atomic.** Requested and displayed frame identities are separate; the previous complete
+  frame stays visible while a slower frame loads. Playback waits for the displayed frame before
+  advancing, so slow responses are not abandoned. Out-of-order scrub responses cannot repaint, a
+  failed frame is identified, the frame cache is bounded to eight, and the Plotly cursor is restyled
+  without purging the plot or resetting the reader's axis zoom.
+- **Execution is Abaqus-only.** The execution-mode and scenario selectors are removed. Omitted mode
+  resolves to `ABAQUS`; an explicit `DEMO` returns 422 and queues nothing. `store.claim` never claims a
+  DEMO row, and startup retires a queued, never-started DEMO job with a written diagnostic rather than
+  converting or relaunching it. Historical DEMO rows, result views, exports and notices remain.
+- **Launcher lock is per port.** A custom-port launch no longer joins the default instance. Each port
+  has its own lock file; the same-port healthy instance is still reused.
+
+### Gate table
+
+| Gate | Result | Evidence | Remaining |
+|---|---|---|---|
+| Clean installation and empty models | PASS | Python: `test_clean_installation_has_no_seeded_model`, `test_new_model_is_explicitly_empty_and_round_trips` (2D/3D), `test_empty_model_rejects_mesh_deck_and_run_clearly`. Browser: `isolation.spec.ts` creates three empty models. Launcher health with isolated data returned `projects: []`. | — |
+| Two-model, same-filename drawing evidence | PASS | Python `test_same_filename_drawings_bind_to_their_own_models`; browser `two models keep same-named drawings apart…` uploads `with-cavity/section.dxf` and `without-cavity/section.dxf`, asserts equal basename, different digests and download hashes, and a cavity-centre pick that selects nothing in A but a face in B. | — |
+| Navigation, reload, Back/Forward, brand, fresh session | PASS | Same browser test: A→B→dashboard→A, B reload, Back/Forward, brand restore, new browser context, invalid link alert + Back to Projects, cancelled chooser, failed import. | — |
+| Import completes in A while B is open | PASS | Browser `an import that finishes in A stays in A while B is open`: A's revision count reaches 2 while B stays unchanged and keeps its own digest. | — |
+| 3D preview keeps its dimension | PASS | Python `test_import_preserves_the_3d_preview_dimension`; browser `a 3D preview keeps its dimension…`. | — |
+| Zero mesh submissions from Review | PASS | Browser `review.spec.ts` monitors POST `/api/meshes` from entering Review through deck preparation and submission; asserted 0. Second test asserts the mesh-job count is unchanged. | — |
+| Historical mesh/WSFIX equality | PASS | Python `test_submitted_run_replays_its_archived_fixture`, `test_result_header_carries_the_reviewed_fixture`; browser review test parses WSFIX before and after a travel change and compares it with the saved instance-qualified labels; archived replay count equals the archived labels. | — |
+| Renderer actor reuse and picking | PASS | Browser `renderer.spec.ts`: repeated hide/show, mesh toggle and 2D/3D switch return to the exact actor count; the crown still picks `Hollow bulb` and `bulb_foam`. | — |
+| Delayed frame, out-of-order scrub, failure, camera/scale | PASS | Browser `playback.spec.ts`: 1.5 s delayed frame keeps the frame time and actor count unchanged, playback pauses and then displays it; pan+zoom persists through frame steps; Fit restores the fitted grid; the U2 legend is identical at frames 0 and 65; an out-of-order frame 20 cannot overwrite frame 5; an aborted frame 8 reports itself and keeps frame 5. | Colour equality is asserted through the fixed run-wide legend range and deterministic ramp; direct per-pixel colour comparison was not automated. |
+| Retained licensed replay | PASS (replay only) | Isolated copy of run `989fec4a-98fa-4a61-999a-e16ec886ac68`: 66 frames, slider 0–65, camera grid unchanged after pan+zoom through all frames, final frame 1.300 s, closing travel 6.5 mm, signed `RF2` −0.0169664863 N, projected 0.0169664863 N. `history.csv` and `results.json` agree. Display metadata came from the derived cache (`source: cache`). No page errors. | Physical correlation remains separate and unvalidated. |
+| Abaqus-only API and legacy DEMO | PASS | Python `test_demo_submission_is_rejected_without_queueing_and_history_stays_readable`, `test_queued_legacy_demo_is_retired_and_completed_demo_stays_readable`; `store.claim` excludes DEMO. Browser jobs test submits ABAQUS and completes through the launcher double. | A queued legacy DEMO is retired; an already-running legacy DEMO remains under its owning worker's reconciliation. |
+| Display metadata for retained results | PASS | Python `test_display_metadata_is_recorded_and_derived_without_rewriting_artifacts`: recorded source, derived source, cache source, and the index bytes are unchanged. | — |
+| Python suite | PASS | `.\.venv\Scripts\python.exe -m pytest -q`: 105 passed, 1 skipped (the opt-in installed-runtime ODB test). | — |
+| Frontend typecheck and build | PASS | `npm --prefix apps/web run typecheck`, `npm --prefix apps/web run build`. | — |
+| Translation parity | PASS | `npm --prefix apps/web run test:i18n`: 463 keys in both dictionaries; the corrupted Japanese Mounting/Contact/Review block and the `???` language-switch template were restored; the duplicated/corrupted tail of the Japanese guide was removed. Browser test `Japanese Create, Import, Mesh, Mounting, Review and Results labels are readable` renders the Japanese UI and asserts representative labels on every named screen plus the language button. | Japanese wording outside those screens still merits a native-speaker read. |
+| Browser suite | PASS | `npm --prefix apps/web run test:browser`: 33 tests. | — |
+| Windows startup, isolated port | PASS | `cmd /c start-abaqus-qol.cmd --port 8897 --no-browser` with isolated `SEAL_DATA`: health ready, `frontend` matched `dist/assets`, empty project list; stopped afterwards without touching the default instance. | Double-click itself is not automatable; the CMD wrapper path was used. |
+| Two-step body/door, oblique motion, per-pair friction, partition, drawing-role review | BLOCKED | Not implemented in this repair. Listed separately as outstanding. | Requires solver-method work and a trusted reference. |
+
+
 ## A0. Delivered increment — 2D mesh-first fixture (brief item 5)
 
 Delivered after the milestone above. Scope was limited to the 2D fixture workflow; drawing partitions,
@@ -464,9 +537,10 @@ Removed: nothing.
 
 ### DWG conversion
 
-- **Gap:** no ODA-compatible converter is installed on this machine, so no genuine DWG was converted and
-  the converted geometry, units, layers, curves and profiles were not inspected. `GET /api/capabilities`
-  reports `DWG converter not configured`, and the UI shows it.
+- **Resolved for reading (2026-11-22).** The native ACadSharp reader imports DWG without ODA or a DXF
+  intermediate; the capabilities payload reports `odaRequired: false`. This older paragraph recorded a
+  machine that had no converter. Other DWG versions are accepted by the reader but not all were
+  exercised.
 - **Continues with:** DXF, which is exercised end to end (import → roles → material → mesh → deck).
 - Nothing proprietary was fetched or redistributed.
 

@@ -51,7 +51,9 @@ export interface ResultFrame {
 export interface ViewResults {
   instances: ResultInstance[]
   frame: ResultFrame | null
-  /** Largest |displacement| over the whole run in mm; fit once to cover it. */
+  /** Run-wide 6-value bounds recorded or derived from the result. */
+  bounds?: number[] | null
+  /** Legacy largest |displacement| estimate; used only when bounds is absent. */
   extent?: number
 }
 export interface ViewportProps {
@@ -70,6 +72,12 @@ export interface ViewportProps {
   lengthUnit?: string
   /** Nodal displacement quantity used for contouring. */
   resultComponent?: 'magnitude' | 'U1' | 'U2' | 'U3'
+  /**
+   * Recorded colour maximum for this quantity. ``null`` means the quantity is
+   * unavailable for this run and must not be painted with a fabricated zero;
+   * ``undefined`` asks the viewport to derive a bounded fallback.
+   */
+  resultRange?: number | null
   /** Localized legend heading supplied by the caller. */
   resultLabel?: string
   /** Rectangular node selection is armed (fixed-node fixture review). */
@@ -82,6 +90,9 @@ export interface ViewportProps {
   nodeInstances?: string[]
   /** Receives the instance-qualified labels inside the drawn rectangle. */
   onBoxSelect?: (labels: string[]) => void
+  /** Action offered when there is no geometry yet, e.g. open Import. */
+  emptyActionLabel?: string
+  onEmptyAction?: () => void
 }
 
 export interface Surface {
@@ -181,6 +192,8 @@ function instanceSurfaces(
       group = {
         indices: new Map(),
         surface: {
+          // Stable while the element set and its rendering class are unchanged.
+          key: [source.instance, key].join('#'),
           kind: line ? 'edge' : 'face',
           points: [],
           cells: [],
@@ -209,9 +222,8 @@ function instanceSurfaces(
             : xyz
         )
         surface.nodeIds!.push(label)
-        surface.magnitudes!.push(
-          u ? (axis < 0 ? Math.hypot(...u) : Math.abs(u[axis] ?? 0)) : undefined
-        )
+        const value = u ? (axis < 0 ? Math.hypot(...u) : u[axis]) : undefined
+        surface.magnitudes!.push(value === undefined ? undefined : Math.abs(value))
       }
       return index
     })
@@ -226,9 +238,17 @@ function instanceSurfaces(
 
 /**
  * Bounds that cover the whole run, so fitting once cannot clip later frames.
- * Uses the largest |displacement| over the run and the undeformed extent.
+ * The recorded display metadata is authoritative; the legacy estimate only
+ * applies to a retained result that predates it.
  */
 function runExtent(props: ViewportProps): number[] | null {
+  const recorded = props.results?.bounds
+  if (
+    Array.isArray(recorded) &&
+    recorded.length === 6 &&
+    recorded.every((value) => Number.isFinite(value))
+  )
+    return recorded
   const instances = props.results?.instances
   if (!instances?.length) return null
   const motion = Math.max(0, Number(props.results?.extent ?? 0))
@@ -262,17 +282,23 @@ export function makeScene(props: ViewportProps): Scene {
         props
       )
     )
-    // Stable per-instance topology identity: the same key on every frame lets the
-    // renderer update coordinates instead of rebuilding actors.
-    surfaces.forEach((surface, index) => {
-      if (!surface.key) surface.key = surface.instance ? surface.instance + '#' + index : '#' + index
-    })
-    let range: number | null = null
-    for (const surface of surfaces)
-      if (surface.contour) {
-        for (const value of surface.magnitudes ?? [])
-          if (value !== undefined) range = Math.max(range ?? 0, value)
+    // Stable per-instance topology identity is assigned while the surface is
+    // grouped; an actor is reused only when that identity and its cells match.
+    const unavailable = props.resultRange === null
+    if (unavailable)
+      for (const surface of surfaces) {
+        surface.contour = false
+        surface.color = '#a3a9ae'
+        surface.magnitudes = surface.magnitudes?.map(() => undefined)
       }
+    let range: number | null = null
+    if (typeof props.resultRange === 'number') range = props.resultRange
+    else
+      for (const surface of surfaces)
+        if (surface.contour) {
+          for (const value of surface.magnitudes ?? [])
+            if (value !== undefined) range = Math.max(range ?? 0, value)
+        }
     return { surfaces, range, extent: runExtent(props) }
   }
   const surfaces: Surface[] = []
@@ -304,6 +330,8 @@ export function makeScene(props: ViewportProps): Scene {
     if (props.mesh && props.dimension === '2D' && p.kind === 'face') continue
     surfaces.push({
       ...p,
+      // CAD identity is the drawing entity, not its array position.
+      key: ['cad', p.kind, p.id, p.source ?? '', p.component].join('|'),
       cad: { entity: p.entity, component: p.component, source: p.source },
       color:
         p.kind === 'edge'

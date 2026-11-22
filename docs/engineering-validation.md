@@ -269,6 +269,27 @@ no claim is made about how that specific drawing stores its curves.
 
 The harness must not substitute synthetic DEMO output for any of these steps.
 
+## Retained licensed replay — 2026-11-22 (no solver launch)
+
+The retained licensed run `989fec4a-98fa-4a61-999a-e16ec886ac68` was copied to an isolated data
+directory and replayed through the built application on a separate loopback port. No solver process
+was started, no license was checked out, and the retained directory was not modified.
+
+| Observation | Value |
+|---|---|
+| Frames | 66 (slider 0–65) |
+| Camera | Panned and zoomed, then stepped through every frame; the grid size and position were identical at the end |
+| Final frame | 1.300 s |
+| Closing travel (displayed) | 6.5 mm |
+| Signed `RF2` | −0.0169664863 N |
+| Projected closing force | +0.0169664863 N |
+| `history.csv` vs `results.json` | Last row agrees: time 1.2999999523 s, `panel_U2` −6.5 mm, `panel_RF2` −0.0169664863 N, closing travel 6.5 mm, projected force 0.0169664863 N |
+| Display metadata | The older result had no recorded block; the first request derived bounds/ranges server-side and cached them. Magnitude 6.5 mm, `U1` 0.4226605 mm, `U2` 6.5 mm. Original artifacts unchanged. |
+| Page errors | None |
+
+This is replay of retained licensed evidence. It confirms that the displayed history matches the
+recorded artifacts; it does not establish physical correlation, contact accuracy or mesh convergence.
+
 ## Remaining blockers
 
 | Area | Blocker |
@@ -277,16 +298,16 @@ The harness must not substitute synthetic DEMO output for any of these steps.
 | Licensed execution breadth | Door-only closing is executed, including on the original drawing. Body-then-door two-step closing is still not implemented, so it cannot be executed. |
 | Friction assignment | One global coefficient; per-pair overrides are not implemented. |
 | Drawing role review | Roles are assigned per connected component after import; an in-viewport chain review with per-chain WS/Door/Body confirmation is not implemented. |
-| Fixture history view | The archived labels of an old run can still be shown against the newest compatible mesh instead of that run's own mesh; duplication does not verify mesh identity. |
+| Fixture history view | **Resolved 2026-11-22.** A submitted setup now resolves the mesh job recorded by its deck and verifies the digest chain before drawing archived labels. An unverifiable archive reports why; a newer mesh is never substituted. |
 | Physical correlation | No trusted reference curve and no agreed engineering tolerance exist. |
 | Mesh/time convergence | Not studied; two mesh sizes were exercised only as an invalidation test, not as a convergence study. |
 
 ## Limitations that remain after this phase
 
 - No engineering benchmark comparison has been executed; no tolerance has been agreed.
-- The DEMO curve is illustrative only and its coefficients are not measured material parameters. Its
-  sign convention now matches the measured solver convention (`RF2 < 0` while resisting), which is
-  regression-tested.
+- The historical DEMO curve is illustrative only and its coefficients are not measured material parameters. Its
+  sign convention matches the measured solver convention (`RF2 < 0` while resisting), which is
+  regression-tested. New submissions are Abaqus-only.
 - Mesh metrics shown in the review step are measured from the produced mesh (node/element counts,
   shortest and longest element edge, max/min edge ratio per element, per-region counts). Inverted and
   degenerate elements are rejected during generation, so their count is always zero by construction.

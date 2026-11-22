@@ -48,6 +48,20 @@ without further tooling.
 
 ## Database schema
 
+Schema version 1 is unchanged by this release. Empty models are represented in the existing revision
+JSON: `source.kind` gained the value `empty`, and a drawing-backed model is validated exactly as
+before. Every previously saved revision still loads. No dummy vertex, component, material region,
+filename or digest is written for an empty model.
+
+Two additional startup behaviours are idempotent:
+
+- A queued, never-started `DEMO` job is retired with `solver = Failed`, `phase = Withdrawn` and a
+  diagnostic explaining that synthetic execution is no longer available. It is never converted into a
+  licensed job or relaunched. Completed, failed and already-running historical DEMO rows are untouched.
+- Result display metadata is derived into `<data>/cache/display/<job-id>-<digest>.json` for results
+  that predate the recorded block. This cache is read-only with respect to the run directory; deleting
+  it only makes the next request derive it again. It never triggers a solver run.
+
 Schema version 1 is unchanged by this release; project grouping is additive.
 
 `services/store.py::initialize()` uses `CREATE TABLE IF NOT EXISTS`, so a fresh installation and an
@@ -115,6 +129,14 @@ Reconciliation procedure:
 
 The API and worker are separate processes by design so that an accidental page reload, browser crash
 or API restart cannot destroy an expensive authorized analysis.
+
+## Launcher instances
+
+Each port has its own lock file under the repository, `<repo>/.local/serve-<port>.lock`. A healthy
+instance already listening on the requested port is reused; a custom `--port` therefore starts a
+separate instance instead of silently joining the default one. A stale lock is taken over when no
+healthy instance answers on its recorded port. Closing the serving terminal stops that API and lets its
+worker finish the current operation; other ports are unaffected.
 
 ## Artifacts and retention
 

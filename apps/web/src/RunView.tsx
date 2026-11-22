@@ -61,6 +61,14 @@ interface Frame extends ResultFrame {
   unavailable?: string[]
 }
 
+/** Run-wide display metadata recorded by extraction or derived for a retained run. */
+interface DisplayMeta {
+  version: number
+  bounds: { undeformed: number[]; deformed: number[]; extent: number[] }
+  ranges: Partial<Record<Component, number>>
+  source: string
+}
+
 type Component = 'magnitude' | 'U1' | 'U2' | 'U3'
 
 const COMPONENTS: Component[] = ['magnitude', 'U1', 'U2', 'U3']
@@ -111,14 +119,6 @@ function nearestIndex<T extends { time: number; step?: string | null }>(
 }
 
 
-/** Largest |displacement| over the run, so one fit covers every frame. */
-function runExtent(index: Index): number {
-  let extent = 0
-  for (const row of index.history ?? []) {
-    extent = Math.max(extent, Math.abs(row.u1 ?? 0), Math.abs(row.u2 ?? 0))
-  }
-  return extent
-}
 
 export function RunView({
   id,
@@ -142,6 +142,8 @@ export function RunView({
   const [displayedFrame, setDisplayedFrame] = useState<number | null>(null)
   const [pendingFrame, setPendingFrame] = useState<number | null>(null)
   const [frameError, setFrameError] = useState<number | null>(null)
+  const [displayMeta, setDisplayMeta] = useState<DisplayMeta | null>(null)
+  const frameCache = useRef(new Map<string, Frame>())
   const [component, setComponent] = useState<Component>('magnitude')
   const [logs, setLogs] = useState(''),
     [logFile, setLogFile] = useState('worker.log')
@@ -176,39 +178,85 @@ export function RunView({
       })
     return () => ac.abort()
   }, [job?.status, resultView, id, notify])
+  // Run-wide bounds and colour ranges, recorded by extraction or derived once
+  // server-side for a retained result. They never change during playback.
+  useEffect(() => {
+    if (!resultView || job?.status !== 'Completed') return
+    const ac = new AbortController()
+    request<DisplayMeta>('/api/jobs/' + id + '/display-metadata', 'GET', undefined, ac.signal)
+      .then(setDisplayMeta)
+      .catch((e) => {
+        // A missing derived metadata must not hide the geometry; the viewport
+        // then uses a bounded fallback and says the range is derived.
+        if (!ac.signal.aborted) {
+          setDisplayMeta(null)
+          notify(err(e))
+        }
+      })
+    return () => ac.abort()
+  }, [job?.status, resultView, id, notify])
+  // A new run starts from a clean frame state: no old probe, frame or camera key.
+  useEffect(() => {
+    frameCache.current.clear()
+    setFrame(null)
+    setDisplayedFrame(null)
+    setPendingFrame(null)
+    setFrameError(null)
+    setDisplayMeta(null)
+  }, [id])
   // Only the newest request may commit. The last complete frame stays on screen
   // while the next one loads, so playback never blanks the viewport.
   const frameRequest = useRef(0)
   useEffect(() => {
     if (!index) return
+    const file = index.frames[n].file
+    const cached = frameCache.current.get(file)
+    if (cached) {
+      setFrame(cached)
+      setDisplayedFrame(n)
+      setFrameError(null)
+      setPendingFrame(null)
+      return
+    }
     const ac = new AbortController()
     const sequence = ++frameRequest.current
     setPendingFrame(n)
-    request<Frame>(artifact(id, index.frames[n].file), 'GET', undefined, ac.signal)
+    request<Frame>(artifact(id, file), 'GET', undefined, ac.signal)
       .then((loaded) => {
         if (ac.signal.aborted || sequence !== frameRequest.current) return
+        // Bounded cache: replaying nearby frames must not grow without limit.
+        frameCache.current.set(file, loaded)
+        if (frameCache.current.size > 8) {
+          const oldest = frameCache.current.keys().next().value
+          if (oldest) frameCache.current.delete(oldest)
+        }
         setFrame(loaded)
         setDisplayedFrame(n)
         setFrameError(null)
+        setPendingFrame(null)
       })
       .catch((e) => {
         if (ac.signal.aborted || sequence !== frameRequest.current) return
         // Keep the last good frame visible and say which one failed.
         setFrameError(n)
+        setPendingFrame(null)
         playing(false)
         notify(err(e))
       })
     return () => ac.abort()
   }, [index, n, id, notify])
+  // Advance only after the requested frame is actually displayed, so a slow
+  // response is never abandoned mid-flight during ordinary playback.
   useEffect(() => {
-    if (!play || !frame || !index) return
-    const t2 = setTimeout(() => {
-      if (n + 1 === index.frames.length) {
-        playing(false)
-      } else setN(n + 1)
-    }, 220)
+    if (!play || !index) return
+    if (displayedFrame !== n) return
+    if (n + 1 >= index.frames.length) {
+      playing(false)
+      return
+    }
+    const t2 = setTimeout(() => setN((value) => Math.min(value + 1, index.frames.length - 1)), 220)
     return () => clearTimeout(t2)
-  }, [play, n, index, frame])
+  }, [play, n, index, displayedFrame])
   const hasLog = job?.manifest.includes(logFile)
   useEffect(() => {
     if (resultView || !hasLog) {
@@ -240,9 +288,16 @@ export function RunView({
     () => displayedCurve(index?.history ?? [], reverseX, reverseY),
     [index, reverseX, reverseY],
   )
-  const frameStep = index?.frames[n]?.step
+  // The frame identity that is actually on screen, not the one being requested.
+  const shownFrame = displayedFrame ?? n
+  const shownEntry = index?.frames[shownFrame]
+  const frameStep = shownEntry?.step
   const activeSample =
-    index && index.frames.length ? nearestIndex(index.history, index.frames[n].time, frameStep) : undefined
+    index && shownEntry ? nearestIndex(index.history, shownEntry.time, frameStep) : undefined
+  // A fixed per-quantity scale from the run-wide metadata. ``null`` means this
+  // quantity has no measurement and must be shown as unavailable, never as zero.
+  const resultRange = displayMeta ? (displayMeta.ranges[component] ?? null) : undefined
+  const rangeUnavailable = resultRange === null
   const plotPick = useCallback(
     (i: number) => {
       if (index) {
@@ -316,17 +371,18 @@ export function RunView({
     const identity = sel.instance + ' · ' + sel.kind + ' ' + sel.label
     if (sel.kind !== 'node') return identity
     if (!probe) return identity + ' · ' + t('run.uUnavailable')
+    // A quantity with no run-wide measurement is unavailable, even if the frame
+    // carries a placeholder value.
+    if (rangeUnavailable && component !== 'magnitude')
+      return identity + ' · ' + component + ' ' + t('run.uUnavailable')
     if (component === 'magnitude')
       return identity + ' · |U| ' + Math.hypot(...probe.slice(1)).toPrecision(4) + ' mm'
     const axis = component === 'U1' ? 1 : component === 'U2' ? 2 : 3
-    return (
-      identity +
-      ' · ' +
-      component +
-      ' ' +
-      (probe[axis] ?? 0).toPrecision(4) +
-      ' mm'
-    )
+    const value = probe[axis]
+    // A missing component stays identifiable instead of becoming a zero.
+    if (value === undefined || value === null)
+      return identity + ' · ' + component + ' ' + t('run.uUnavailable')
+    return identity + ' · ' + component + ' ' + value.toPrecision(4) + ' mm'
   })()
   const componentLabel = component === 'magnitude' ? t('run.magnitude') : component
   const legendLabel = t('run.legendTitle', { variable: 'U', component: componentLabel })
@@ -406,13 +462,10 @@ export function RunView({
                 mode={mode}
                 selection={sel}
                 onSelect={select}
-                results={
-                  index && !disabled.includes('U')
-                    ? { instances: index.instances, frame, extent: runExtent(index) }
-                    : null
-                }
+                results={{ instances: index.instances, frame, bounds: displayMeta?.bounds?.extent ?? null }}
                 deformed={deformed}
                 resultComponent={component}
+                resultRange={rangeUnavailable ? null : resultRange}
                 resultLabel={legendLabel}
               />
             </div>
@@ -440,7 +493,15 @@ export function RunView({
                   }}
                 />
               </label>
-              <span>{index.frames[n].time.toFixed(3)} s</span>
+              <span>{shownEntry ? shownEntry.time.toFixed(3) + ' s' : '—'}</span>
+              {pendingFrame !== null && pendingFrame !== displayedFrame && (
+                <span className="loading-note">{t('run.loadingFrame')}</span>
+              )}
+              {frameError !== null && !play && (
+                <span className="error-text" role="alert">
+                  {t('run.frameFailed', { frame: frameError + 1 })}
+                </span>
+              )}
             </div>
             <div className="legend">
               <label className="check">
@@ -452,6 +513,9 @@ export function RunView({
                 {t('run.deformed')}
               </label>
               <span>{probeText}</span>
+              {displayMeta === null && (
+                <span className="notice">{t('run.displayMetadataFallback')}</span>
+              )}
             </div>
           </section>
           <aside className="card">

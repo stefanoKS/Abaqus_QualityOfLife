@@ -179,8 +179,10 @@ class Plane(Model):
 
 
 class Source(Model):
-    kind: Literal["synthetic", "dxf", "dwg"]
-    filename: str = Field(max_length=255)
+    # ``empty`` is an explicit state, not a blank drawing: the model exists,
+    # keeps its name, dimension and settings, and has no geometry at all.
+    kind: Literal["empty", "synthetic", "dxf", "dwg"]
+    filename: str = Field(default="", max_length=255)
     digest: str = Field(default="", max_length=64)
     drawing_units: str = Field(default="millimetres", max_length=128)
 
@@ -192,12 +194,14 @@ class Project(Model):
     formulation: Literal["plane_stress", "extrusion_preview"] = "plane_stress"
     units: Literal["N-mm-s-tonne"] = "N-mm-s-tonne"
     plane: Plane = Field(default_factory=Plane)
-    vertices: list[Vertex] = Field(min_length=2, max_length=8192)
-    edges: list[Edge] = Field(min_length=1, max_length=4096)
-    faces: list[Face] = Field(max_length=512)
-    components: list[Component] = Field(min_length=1, max_length=512)
-    materials: list[Material] = Field(max_length=256)
-    selections: list[Selection] = Field(max_length=128)
+    # Counts are enforced by the model validator so an explicitly empty model can
+    # exist while a drawing-backed model stays as strict as before.
+    vertices: list[Vertex] = Field(default_factory=list, max_length=8192)
+    edges: list[Edge] = Field(default_factory=list, max_length=4096)
+    faces: list[Face] = Field(default_factory=list, max_length=512)
+    components: list[Component] = Field(default_factory=list, max_length=512)
+    materials: list[Material] = Field(default_factory=list, max_length=256)
+    selections: list[Selection] = Field(default_factory=list, max_length=128)
     mounting: Mounting = Field(default_factory=Mounting)
     contact: Contact = Field(default_factory=Contact)
     motion: Motion = Field(default_factory=Motion)
@@ -205,6 +209,11 @@ class Project(Model):
     extrusion: Extrusion = Field(default_factory=Extrusion)
     analysis: Analysis = Field(default_factory=Analysis)
     source: Source
+
+    @property
+    def is_empty(self):
+        """True only for an explicit model that has not imported a drawing yet."""
+        return self.source.kind == "empty"
 
     @property
     def material_regions(self):
@@ -225,6 +234,18 @@ class Project(Model):
     def topology(self):
         if (self.dimension == "2D") != (self.formulation == "plane_stress"):
             raise ValueError("Choose plane stress for 2D or extrusion preview for 3D.")
+        if self.source.kind == "empty":
+            if self.vertices or self.edges or self.faces or self.components or self.materials or self.selections:
+                raise ValueError(
+                    "An empty model must not carry geometry, regions, selections or material "
+                    "cards. Import a drawing first."
+                )
+            return self
+        if len(self.vertices) < 2 or not self.edges or not self.components:
+            raise ValueError(
+                "A drawing-backed model needs at least two vertices, one section edge and "
+                "one component."
+            )
         groups = [
             self.vertices,
             self.edges,

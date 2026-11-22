@@ -1,5 +1,10 @@
 import { useEffect, useRef } from 'react'
 import Plotly from 'plotly.js-basic-dist-min'
+
+/**
+ * The curve is drawn once; the frame cursor is updated in place. Rebuilding the
+ * plot on every frame used to purge Plotly and reset the reader's axis zoom.
+ */
 export function Plot({
   x,
   y,
@@ -16,47 +21,91 @@ export function Plot({
   onPick?: (index: number) => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  const pick = useRef(onPick)
+  pick.current = onPick
+  const ready = useRef(false)
+  const bound = useRef(false)
+  const cursor = active !== undefined && x[active] !== undefined ? active : -1
+
+  // Mount: one resize observer. Click binding waits until Plotly has created the
+  // plot, because the div has no `on` method before that.
   useEffect(() => {
     const el = ref.current!
-    const plot = [
-      {
-        x,
-        y,
-        mode: 'lines+markers',
-        line: { color: '#197968', width: 2 },
-        marker: { size: 4 },
-        type: 'scatter',
-        hovertemplate: '%{x:.3g}, %{y:.3g}<extra></extra>',
-      },
-    ]
-    if (active !== undefined && x[active] !== undefined)
-      plot.push({
-        x: [x[active]],
-        y: [y[active]],
-        mode: 'markers',
-        type: 'scatter',
-        marker: { size: 10 },
-        line: { color: '#bf722b', width: 0 },
-        hovertemplate: '%{x:.3g}, %{y:.3g}<extra></extra>',
-      })
     let alive = true
-    Plotly.react(
+    const resize = new ResizeObserver(() => {
+      if (!alive || !ready.current || !el.isConnected) return
+      try {
+        Plotly.Plots.resize(el)
+      } catch {
+        // A hidden tab can briefly report a zero-sized plot; the next frame resizes it.
+      }
+    })
+    resize.observe(el)
+    return () => {
+      alive = false
+      ready.current = false
+      bound.current = false
+      resize.disconnect()
+      Plotly.purge(el)
+    }
+  }, [])
+
+  // Data or axis-title change: keep the reader's zoom if they have one.
+  useEffect(() => {
+    const el = ref.current!
+    const layout = (
+      el as unknown as {
+        layout?: { xaxis?: { range?: number[] }; yaxis?: { range?: number[] } }
+      }
+    ).layout
+    void Plotly.react(
       el,
-      plot,
+      [
+        {
+          x,
+          y,
+          mode: 'lines+markers',
+          line: { color: '#197968', width: 2 },
+          marker: { size: 4 },
+          type: 'scatter',
+          hovertemplate: '%{x:.3g}, %{y:.3g}<extra></extra>',
+        },
+        {
+          x: [],
+          y: [],
+          mode: 'markers',
+          type: 'scatter',
+          marker: { size: 10 },
+          line: { color: '#bf722b', width: 0 },
+          hovertemplate: '%{x:.3g}, %{y:.3g}<extra></extra>',
+        },
+      ],
       {
         autosize: true,
         margin: { l: 56, r: 15, b: 45, t: 14 },
         showlegend: false,
         font: { family: 'Segoe UI, sans-serif', size: 11 },
-        xaxis: { title: { text: xlabel }, gridcolor: '#e5ebed', zerolinecolor: '#bac7c9' },
-        yaxis: { title: { text: ylabel }, gridcolor: '#e5ebed', zerolinecolor: '#bac7c9' },
+        xaxis: {
+          title: { text: xlabel },
+          gridcolor: '#e5ebed',
+          zerolinecolor: '#bac7c9',
+          range: layout?.xaxis?.range,
+        },
+        yaxis: {
+          title: { text: ylabel },
+          gridcolor: '#e5ebed',
+          zerolinecolor: '#bac7c9',
+          range: layout?.yaxis?.range,
+        },
         paper_bgcolor: 'transparent',
         plot_bgcolor: 'transparent',
       },
       { displayModeBar: false, responsive: true },
     ).then(() => {
-      if (alive && onPick)
-        (
+      ready.current = true
+      if (!bound.current) {
+        bound.current = true
+        ;(
           el as unknown as {
             on: (
               key: string,
@@ -64,18 +113,23 @@ export function Plot({
             ) => void
           }
         ).on('plotly_click', (e) => {
-          if (e.points[0]?.curveNumber === 0) onPick(e.points[0].pointIndex)
+          if (e.points[0]?.curveNumber === 0) pick.current?.(e.points[0].pointIndex)
         })
+      }
+      restyleCursor(el, x, y, cursor)
     })
-    const resize = new ResizeObserver(() => {
-      if (alive) Plotly.Plots.resize(el)
-    })
-    resize.observe(el)
-    return () => {
-      alive = false
-      resize.disconnect()
-      Plotly.purge(el)
-    }
-  }, [x, y, xlabel, ylabel, active, onPick])
+  }, [x, y, xlabel, ylabel])
+
+  // Frame cursor only: Plotly.restyle never purges the plot or its axes.
+  useEffect(() => {
+    if (ready.current && ref.current) restyleCursor(ref.current, x, y, cursor)
+  }, [cursor, x, y])
+
   return <div ref={ref} className="plot" aria-label={ylabel + ' versus ' + xlabel} />
+}
+
+function restyleCursor(el: HTMLDivElement, x: number[], y: number[], index: number) {
+  const point = index >= 0 && x[index] !== undefined ? [x[index]] : []
+  const value = index >= 0 && y[index] !== undefined ? [y[index]] : []
+  void Plotly.restyle(el, { x: [point], y: [value] }, [1])
 }

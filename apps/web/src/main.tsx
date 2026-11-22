@@ -5,7 +5,7 @@ import logo from '../assets/logo.png'
 import Dashboard from './Dashboard'
 import Workspace from './Workspace'
 import { RunView } from './RunView'
-import { err, go, request, type Revision, type Summary, type Job } from './api'
+import { err, go, lastModel, rememberModel, request, type Revision, type Summary, type Job } from './api'
 import { I18nProvider, useI18n, type Language } from './i18n'
 import './theme/tokens.css'
 import './style.css'
@@ -36,8 +36,7 @@ function App() {
     [rev, setRev] = useState<Revision | null>(null),
     [job, setJob] = useState<Job | undefined>()
   const [message, toast] = useState(''),
-    [loadingError, setError] = useState(''),
-    [last, setLast] = useState('')
+    [loadingError, setError] = useState('')
   const notify = useCallback((s: string) => toast(s), [])
   useEffect(() => {
     const handler = () => {
@@ -45,7 +44,11 @@ function App() {
       toast('')
     }
     window.addEventListener('hashchange', handler)
-    return () => window.removeEventListener('hashchange', handler)
+    window.addEventListener('abaqus-qol:route', handler)
+    return () => {
+      window.removeEventListener('hashchange', handler)
+      window.removeEventListener('abaqus-qol:route', handler)
+    }
   }, [])
   const [view, id] = route.split('/')
   useEffect(() => {
@@ -61,27 +64,30 @@ function App() {
         rid = j.revision
         setJob(j)
       } else if (!rid) {
-        const projects = await request<Summary[]>('/api/projects', 'GET', undefined, ac.signal)
-        rid = projects[0]?.revision
-      }
-      if (!rid) {
+        // A workspace route without a model is not an invitation to pick one.
         go('dashboard')
         return
       }
       const r = await request<Revision>('/api/revisions/' + rid, 'GET', undefined, ac.signal)
-      if (view !== 'setup') setLast(r.project)
+      // Only an explicitly opened, editable model becomes the Workspace target.
+      if (view !== 'setup') rememberModel(r.project)
       setRev(r)
     }
     void open().catch((e) => {
-      if (!ac.signal.aborted) setError(err(e))
+      if (!ac.signal.aborted) {
+        setError(err(e) + (id ? ' · ' + id : ''))
+      }
     })
     return () => ac.abort()
   }, [view, id])
   async function workspace() {
     try {
       const ps = await request<Summary[]>('/api/projects')
-      const r = ps.find((p) => p.id === last) ?? ps[0]
-      go(r ? 'workspace/' + r.revision : 'dashboard')
+      const project = lastModel()
+      // Restore the last model the user opened, else show the dashboard. Never
+      // silently open whichever model happens to sort first.
+      const target = project ? ps.find((p) => p.id === project) : undefined
+      go(target ? 'workspace/' + target.revision : 'dashboard')
     } catch (e) {
       notify(err(e))
     }
@@ -128,7 +134,14 @@ function App() {
       ) : rev ? (
         <Workspace key={route + rev.id} initial={rev} locked={job} notify={notify} />
       ) : (
-        <main className="page">{loadingError || t('common.openingProject')}</main>
+        <main className="page">
+          <p role="alert" className={loadingError ? 'error-text' : undefined}>
+            {loadingError || t('common.openingProject')}
+          </p>
+          {loadingError && (
+            <button onClick={() => go('dashboard')}>{t('workspace.backToProjects')}</button>
+          )}
+        </main>
       )}
       {message && (
         <div role="alert" className="toast">

@@ -38,17 +38,22 @@ export function Viewport(props: ViewportProps) {
       props.dimension,
       props.mesh,
       props.results?.instances,
+      props.results?.bounds,
       props.results?.frame,
       props.deformed,
       props.panelOffset,
       props.resultComponent,
+      props.resultRange,
       colorsKey,
       hiddenKey,
     ],
   )
   // Keep the view stable through frame changes while fitting newly loaded topology.
   const resultExtent = useMemo(() => {
-    if (!props.results?.instances.length) return ''
+    if (!props.results) return ''
+    const recorded = props.results.bounds
+    if (Array.isArray(recorded) && recorded.length === 6) return recorded.join(',')
+    if (!props.results.instances.length) return ''
     const ext = [Infinity, -Infinity, Infinity, -Infinity, Infinity, -Infinity]
     for (const instance of props.results.instances)
       for (const row of instance.nodes) {
@@ -58,7 +63,7 @@ export function Viewport(props: ViewportProps) {
         }
       }
     return ext.join(',')
-  }, [props.results?.instances])
+  }, [props.results?.instances, props.results?.bounds])
   const fitKey = [
     props.dimension,
     resultExtent || props.display?.bounds.join(','),
@@ -276,7 +281,9 @@ export function Viewport(props: ViewportProps) {
   }, [fixtureKey, props.selectedNodes])
 
   return (
-    <div className="seal-viewport" data-testid="vtk-viewport" data-dimension={props.dimension}>
+    <div className="seal-viewport" data-testid="vtk-viewport" data-dimension={props.dimension}
+      data-frame-time={props.results?.frame ? String(props.results.frame.time) : ''}
+      data-scene-actors={scene.surfaces.length}>
       <div
         className="seal-vtk-host"
         ref={host}
@@ -325,7 +332,14 @@ export function Viewport(props: ViewportProps) {
         </div>
       ) : (
         scene.surfaces.length === 0 && (
-          <div className="seal-vtk-empty">{t('viewport.noGeometry')}</div>
+          <div className="seal-vtk-empty">
+            <span>{t('viewport.noGeometry')}</span>
+            {props.onEmptyAction && (
+              <button type="button" onClick={props.onEmptyAction}>
+                {props.emptyActionLabel ?? t('import.action')}
+              </button>
+            )}
+          </div>
         )
       )}
       {props.results && (

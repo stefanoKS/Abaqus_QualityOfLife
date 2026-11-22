@@ -24,7 +24,7 @@ import {
 import Viewport from './Viewport'
 import type { Display, ViewMesh, Picked, SelectionMode } from './viewportModel'
 import { Plot } from './Plot'
-import { artifact, err, go, request, type FixtureInfo, type Job, type Project, type Revision } from './api'
+import { artifact, err, go, replaceRoute, request, type FixtureInfo, type Job, type Project, type Revision } from './api'
 import { useI18n, labelFrom } from './i18n'
 import type { TranslationKey } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
@@ -33,7 +33,13 @@ import { NumberInput } from './shared/components/NumberInput'
 import { AssemblyTree } from './features/workspace/AssemblyTree'
 import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
 import { orderedStates } from './features/workspace/workflowStates'
-import { MESH_STAGES, STAGE, stageId, stageMode } from './features/workspace/stages'
+import {
+  MESH_STAGES,
+  STAGE,
+  STAGE_ORDER,
+  stageId,
+  stageMode,
+} from './features/workspace/stages'
 import {
   MaterialEditor,
   freshCard,
@@ -49,22 +55,48 @@ export default function Workspace({ initial, locked, notify }: Props) {
   const { t } = useI18n()
   const [rev, setRev] = useState(initial),
     [p, setP] = useState(initial.setup)
-  const [stage, setStage] = useState(1),
-    [mode, setMode] = useState<SelectionMode>('component')
-  const [pick, select] = useState<Picked | null>({
-    kind: 'component',
-    id: p.components[0].id,
-    component: p.components[0].id,
+  const [stage, setStage] = useState(() => {
+    // An empty model opens at Import. The stage is remembered per revision and
+    // per model so a save-induced remount cannot send the user back to step one.
+    try {
+      const saved =
+        sessionStorage.getItem('stage:' + initial.id) ??
+        sessionStorage.getItem('stage-project:' + initial.project)
+      if (saved !== null) return Math.max(0, Math.min(STAGE_ORDER.length - 1, Number(saved) || 0))
+    } catch {
+      // Storage denial falls back to the explicit default.
+    }
+    return initial.setup.source.kind === 'empty' ? STAGE.import : STAGE.components
+  }),
+    [mode, setMode] = useState<SelectionMode>(() => {
+      const id = stageId(stage)
+      return id === 'materials' ? 'face' : id === 'mesh' ? 'edge' : id === 'mounting' ? 'node' : 'component'
+    })
+  const [pick, select] = useState<Picked | null>(() => {
+    // A restored stage must restore a matching selection, or its editor would
+    // render without an entity after a save-triggered remount.
+    const face = p.faces[0]
+    if (stage === STAGE.materials && face)
+      return { kind: 'face', id: face.id, entity: face.id, component: face.component }
+    const edge = p.edges[0]
+    if (stage === STAGE.mesh && edge)
+      return { kind: 'edge', id: edge.id, entity: edge.id, component: edge.component }
+    return p.components[0]
+      ? { kind: 'component', id: p.components[0].id, component: p.components[0].id }
+      : null
   })
   const [hidden, hide] = useState<string[]>([]),
     [display, setDisplay] = useState<Display | null>(null)
   const [meshJobs, setMeshJobs] = useState<Job[]>([]),
     [deckJobs, setDeckJobs] = useState<Job[]>([]),
     [meshFile, setMeshFile] = useState<Mesh | null>(null),
-    [showMesh, setShowMesh] = useState(false)
+    [showMesh, setShowMesh] = useState(() => MESH_STAGES.includes(stageId(stage)))
+  // A just-queued deck must become the visible deck before submission, or the
+  // server would correctly reject an older deck as superseded.
+  const [pendingDeck, setPendingDeck] = useState<string | null>(null)
   // Fixed-node fixture review: a pending selection is shown but not stored until
   // Save, so a rectangle can be corrected before it becomes WSFIX.
-  const [fixtureMode, setFixtureMode] = useState(false),
+  const [fixtureMode, setFixtureMode] = useState(() => stageId(stage) === 'mounting'),
     [pendingFixture, setPendingFixture] = useState<string[] | null>(null),
     [boxOperation, setBoxOperation] = useState<'replace' | 'add' | 'subtract'>('replace')
   const [working, setBusy] = useState(false),
@@ -73,10 +105,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
     [generation, refresh] = useState(0)
   const [cap, setCap] = useState<Record<string, string>>({}),
     [related, setRelated] = useState<Job[]>([])
-  const [execution, setExecution] = useState('DEMO'),
-    [scenario, setScenario] = useState('success'),
-    [runName, setRunName] = useState(() => t('review.defaultRunName')),
+  const [runName, setRunName] = useState(() => t('review.defaultRunName')),
     [cpus, setCpus] = useState(1)
+  // Regeneration supersedes a reviewed fixture, so it is a deliberate choice.
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false)
+  // A submitted setup replays its own archived mesh, never the newest one.
+  const [archived, setArchived] = useState<{ mesh: Job | null; error: string }>({
+    mesh: null,
+    error: '',
+  })
   const [unitConfirmed, confirmUnit] = useState(false),
     [expanded, expand] = useState<string[]>([])
   const [activeMaterial, setActiveMaterial] = useState<string | null>(p.materials[0]?.id ?? null)
@@ -116,8 +153,17 @@ export default function Workspace({ initial, locked, notify }: Props) {
             undefined,
             ac.signal,
           )
+          if (next.project !== rev.project) {
+            throw new Error(t('import.otherModel'))
+          }
           clear()
-          history.replaceState(null, '', '#workspace/' + next.id)
+          try {
+            sessionStorage.setItem('stage:' + next.id, String(STAGE.components))
+            sessionStorage.setItem('stage-project:' + next.project, String(STAGE.components))
+          } catch {
+            // The remount falls back to Components for a drawing-backed model.
+          }
+          replaceRoute('workspace/' + next.id)
           setRev(next)
           setP(next.setup)
           setActiveMaterial(next.setup.materials[0]?.id ?? null)
@@ -146,6 +192,43 @@ export default function Workspace({ initial, locked, notify }: Props) {
   useEffect(() => {
     request<Record<string, string>>('/api/capabilities').then(setCap).catch(problem)
   }, [problem])
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('stage:' + rev.id, String(stage))
+      sessionStorage.setItem('stage-project:' + rev.project, String(stage))
+    } catch {
+      // Remembering the step is a convenience; the workflow stays usable without it.
+    }
+  }, [stage, rev.id, rev.project])
+  useEffect(() => {
+    // A submitted setup is replayed through the mesh job its deck recorded, and
+    // only when every recorded digest agrees. The newest compatible mesh is never
+    // substituted for the archived one.
+    if (!locked) {
+      setArchived({ mesh: null, error: '' })
+      return
+    }
+    const ac = new AbortController()
+    async function resolve() {
+      try {
+        const deck = await request<Job>('/api/jobs/' + locked!.build, 'GET', undefined, ac.signal)
+        if (!deck.mesh) throw new Error(t('mesh.archiveMissing'))
+        const mesh = await request<Job>('/api/jobs/' + deck.mesh, 'GET', undefined, ac.signal)
+        if (
+          !mesh.mesh_digest ||
+          mesh.mesh_digest !== deck.mesh_digest ||
+          (locked!.mesh_digest && locked!.mesh_digest !== mesh.mesh_digest)
+        ) {
+          throw new Error(t('mesh.archiveMismatch'))
+        }
+        setArchived({ mesh, error: '' })
+      } catch (e) {
+        if (!ac.signal.aborted) setArchived({ mesh: null, error: err(e) })
+      }
+    }
+    void resolve()
+    return () => ac.abort()
+  }, [locked, t])
   useEffect(() => {
     const ac = new AbortController()
     request<Display>('/api/display', 'POST', p, ac.signal)
@@ -199,27 +282,54 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // A submitted setup replays the fixture archived with its deck, never the live
   // selection for the current mesh.
   const archivedFixture = locked?.fixture_labels ?? null
-  const shownFixture = archivedFixture ?? pendingFixture ?? fixture?.labels ?? []
+  // The displayed mesh is the archived one only after its identity is verified.
+  const verifiedMesh = locked ? archived.mesh : compatibleMesh
+  const shownFixture = locked
+    ? archived.mesh
+      ? (archivedFixture ?? [])
+      : []
+    : (pendingFixture ?? fixture?.labels ?? [])
   // A changed or cleared selection must block preparation and submission until
   // it is saved or discarded.
   const fixturePending = pendingFixture !== null
   const motionValid = p.motion.travel < 0 && p.motion.duration > 0
-  const deck =
-    deckJobs.find(
-      (j) => j.revision === rev.id && j.mesh === compatibleMesh?.id && j.status === 'Completed',
-    ) ?? null
+  const deck = pendingDeck
+    ? (deckJobs.find((j) => j.id === pendingDeck) ?? null)
+    : (deckJobs.find(
+        (j) => j.revision === rev.id && j.mesh === compatibleMesh?.id && j.status === 'Completed',
+      ) ?? null)
+  // The server treats the newest deck for the revision as the only submittable one.
+  const newestDeck = deckJobs.find((j) => j.revision === rev.id) ?? null
   // A deck prepared before the fixture changed is stale even for the same mesh.
-  const deckReady = !!deck && !!fixture && deck.fixture_hash === fixture.hash
+  const deckReady =
+    !!deck &&
+    deck.status === 'Completed' &&
+    deck.id === newestDeck?.id &&
+    !!fixture &&
+    deck.fixture_hash === fixture.hash
   useEffect(() => {
-    // Only a change of the active mesh resets the review, never a poll or a save.
+    if (!pendingDeck) return
+    const pending = deckJobs.find((job) => job.id === pendingDeck)
+    if (!pending) return
+    if (pending.status === 'Completed') setPendingDeck(null)
+    else if (pending.status === 'Failed' || pending.status === 'Cancelled') {
+      setPendingDeck(null)
+      message(pending.diagnostic || t('mesh.deckFailed'))
+    }
+  }, [pendingDeck, deckJobs, t])
+  useEffect(() => {
+    setPendingDeck(null)
+  }, [rev.id])
+  useEffect(() => {
+    // Only a change of the displayed mesh resets the review, never a poll or a save.
     setPendingFixture(null)
     setFixtureMode(false)
-    if (!compatibleMesh) {
+    if (!verifiedMesh) {
       setMeshFile(null)
       return
     }
     const ac = new AbortController()
-    request<Mesh>(artifact(compatibleMesh.id, 'mesh.json'), 'GET', undefined, ac.signal)
+    request<Mesh>(artifact(verifiedMesh.id, 'mesh.json'), 'GET', undefined, ac.signal)
       .then(setMeshFile)
       .catch((e) => {
         if (!ac.signal.aborted) {
@@ -228,7 +338,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
         }
       })
     return () => ac.abort()
-  }, [compatibleMesh?.id, problem])
+  }, [verifiedMesh?.id, problem])
   useEffect(() => {
     setPlacement(null)
     if (!deck?.manifest.includes('result-metadata.json')) return
@@ -272,7 +382,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     (c) => c.id === (pick?.component ?? face?.component ?? edge?.component ?? pick?.id),
   )
   const mat = p.materials.find((m) => m.id === face?.material)
-  const mount = p.selections.find((s) => s.id === p.mounting.selection)!
+  const mount = p.selections.find((s) => s.id === p.mounting.selection)
   const colors = useMemo(
     () =>
       Object.fromEntries(
@@ -324,12 +434,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
     setMode(next)
     if (next === 'component') {
       const c = component ?? p.components[0]
-      select({ kind: next, id: c.id, component: c.id })
+      select(c ? { kind: next, id: c.id, component: c.id } : null)
     } else if (next === 'face' && p.faces.length) {
       const f = face ?? p.faces[0]
       select({ kind: next, id: f.id, entity: f.id, component: f.component })
-    } else if (next === 'edge') {
-      const e = edge ?? p.edges.find((e) => mount.entities.includes(e.id)) ?? p.edges[0]
+    } else if (next === 'edge' && p.edges.length) {
+      const e =
+        edge ??
+        p.edges.find((item) => mount?.entities.includes(item.id)) ??
+        p.edges[0]
       select({ kind: next, id: e.id, entity: e.id, component: e.component })
     } else select(null)
   }
@@ -346,7 +459,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
       base: rev.id,
       setup: p,
     })
-    history.replaceState(null, '', '#workspace/' + saved.id)
+    replaceRoute('workspace/' + saved.id)
     setRev(saved)
     setP(saved.setup)
     // The mesh is not cleared: its identity decides whether it is still reusable.
@@ -378,14 +491,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
     message('')
   }
   async function prepareDeck() {
-    if (!compatibleMesh || !fixtureReviewed) return
-    await request<Job>('/api/decks', 'POST', {
+    if (!compatibleMesh || !fixtureReviewed || pendingDeck) return
+    const job = await request<Job>('/api/decks', 'POST', {
       revision: rev.id,
       token: crypto.randomUUID(),
       mesh: compatibleMesh.id,
     })
+    setPendingDeck(job.id)
     refresh((g) => g + 1)
-    message('')
+    message(t('mesh.preparingDeck'))
   }
   async function saveFixture(labels: string[]) {
     if (!compatibleMesh) return
@@ -426,8 +540,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
       deck: deck.id,
       token: token.current,
       cpus,
-      mode: execution,
-      scenario: execution === 'DEMO' ? scenario : 'success',
+      mode: 'ABAQUS',
     })
     token.current = crypto.randomUUID()
     go('diagnostics/' + r.id)
@@ -496,7 +609,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
             <i />
             N–mm–s–tonne
             <i />
-            {p.source.kind === 'synthetic' ? t('workspace.synthetic') : p.source.filename}
+            {p.source.kind === 'synthetic' ? t('workspace.synthetic') : p.source.kind === 'empty' ? t('workspace.noDrawing') : p.source.filename}
           </div>
         </div>
         <div className="actions">
@@ -669,6 +782,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
               selectedNodes={shownFixture}
               nodeInstances={['WS-1']}
               onBoxSelect={boxSelect}
+              emptyActionLabel={t('import.action')}
+              onEmptyAction={
+                p.source.kind === 'empty' ? () => changeStage(STAGE.import) : undefined
+              }
             />
           </div>
           <div className="legend">
@@ -718,11 +835,19 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </label>
                   <Facts
                     rows={[
-                      [t('import.source'), p.source.filename],
+                      [
+                        t('import.source'),
+                        p.source.kind === 'empty' ? t('import.none') : p.source.filename,
+                      ],
                       [t('import.sectionPlane'), 'XY · Z = 0'],
                       [t('import.units'), 'N–mm–s–tonne'],
                     ]}
                   />
+                  {p.source.kind === 'empty' && (
+                    <p className="notice" data-testid="no-drawing">
+                      {t('import.noDrawing')}
+                    </p>
+                  )}
                   {rev.source_id && (
                     <a className="asset" href={'/api/revisions/' + rev.id + '/drawing'} download>
                       <ArrowDownToLine />
@@ -1215,18 +1340,45 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </label>
                 </>
               )}
-              {(stage === STAGE.mesh || stage === STAGE.review) && !dimension && (
+              {stage === STAGE.mesh && !dimension && (
                 <>
                   <h3>{t('mesh.meshSection')}</h3>
-                  <button
-                    className="primary wide"
-                    disabled={busy || !!blockedReason}
-                    title={blockedReason || undefined}
-                    onClick={() => execute(generate)}
-                  >
-                    <Grid2X2 />
-                    {t('mesh.generate')}
-                  </button>
+                  {confirmRegenerate && compatibleMesh ? (
+                    <div className="notice" role="alertdialog" data-testid="regenerate-confirm">
+                      <p>
+                        {t('mesh.regeneratePrompt', {
+                          count: compatibleMesh.fixture?.count ?? 0,
+                        })}
+                      </p>
+                      <div className="fixture-actions">
+                        <button
+                          className="primary"
+                          onClick={() => {
+                            setConfirmRegenerate(false)
+                            void execute(generate)
+                          }}
+                        >
+                          {t('mesh.regenerate')}
+                        </button>
+                        <button onClick={() => setConfirmRegenerate(false)}>
+                          {t('common.cancel')}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      className="primary wide"
+                      disabled={busy || !!blockedReason}
+                      title={blockedReason || undefined}
+                      onClick={() => {
+                        if (fixtureReviewed && compatibleMesh) setConfirmRegenerate(true)
+                        else void execute(generate)
+                      }}
+                    >
+                      <Grid2X2 />
+                      {t('mesh.generate')}
+                    </button>
+                  )}
                   {meshJob && !dirty && (
                     <div className="build-info" data-testid="mesh-status">
                       <strong>
@@ -1247,6 +1399,52 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       clearance={placement?.initial_vertical_mesh_clearance_mm ?? null}
                     />
                   )}
+                </>
+              )}
+              {stage === STAGE.review && !dimension && compatibleMesh && !locked && (
+                <>
+                  <h3>{t('review.meshIdentity')}</h3>
+                  <Facts
+                    rows={[
+                      [t('mesh.meshDigest'), compatibleMesh.mesh_digest?.slice(0, 12) ?? '—'],
+                      [t('review.meshNodes'), quality?.nodes ?? '—'],
+                      [t('review.meshElements'), quality?.elements ?? '—'],
+                      [
+                        t('review.fixedNodes'),
+                        fixture ? fixture.count : t('hint.fixtureRequired'),
+                      ],
+                    ]}
+                  />
+                  <p>{t('review.meshOwnedByMesh')}</p>
+                  {quality && meshFile && !dirty && (
+                    <MeshReview
+                      quality={quality}
+                      project={p}
+                      clearance={placement?.initial_vertical_mesh_clearance_mm ?? null}
+                    />
+                  )}
+                  <button className="wide" onClick={() => changeStage(STAGE.mesh)}>
+                    <Grid2X2 />
+                    {t('review.goToMesh')}
+                  </button>
+                </>
+              )}
+              {locked && (
+                <>
+                  <h3>{t('review.archivedMesh')}</h3>
+                  {archived.mesh ? (
+                    <Facts
+                      rows={[
+                        [t('mesh.meshDigest'), archived.mesh.mesh_digest?.slice(0, 12) ?? '—'],
+                        [t('review.fixedNodes'), archivedFixture?.length ?? 0],
+                      ]}
+                    />
+                  ) : (
+                    <p className="error-text" data-testid="archive-mesh-error">
+                      {archived.error || t('mesh.archiveResolving')}
+                    </p>
+                  )}
+                  <p>{t('review.archivedMeshHelp')}</p>
                 </>
               )}
               {locked && archivedFixture && (
@@ -1316,6 +1514,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       {t('mesh.discard')}
                     </button>
                   </div>
+                  <small>{t('mesh.regenerateClears')}</small>
                   <button
                     className="wide"
                     disabled={!shownFixture.length && !pendingFixture}
@@ -1326,14 +1525,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   {fixturePending && (
                     <small>{t('mesh.fixtureUnsaved', { count: pendingFixture.length })}</small>
                   )}
-                  {!fixture && !archivedFixture && mount.entities.length > 0 && (
+                  {!fixture && !archivedFixture && (mount?.entities.length ?? 0) > 0 && (
                     <button
                       className="wide"
                       disabled={busy}
                       onClick={() => execute(resolveLegacyFixture)}
                     >
                       <ScanLine />
-                      {t('mesh.resolveEdges', { count: mount.entities.length })}
+                      {t('mesh.resolveEdges', { count: mount?.entities.length ?? 0 })}
                     </button>
                   )}
                 </>
@@ -1365,9 +1564,13 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 <>
                   <h3>{t('mesh.deckSection')}</h3>
                   <p>{t('review.prepareHint')}</p>
+                  <p>{t('review.prepareNeverMesh')}</p>
+                  <p>{t('review.deckAfterEdit')}</p>
                   <button
                     className="primary wide"
-                    disabled={busy || !fixtureReviewed || !motionValid || fixturePending}
+                    disabled={
+                      busy || !fixtureReviewed || !motionValid || fixturePending || !!pendingDeck
+                    }
                     title={
                       fixturePending
                         ? t('hint.fixturePending')
@@ -1408,46 +1611,16 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       onChange={(e) => setRunName(e.target.value)}
                     />
                   </label>
-                  <label>
-                    {t('review.mode')}
-                    <select
-                      value={execution}
-                      onChange={(e) => {
-                        setExecution(e.target.value)
-                        token.current = crypto.randomUUID()
-                      }}
-                    >
-                      <option value="DEMO">{t('mode.demo')}</option>
-                      <option value="ABAQUS">{t('mode.abaqus')}</option>
-                    </select>
-                  </label>
-                  {execution === 'DEMO' ? (
-                    <>
-                      <small className="mode-label">{t('demo.notice')}</small>
-                      <label>
-                        {t('review.scenario')}
-                        <select value={scenario} onChange={(e) => setScenario(e.target.value)}>
-                          <option value="success">{t('review.scenarioSuccess')}</option>
-                          <option value="failure">{t('review.scenarioFailure')}</option>
-                          <option value="slow">{t('review.scenarioSlow')}</option>
-                          <option value="extraction_failure">{t('review.scenarioExtraction')}</option>
-                        </select>
-                      </label>
-                    </>
-                  ) : (
-                    <>
-                      <small>{cap.abaqus}</small>
-                      <NumberInput
-                        label={t('review.cpus')}
-                        value={cpus}
-                        min={1}
-                        max={32}
-                        step="1"
-                        rangeHint="1 – 32"
-                        onChange={setCpus}
-                      />
-                    </>
-                  )}
+                  <small>{cap.abaqus}</small>
+                  <NumberInput
+                    label={t('review.cpus')}
+                    value={cpus}
+                    min={1}
+                    max={32}
+                    step="1"
+                    rangeHint="1 – 32"
+                    onChange={setCpus}
+                  />
                   <button
                     className="primary wide"
                     disabled={
@@ -1456,21 +1629,21 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       busy ||
                       fixturePending ||
                       !runName.trim() ||
-                      (execution === 'ABAQUS' && cap.abaqus !== 'Configured')
+                      cap.abaqus !== 'Configured'
                     }
                     title={
                       fixturePending
                         ? t('hint.fixturePending')
                         : !deckReady
                           ? t('hint.deckRequired')
-                          : execution === 'ABAQUS' && cap.abaqus !== 'Configured'
+                          : cap.abaqus !== 'Configured'
                             ? cap.abaqus
                             : undefined
                     }
                     onClick={() => execute(submit)}
                   >
                     <Play />
-                    {execution === 'ABAQUS' ? t('review.submitLicensed') : t('review.submitDemo')}
+                    {t('review.submitLicensed')}
                   </button>
                 </>
               )}
@@ -1519,7 +1692,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
             deck?.diagnostic ||
             (busy
               ? t('status.working')
-              : fixtureMode
+              : fixtureMode && mode === 'node'
                 ? t('status.fixtureSelection', {
                     count: shownFixture.length,
                   })

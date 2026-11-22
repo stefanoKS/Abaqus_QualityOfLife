@@ -128,6 +128,61 @@ def result_header(metadata, mode, instances):
     }
 
 
+def display_metadata(directory, result):
+    """Run-wide camera bounds and per-component colour ranges.
+
+    Computed once from the stored frames so playback never rescales the legend
+    or refits the camera per frame, and never needs the whole history in the
+    browser. The values are display metadata; the recorded fields are untouched.
+    """
+    directory = Path(directory)
+    undeformed = [float("inf"), float("-inf")] * 3
+    deformed = [float("inf"), float("-inf")] * 3
+    ranges = {name: 0.0 for name in ("magnitude", "U1", "U2", "U3")}
+    present = set()
+    for entry in result["frames"]:
+        frame = json.loads((directory / entry["file"]).read_text(encoding="utf-8"))
+        displacements = frame.get("displacements") or {}
+        for instance in result["instances"]:
+            rows = displacements.get(instance["name"]) or []
+            by_label = {row[0]: row for row in rows}
+            for node in instance["nodes"]:
+                label, x, y, z = node[0], node[1], node[2], node[3]
+                for axis, value in enumerate((x, y, z)):
+                    undeformed[2 * axis] = min(undeformed[2 * axis], value)
+                    undeformed[2 * axis + 1] = max(undeformed[2 * axis + 1], value)
+                row = by_label.get(label)
+                if not row:
+                    continue
+                u = (row[1] if len(row) > 1 else 0.0, row[2] if len(row) > 2 else 0.0,
+                     row[3] if len(row) > 3 else 0.0)
+                present.update(("U1", "U2", "magnitude"))
+                if len(row) > 3:
+                    present.add("U3")
+                for axis, value in enumerate((x + u[0], y + u[1], z + u[2])):
+                    deformed[2 * axis] = min(deformed[2 * axis], value)
+                    deformed[2 * axis + 1] = max(deformed[2 * axis + 1], value)
+                for name, value in (
+                    ("magnitude", (u[0] ** 2 + u[1] ** 2 + u[2] ** 2) ** 0.5),
+                    ("U1", abs(u[0])),
+                    ("U2", abs(u[1])),
+                    ("U3", abs(u[2])),
+                ):
+                    ranges[name] = max(ranges[name], value)
+    finite = lambda box: all(abs(v) != float("inf") for v in box)  # noqa: E731
+    undeformed = undeformed if finite(undeformed) else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    deformed = deformed if finite(deformed) else list(undeformed)
+    extent = [
+        min(undeformed[i], deformed[i]) if i % 2 == 0 else max(undeformed[i], deformed[i])
+        for i in range(6)
+    ]
+    return {
+        "version": 1,
+        "bounds": {"undeformed": undeformed, "deformed": deformed, "extent": extent},
+        "ranges": {name: value for name, value in ranges.items() if name in present},
+    }
+
+
 def save_frame(directory, result, frame):
     filename = f"frame-{len(result['frames']):05d}.json"
     frame.update({"version": 1, "mode": result["mode"], "notice": result["notice"]})
@@ -178,5 +233,8 @@ def finish(directory, result):
                 ]
             )
     os.replace(tmp, path)
+    # A single bounded pass over the stored frames records the run-wide camera
+    # bounds and colour ranges before the index is published.
+    result["display"] = display_metadata(directory, result)
     # Publish the index only after every listed frame and history has reached disk.
     write_json(directory / "results.json", result)

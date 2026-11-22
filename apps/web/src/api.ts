@@ -53,6 +53,36 @@ export function go(route: string) {
   location.hash = route
 }
 
+/**
+ * Replace the current history entry without losing the in-page state that the
+ * caller already updated, and tell the router to reread the URL. A save or a
+ * completed import therefore leaves the URL, the router and the displayed
+ * revision describing the same model.
+ */
+export function replaceRoute(route: string) {
+  history.replaceState(null, '', '#' + route)
+  window.dispatchEvent(new Event('abaqus-qol:route'))
+}
+
+const LAST_MODEL = 'abaqus-qol.lastModel'
+
+/** Remember the model the user explicitly opened, never a substituted one. */
+export function rememberModel(project: string) {
+  try {
+    localStorage.setItem(LAST_MODEL, project)
+  } catch {
+    // Private-mode storage denial only loses the convenience, not the model.
+  }
+}
+
+export function lastModel(): string | null {
+  try {
+    return localStorage.getItem(LAST_MODEL)
+  } catch {
+    return null
+  }
+}
+
 export function err(e: unknown) {
   return e instanceof Error ? e.message : String(e)
 }

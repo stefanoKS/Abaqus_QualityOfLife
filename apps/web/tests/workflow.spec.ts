@@ -8,6 +8,7 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
   await page.goto('/#dashboard')
   await page.getByRole('button', { name: 'New project' }).click()
   await page.getByLabel('Project name').fill('Closure test')
+  await page.getByLabel('Start from the public example section').check()
   await page.getByRole('button', { name: 'Create project' }).click()
   const workflow = page.getByRole('navigation', { name: 'Workflow' })
   await workflow.getByRole('button', { name: 'Motion' }).click()
@@ -36,7 +37,7 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
     timeout: 60000,
   })
   await workflow.getByRole('button', { name: 'Review / Run' }).click()
-  const submit = page.getByRole('button', { name: 'Submit demo run' })
+  const submit = page.getByRole('button', { name: 'Submit Abaqus analysis' })
   await expect(submit).toBeEnabled({ timeout: 20000 })
   // Inspect the executable deck for this exact revision.
   const link = await page.getByRole('link', { name: 'Inspect input deck' }).getAttribute('href')
@@ -47,9 +48,7 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
   await page.reload()
   await page.getByRole('button', { name: 'Results', exact: true }).click({ timeout: 30000 })
   await expect(page.getByRole('heading', { name: 'Force–displacement' })).toBeVisible()
-  await expect(page.locator('.run-banner')).toContainText(
-    'DEMO — synthetic results, not an Abaqus analysis.',
-  )
+  await expect(page.locator('.run-banner')).toContainText('ABAQUS')
   await expect(page.locator('.js-plotly-plot')).toBeVisible()
   await page.getByRole('button', { name: 'Play frames' }).click()
   await expect.poll(() => page.getByRole('slider').inputValue()).not.toBe('0')
@@ -59,11 +58,17 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
   await page.getByLabel('Deformed geometry').uncheck()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const viewport = (await page.getByRole('application').boundingBox())!
-  const scale = Math.min(viewport.width / 24, viewport.height / 14) / 1.2
+  const metadata = await (
+    await page.request.get('/api/jobs/' + runId + '/display-metadata')
+  ).json()
+  const [xmin, xmax, ymin, ymax] = metadata.bounds.extent as number[]
+  const scale = Math.min(viewport.width / (xmax - xmin), viewport.height / (ymax - ymin)) / 1.2
+  const cx = (xmin + xmax) / 2,
+    cy = (ymin + ymax) / 2
   // Mounting-foot vertex at (-9, 0) in the undeformed synthetic section.
   await page.mouse.click(
-    viewport.x + viewport.width / 2 - 9 * scale,
-    viewport.y + viewport.height / 2 + 7 * scale,
+    viewport.x + viewport.width / 2 + (-9 - cx) * scale,
+    viewport.y + viewport.height / 2 - (0 - cy) * scale,
   )
   await expect(page.locator('.legend')).toContainText('WS-1 · node')
   await expect(page.locator('.legend')).toContainText('|U| 0.000 mm')
@@ -77,7 +82,7 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
   await expect(page.getByRole('slider')).toHaveValue('16')
   expect(
     await (await page.request.get('/api/jobs/' + runId + '/artifacts/history.csv')).text(),
-  ).toContain('DEMO — synthetic results')
+  ).toContain('MANUFACTURED TEST EVIDENCE')
   await page.reload()
   await expect(page.getByRole('slider')).toBeVisible()
   await page.goto(savedURL)

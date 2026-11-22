@@ -11,10 +11,13 @@ from uuid import uuid4
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fake_abaqus import install  # noqa: E402
 
 
 def test_api_process_restart_with_external_worker(tmp_path):
     env = dict(os.environ, SEAL_DATA=str(tmp_path))
+    env["SIMPLIFY_ABAQUS_LAUNCHER"] = str(install(tmp_path))
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
@@ -50,8 +53,11 @@ def test_api_process_restart_with_external_worker(tmp_path):
     worker = launch("-m", "services.worker", "--stop-file", str(stop))
     try:
         with httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False) as http:
-            project = wait(lambda: http.get("/api/projects").json())[0]
-            base = {"revision": project["revision"], "token": str(uuid4())}
+            wait(lambda: http.get("/api/health").json().get("status") == "ready")
+            project = http.post(
+                "/api/projects", json={"name": "Restart proof", "example": True}
+            ).raise_for_status().json()
+            base = {"revision": project["id"], "token": str(uuid4())}
             mesh = http.post("/api/meshes", json=base).raise_for_status().json()
             wait(lambda: http.get("/api/jobs/" + mesh["id"]).json()["status"] == "Completed")
             labels = (
@@ -64,14 +70,14 @@ def test_api_process_restart_with_external_worker(tmp_path):
             ).raise_for_status()
             deck = http.post(
                 "/api/decks",
-                json={"revision": project["revision"], "token": str(uuid4()), "mesh": mesh["id"]},
+                json={"revision": project["id"], "token": str(uuid4()), "mesh": mesh["id"]},
             ).raise_for_status().json()
             wait(lambda: http.get("/api/jobs/" + deck["id"]).json()["status"] == "Completed")
             body = {
-                "revision": project["revision"],
+                "revision": project["id"],
                 "token": str(uuid4()),
                 "name": "Restart proof",
-                "mode": "DEMO",
+                "mode": "ABAQUS",
                 "deck": deck["id"],
             }
             run = http.post("/api/runs", json=body).raise_for_status().json()
@@ -80,12 +86,12 @@ def test_api_process_restart_with_external_worker(tmp_path):
             server = api()
             wait(lambda: http.get("/api/jobs/" + run["id"]).json()["status"] == "Completed")
             assert (
-                http.get("/api/revisions/" + project["revision"]).json()["setup"]["name"]
-                == project["name"]
+                http.get("/api/revisions/" + project["id"]).json()["setup"]["name"]
+                == project["setup"]["name"]
             )
             assert (
                 http.get("/api/jobs/" + run["id"] + "/artifacts/results.json").json()["mode"]
-                == "DEMO"
+                == "ABAQUS"
             )
             assert len(http.get("/api/runs").json()) == 1
     finally:

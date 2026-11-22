@@ -8,7 +8,16 @@ from fastapi.testclient import TestClient
 from services import store
 from services.api.main import app
 from services.worker.__main__ import once
-from support import legacy_fixture, post, prepare_mesh, run_worker, save_fixture
+from fake_abaqus import install as install_fake_abaqus
+from support import (
+    create_model,
+    legacy_fixture,
+    post,
+    prepare_mesh,
+    run_worker,
+    save_fixture,
+    start_run,
+)
 
 SEAL = "WS-1"
 
@@ -16,7 +25,7 @@ SEAL = "WS-1"
 @pytest.fixture()
 def client(monkeypatch, tmp_path):
     monkeypatch.setenv("SEAL_DATA", str(tmp_path))
-    monkeypatch.delenv("SIMPLIFY_ABAQUS_LAUNCHER", raising=False)
+    monkeypatch.setenv("SIMPLIFY_ABAQUS_LAUNCHER", str(install_fake_abaqus(tmp_path)))
     monkeypatch.delenv("SEAL_ODA", raising=False)
     with TestClient(app, base_url="http://127.0.0.1") as api:
         yield api
@@ -49,7 +58,7 @@ def deck_and_text(client, revision, mesh):
 
 
 def test_mesh_without_fixture_blocks_deck_until_nodes_are_selected(client):
-    revision = post(client, "/api/projects", {"name": "Fixture first"})
+    revision = create_model(client, "Fixture first")
     mesh = prepare_mesh(client, revision)
     assert mesh["mesh_digest"] and mesh["mesh_compat"]
     assert mesh["fixture"] is None
@@ -80,7 +89,7 @@ def test_mesh_without_fixture_blocks_deck_until_nodes_are_selected(client):
 
 
 def test_fixture_validation_rejects_unknown_rigid_and_foreign_labels(client):
-    revision = post(client, "/api/projects", {"name": "Fixture validation"})
+    revision = create_model(client, "Fixture validation")
     mesh = prepare_mesh(client, revision)
     model = artifact(mesh, "mesh.json")
     deformable = {n for e in model["elements"] if e["type"] != "R2D2" for n in e["nodes"]}
@@ -109,7 +118,7 @@ def test_fixture_validation_rejects_unknown_rigid_and_foreign_labels(client):
 
 
 def test_partial_mounting_edge_is_written_exactly_and_leaves_neighbours_out(client):
-    revision = post(client, "/api/projects", {"name": "Partial patch"})
+    revision = create_model(client, "Partial patch")
     mesh = prepare_mesh(client, revision)
     model = artifact(mesh, "mesh.json")
     chain = next(
@@ -128,7 +137,7 @@ def test_partial_mounting_edge_is_written_exactly_and_leaves_neighbours_out(clie
 
 
 def test_motion_and_friction_edits_reuse_the_mesh_but_stale_decks_cannot_submit(client):
-    revision = post(client, "/api/projects", {"name": "Reuse"})
+    revision = create_model(client, "Reuse")
     mesh = prepare_mesh(client, revision)
     save_fixture(client, mesh["id"], legacy_fixture(client, mesh["id"])["labels"])
     deck, _ = deck_and_text(client, revision, mesh)
@@ -151,7 +160,7 @@ def test_motion_and_friction_edits_reuse_the_mesh_but_stale_decks_cannot_submit(
             "deck": deck["id"],
             "token": store.new_id(),
             "name": "stale",
-            "mode": "DEMO",
+            "mode": "ABAQUS",
         },
     )
     assert stale.status_code == 409
@@ -170,7 +179,7 @@ def test_motion_and_friction_edits_reuse_the_mesh_but_stale_decks_cannot_submit(
             "deck": fresh["id"],
             "token": store.new_id(),
             "name": "current",
-            "mode": "DEMO",
+            "mode": "ABAQUS",
         },
     )
     assert once("test")
@@ -179,7 +188,7 @@ def test_motion_and_friction_edits_reuse_the_mesh_but_stale_decks_cannot_submit(
 
 
 def test_remesh_invalidates_fixture_and_old_deck(client):
-    revision = post(client, "/api/projects", {"name": "Remesh"})
+    revision = create_model(client, "Remesh")
     first = prepare_mesh(client, revision)
     save_fixture(client, first["id"], legacy_fixture(client, first["id"])["labels"])
     deck, _ = deck_and_text(client, revision, first)
@@ -205,7 +214,7 @@ def test_remesh_invalidates_fixture_and_old_deck(client):
                 "deck": deck["id"],
                 "token": store.new_id(),
                 "name": "old",
-                "mode": "DEMO",
+                "mode": "ABAQUS",
             },
         ).status_code
         == 409
@@ -224,8 +233,8 @@ def test_remesh_invalidates_fixture_and_old_deck(client):
 
 
 def test_cross_model_mesh_and_forged_fixture_are_rejected(client):
-    a = post(client, "/api/projects", {"name": "Model A"})
-    b = post(client, "/api/projects", {"name": "Model B"})
+    a = create_model(client, "Model A")
+    b = create_model(client, "Model B")
     mesh_a = prepare_mesh(client, a)
     save_fixture(client, mesh_a["id"], legacy_fixture(client, mesh_a["id"])["labels"])
     cross = client.post(
@@ -248,7 +257,7 @@ def test_cross_model_mesh_and_forged_fixture_are_rejected(client):
 
 
 def test_legacy_edge_fixture_can_be_resolved_inspected_and_saved(client):
-    revision = post(client, "/api/projects", {"name": "Legacy mounting"})
+    revision = create_model(client, "Legacy mounting")
     mesh = prepare_mesh(client, revision)
     resolved = legacy_fixture(client, mesh["id"])
     assert resolved["count"] == len(resolved["labels"])
@@ -262,7 +271,7 @@ def test_legacy_edge_fixture_can_be_resolved_inspected_and_saved(client):
 
 def test_queued_deck_uses_the_fixture_snapshot_at_queue_time(client):
     """A fixture edit between queueing and claiming must not change the deck."""
-    revision = post(client, "/api/projects", {"name": "Snapshot"})
+    revision = create_model(client, "Snapshot")
     mesh = prepare_mesh(client, revision)
     model = artifact(mesh, "mesh.json")
     chain = next(nodes for nodes in model["edge_nodes"].values() if len(nodes) >= 6)
@@ -288,7 +297,7 @@ def test_queued_deck_uses_the_fixture_snapshot_at_queue_time(client):
             "deck": deck["id"],
             "token": store.new_id(),
             "name": "after fixture edit",
-            "mode": "DEMO",
+            "mode": "ABAQUS",
         },
     )
     assert blocked.status_code == 409
@@ -296,7 +305,7 @@ def test_queued_deck_uses_the_fixture_snapshot_at_queue_time(client):
 
 
 def test_explicit_remesh_in_the_same_revision_supersedes_mesh_and_deck(client):
-    revision = post(client, "/api/projects", {"name": "Same revision remesh"})
+    revision = create_model(client, "Same revision remesh")
     first = prepare_mesh(client, revision)
     labels = legacy_fixture(client, first["id"])["labels"]
     save_fixture(client, first["id"], labels)
@@ -327,7 +336,7 @@ def test_explicit_remesh_in_the_same_revision_supersedes_mesh_and_deck(client):
             "deck": deck["id"],
             "token": store.new_id(),
             "name": "superseded deck",
-            "mode": "DEMO",
+            "mode": "ABAQUS",
         },
     )
     assert stale.status_code == 409
@@ -345,7 +354,7 @@ def test_explicit_remesh_in_the_same_revision_supersedes_mesh_and_deck(client):
                 "deck": deck["id"],
                 "token": store.new_id(),
                 "name": "older deck",
-                "mode": "DEMO",
+                "mode": "ABAQUS",
             },
         ).status_code
         == 409
@@ -353,7 +362,7 @@ def test_explicit_remesh_in_the_same_revision_supersedes_mesh_and_deck(client):
 
 
 def test_submitted_run_replays_its_archived_fixture(client):
-    revision = post(client, "/api/projects", {"name": "Archive"})
+    revision = create_model(client, "Archive")
     mesh = prepare_mesh(client, revision)
     model = artifact(mesh, "mesh.json")
     chain = next(nodes for nodes in model["edge_nodes"].values() if len(nodes) >= 6)
@@ -369,7 +378,7 @@ def test_submitted_run_replays_its_archived_fixture(client):
             "deck": deck["id"],
             "token": store.new_id(),
             "name": "Archived",
-            "mode": "DEMO",
+            "mode": "ABAQUS",
         },
     )
     assert once("test") and once("test")
@@ -398,7 +407,7 @@ def test_submitted_run_replays_its_archived_fixture(client):
 
 
 def test_legacy_edge_resolution_uses_the_open_revision(client):
-    first = post(client, "/api/projects", {"name": "Open revision"})
+    first = create_model(client, "Open revision")
     edges = [e["id"] for e in first["setup"]["edges"] if e["component"] == "seal"]
     a, b = edges[0], edges[1]
     setup = first["setup"]
@@ -426,7 +435,7 @@ def test_legacy_edge_resolution_uses_the_open_revision(client):
     assert {int(l.split(":")[1]) for l in labels_b} == set(model["edge_nodes"][b])
     assert labels_a != labels_b
 
-    stranger = post(client, "/api/projects", {"name": "Stranger"})
+    stranger = create_model(client, "Stranger")
     rejected = client.post(
         f"/api/meshes/{mesh['id']}/fixture/edges?revision={stranger['id']}", json={}
     )
@@ -459,7 +468,7 @@ def test_result_header_carries_the_reviewed_fixture(tmp_path):
 
 
 def test_historical_run_and_old_artifacts_survive_the_new_pipeline(client):
-    revision = post(client, "/api/projects", {"name": "History"})
+    revision = create_model(client, "History")
     mesh = prepare_mesh(client, revision)
     save_fixture(client, mesh["id"], legacy_fixture(client, mesh["id"])["labels"])
     deck, _ = deck_and_text(client, revision, mesh)
@@ -471,7 +480,7 @@ def test_historical_run_and_old_artifacts_survive_the_new_pipeline(client):
             "deck": deck["id"],
             "token": store.new_id(),
             "name": "Historical",
-            "mode": "DEMO",
+            "mode": "ABAQUS",
         },
     )
     assert once("test")

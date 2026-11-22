@@ -1,4 +1,4 @@
-﻿import { expect, test, type Page } from './fixtures'
+import { expect, test, type Page } from './fixtures'
 import { randomUUID } from 'node:crypto'
 import type { Display, ViewMesh } from '../src/viewportModel'
 import type { Job, Revision } from '../src/api'
@@ -50,7 +50,7 @@ async function openMountingStage(page: Page) {
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Mounting' })
     .click()
-  await expect(page.getByLabel('Fixed-node box mode')).toBeVisible()
+  await expect(page.getByTestId('fixture-count')).toBeVisible()
 }
 
 async function generateMesh(page: Page) {
@@ -72,7 +72,7 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Box selection' } })
+    await request.post('/api/projects', { data: { name: 'Box selection', example: true } })
   ).json()
   const bounds: Display = await (
     await request.post('/api/display', { data: revision.setup })
@@ -82,11 +82,8 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
   await openMountingStage(page)
 
   await openReviewStage(page)
-  await openReviewStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await openMountingStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
 
@@ -160,8 +157,6 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
   expect(stored.fixture!.labels.length).toBeLessThan(deformable.size)
 
   await openReviewStage(page)
-  await openReviewStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
   await openReviewStage(page)
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
@@ -193,7 +188,7 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 30000 })
   await openMountingStage(page)
   expect(await count(page)).toBe(selected)
-  await expect(page.getByText('Reviewed mesh nodes')).toBeVisible()
+  await expect(page.getByText('Reviewed mesh nodes', { exact: true })).toBeVisible()
   const meshes: Job[] = await (await request.get('/api/meshes')).json()
   expect(meshes.filter((j) => j.revision === revision.id)).toHaveLength(1)
 })
@@ -203,13 +198,12 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Reuse and remesh' } })
+    await request.post('/api/projects', { data: { name: 'Reuse and remesh', example: true } })
   ).json()
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
   await openMountingStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
@@ -239,7 +233,7 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Review / Run' })
     .click()
-  await expect(page.getByRole('button', { name: 'Submit demo run' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
   const before = await (await request.get('/api/meshes')).json()
   expect(before.filter((j: Job) => j.revision === revision.id)).toHaveLength(1)
 
@@ -273,13 +267,12 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Pending selection' } })
+    await request.post('/api/projects', { data: { name: 'Pending selection', example: true } })
   ).json()
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
   await openMountingStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
@@ -290,8 +283,6 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   // Deck actions live on Review; return there before each assertion.
   // Nothing is saved yet, so the deck cannot be prepared or submitted.
   await openReviewStage(page)
-  await openReviewStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await openMountingStage(page)
   // The pending count survives polling and a camera change.
@@ -300,26 +291,22 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   await openMountingStage(page)
   expect(await count(page)).toBe(selected)
   await openReviewStage(page)
-  await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await openMountingStage(page)
-
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
   await openReviewStage(page)
-  await openReviewStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
 
-  // A changed selection blocks again until it is discarded.
+  // A changed selection blocks again until it is discarded. Box selection is
+  // armed in Mounting; Review only reports readiness.
+  await openMountingStage(page)
+  await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   await dragBox(page, await at(page, -10, 1.4), await at(page, 10, 3.3))
-  await openReviewStage(page)
   await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await openMountingStage(page)
   await page.getByRole('button', { name: 'Discard selection' }).click()
-  await openReviewStage(page)
   await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
   await openMountingStage(page)
@@ -328,23 +315,27 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   // The pending state also survives a language switch.
   await dragBox(page, await at(page, -10, 1.4), await at(page, 10, 3.3))
   await openReviewStage(page)
-  await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await openMountingStage(page)
   await page.locator('.lang-button').click()
-  await expect(page.getByRole('button', { name: 'å…¥åŠ›ãƒ‡ãƒƒã‚­ã‚’ä½œæˆ' })).toBeDisabled()
-  await expect(page.getByText(/ç¯€ç‚¹ã‚’é¸æŠžä¸­ã§ã™ã€‚ä¿å­˜ã™ã‚‹ã¾ã§è§£æžã«ã¯ä½¿ã‚ã‚Œã¾ã›ã‚“ã€‚/)).toBeVisible()
+  await expect(
+    page.getByText(/\d+ 節点を選択中です。保存するまで解析には使われません。/),
+  ).toBeVisible()
+  await page
+    .getByRole('navigation', { name: 'ワークフロー' })
+    .getByRole('button', { name: '解析条件確認・実行' })
+    .click()
+  await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeDisabled()
 })
 
 test('an explicit remesh in the same revision starts a fresh review', async ({ page, request }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Remesh review' } })
+    await request.post('/api/projects', { data: { name: 'Remesh review', example: true } })
   ).json()
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
   await openMountingStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
@@ -362,9 +353,22 @@ test('an explicit remesh in the same revision starts a fresh review', async ({ p
       (j) => j.revision === revision.id,
     ).length
   const before = await jobs()
+  await openMeshStage(page, revision)
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
+  // A reviewed fixture requires an explicit Regenerate choice.
+  await page.getByRole('button', { name: 'Regenerate' }).click()
   await expect.poll(jobs, { timeout: 60000 }).toBe(before + 1)
-  await expect.poll(async () => count(page), { timeout: 60000 }).toBe(0)
+  await expect
+    .poll(
+      async () =>
+        ((await (await request.get('/api/meshes')).json()) as Job[]).find(
+          (j) => j.revision === revision.id,
+        )?.status,
+      { timeout: 60000 },
+    )
+    .toBe('Completed')
+  await openMountingStage(page)
+  await expect(page.getByTestId('fixture-count')).toHaveText('0')
   await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await expect(page.getByTestId('deck-status')).toHaveCount(0)
@@ -373,18 +377,17 @@ test('an explicit remesh in the same revision starts a fresh review', async ({ p
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Review / Run' })
     .click()
-  await expect(page.getByRole('button', { name: 'Submit demo run' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
 })
 
 test('a submitted setup replays the fixed nodes archived in its deck', async ({ page, request }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Archived fixture' } })
+    await request.post('/api/projects', { data: { name: 'Archived fixture', example: true } })
   ).json()
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
   await openMountingStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
@@ -400,7 +403,7 @@ test('a submitted setup replays the fixed nodes archived in its deck', async ({ 
     .getByRole('button', { name: 'Review / Run' })
     .click()
   await page.getByLabel('Run name').fill('Archived fixture run')
-  await page.getByRole('button', { name: 'Submit demo run' }).click()
+  await page.getByRole('button', { name: 'Submit Abaqus analysis' }).click()
   await page.waitForURL('**/#diagnostics/*')
   const runId = page.url().split('/').pop()!
   await expect
@@ -427,7 +430,7 @@ test('a submitted setup replays the fixed nodes archived in its deck', async ({ 
     .click()
   await expect(page.getByText('Archived in the submitted deck').first()).toBeVisible()
   await openMountingStage(page)
-  expect(await count(page)).toBe(archived)
+  await expect.poll(async () => count(page)).toBe(archived)
   await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await expect(page.getByRole('button', { name: 'Save fixed nodes' })).toHaveCount(0)
   const job: Job = await (await request.get('/api/jobs/' + runId)).json()
@@ -439,7 +442,7 @@ test.describe('high-DPI selection', () => {
 
   test('a selection rectangle still hits the nodes it covers', async ({ page, request }) => {
     const revision: Revision = await (
-      await request.post('/api/projects', { data: { name: 'High DPI' } })
+      await request.post('/api/projects', { data: { name: 'High DPI', example: true } })
     ).json()
     const bounds: Display = await (
       await request.post('/api/display', { data: revision.setup })
@@ -447,7 +450,6 @@ test.describe('high-DPI selection', () => {
     await openMeshStage(page, revision)
     await generateMesh(page)
   await openMountingStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
     await page.getByLabel('Fixed-node box mode').check()
     await page.getByRole('button', { name: 'Fit and reset view' }).click()
     const at = projector(bounds.bounds)
@@ -466,13 +468,12 @@ test('an in-progress fixed-node selection survives a language switch', async ({
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Fixture locale' } })
+    await request.post('/api/projects', { data: { name: 'Fixture locale', example: true } })
   ).json()
   const bounds: Display = await (await request.post('/api/display', { data: revision.setup })).json()
   await openMeshStage(page, revision)
   await generateMesh(page)
   await openMountingStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByLabel('Fixed-node box mode').check()
   await page.getByRole('button', { name: 'Fit and reset view' }).click()
   const at = projector(bounds.bounds)
@@ -482,18 +483,18 @@ test('an in-progress fixed-node selection survives a language switch', async ({
   expect(await page.getByText(/nodes selected\. They are not used until you save\./).count()).toBe(1)
   await page.locator('.lang-button').click()
 
-  await expect(page.getByRole('heading', { name: 'å›ºå®šç¯€ç‚¹ï¼ˆWSFIXï¼‰' })).toBeVisible()
-  await expect(page.getByLabel('çŸ©å½¢é¸æŠžãƒ¢ãƒ¼ãƒ‰')).toBeChecked()
+  await expect(page.getByRole('heading', { name: '固定節点（WSFIX）' })).toBeVisible()
+  await expect(page.getByLabel('矩形選択モード')).toBeChecked()
   await expect(
-    page.getByText(selected + ' ç¯€ç‚¹ã‚’é¸æŠžä¸­ã§ã™ã€‚ä¿å­˜ã™ã‚‹ã¾ã§è§£æžã«ã¯ä½¿ã‚ã‚Œã¾ã›ã‚“ã€‚'),
+    page.getByText(selected + ' 節点を選択中です。保存するまで解析には使われません。'),
   ).toBeVisible()
-  await expect(page.getByRole('button', { name: 'å›ºå®šç¯€ç‚¹ã‚’ä¿å­˜' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '固定節点を保存' })).toBeEnabled()
   // The pending count is unchanged by the language switch.
   expect(
     Number(
       await page
         .locator('.property-body dl div')
-        .filter({ hasText: 'é¸æŠžç¯€ç‚¹æ•°' })
+        .filter({ hasText: '選択節点数' })
         .locator('dd')
         .textContent(),
     ),

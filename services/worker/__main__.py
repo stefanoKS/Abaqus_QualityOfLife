@@ -133,6 +133,11 @@ def perform(row, owner):
     try:
         checkpoint(jid)
         setup = Project.model_validate(store.revision(row["revision"])["setup"])
+        if row["mode"] == "DEMO":
+            raise ValueError(
+                "This is a legacy DEMO job. Synthetic execution has been withdrawn; the "
+                "recorded evidence stays readable. Submit an ABAQUS analysis instead."
+            )
         if not extracting:
             (directory / "setup.json").write_text(setup.model_dump_json(indent=2), encoding="utf-8")
         log(directory, "Extracting results" if extracting else "Preparing " + row["mode"])
@@ -161,6 +166,17 @@ def perform(row, owner):
             else:
                 imported = engineering.import_dxf(source, setup.name, metadata["units"])
             imported.source.filename = metadata["filename"]
+            # A 3D preview model stays a 3D preview model when it imports a
+            # section. Model-level settings that do not depend on the drawing's
+            # topology are carried over; mesh refinements that name old edges are not.
+            imported.dimension = setup.dimension
+            imported.formulation = setup.formulation
+            imported.extrusion = setup.extrusion
+            imported.analysis = setup.analysis
+            imported.motion = setup.motion
+            imported.contact = setup.contact
+            imported.mesh.size = setup.mesh.size
+            imported.mesh.recombine = setup.mesh.recombine
             fields.update(solver="Succeeded", extraction="Succeeded", phase="Drawing imported")
         elif row["mode"] == "MESH":
             mesh = engineering.generate_mesh(setup)

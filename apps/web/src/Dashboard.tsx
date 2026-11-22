@@ -129,7 +129,8 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
     [dim, dm] = useState('2D')
   const [modelGroup, setModelGroup] = useState<string | null>(null),
     [modelName, mn] = useState(''),
-    [modelDim, md] = useState('2D')
+    [modelDim, md] = useState('2D'),
+    [example, setExample] = useState(false)
   const [openRevisions, revealRevisions] = useState<string | null>(null),
     [history, setHistory] = useState<RevisionSummary[]>([])
   const [busy, setBusy] = useState(false)
@@ -164,10 +165,12 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
         name: (firstModel.trim() || name).trim(),
         dimension: dim,
         group: group.id,
+        example,
       })
       createGroupForm(false)
       nm('')
       first('')
+      setExample(false)
       go('workspace/' + r.id)
     } catch (e) {
       notify(err(e))
@@ -183,9 +186,11 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
         name: modelName.trim(),
         dimension: modelDim,
         group,
+        example,
       })
       setModelGroup(null)
       mn('')
+      setExample(false)
       await refresh()
       go('workspace/' + r.id)
     } catch (e) {
@@ -261,6 +266,15 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               <option value="3D">{t('dashboard.section3d')}</option>
             </select>
           </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={example}
+              onChange={(e) => setExample(e.target.checked)}
+            />
+            {t('dashboard.example')}
+          </label>
+          <small>{t('dashboard.exampleHint')}</small>
           <button className="primary" disabled={busy || !name.trim()}>
             {t('dashboard.createProject')}
           </button>
@@ -274,6 +288,17 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
         {t('dashboard.projects')} <small>{groups.length}</small>
       </h2>
       <div className="group-list">
+        {!groups.length && !creatingGroup && (
+          <section className="card empty" data-testid="no-projects">
+            <FolderOpen />
+            <h3>{t('dashboard.noProjects')}</h3>
+            <p>{t('dashboard.noProjectsHint')}</p>
+            <button className="primary" onClick={() => createGroupForm(true)}>
+              <Plus />
+              {t('dashboard.createProject')}
+            </button>
+          </section>
+        )}
         {groups.map((group) => (
           <section className="group-card card" key={group.id}>
             <div className="group-heading">
@@ -311,6 +336,14 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                     <option value="2D">{t('dashboard.section2d')}</option>
                     <option value="3D">{t('dashboard.section3d')}</option>
                   </select>
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={example}
+                    onChange={(e) => setExample(e.target.checked)}
+                  />
+                  {t('dashboard.example')}
                 </label>
                 <button className="primary" disabled={busy || !modelName.trim()}>
                   {t('dashboard.createModel')}

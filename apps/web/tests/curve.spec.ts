@@ -17,8 +17,7 @@ async function completedRun(
         deck: deck.id,
         token: randomUUID(),
         name,
-        scenario: 'success',
-        mode: 'DEMO',
+        mode: 'ABAQUS',
       },
     })
   ).json()
@@ -52,7 +51,7 @@ test('door response is projected, sign-reversible and exported as displayed', as
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Door response' } })
+    await request.post('/api/projects', { data: { name: 'Door response', example: true } })
   ).json()
   const run = await completedRun(request, revision, 'Door response run')
 
@@ -63,7 +62,7 @@ test('door response is projected, sign-reversible and exported as displayed', as
   await expect(page.locator('.property-body')).toContainText('0.000, -1.000')
 
   const plain = await exportCsv(page)
-  expect(plain).toContain('# provenance,DEMO synthetic')
+  expect(plain).toContain('# provenance,ABAQUS solver')
   expect(plain).toContain('# x_sign,1')
   expect(plain).toContain('# y_sign,1')
   expect(plain).toContain('# closing_step,Closing')

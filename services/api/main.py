@@ -100,8 +100,8 @@ def mesh_artifact(jid):
 @asynccontextmanager
 async def lifespan(_):
     store.initialize()
-    if not store.projects():
-        store.save(engineering.synthetic().model_dump(mode="json"), seed=True)
+    # No synthetic model is seeded: a clean installation opens an empty dashboard
+    # and every model starts at Import with no drawing.
     yield
 
 
@@ -226,7 +226,9 @@ def duplicate_model(pid: UUID, body: DuplicateModel = DuplicateModel()):
 def create(body: NewProject):
     if body.group and not store.group_exists(str(body.group)):
         raise KeyError("Project group not found")
-    setup = engineering.synthetic(body.name)
+    # Creating a model never invents geometry. ``example`` is the only path to the
+    # public synthetic section, and it is an explicit user choice.
+    setup = engineering.synthetic(body.name) if body.example else engineering.empty(body.name)
     if body.dimension == "3D":
         setup.dimension, setup.formulation = "3D", "extrusion_preview"
     return revision_payload(
@@ -339,6 +341,11 @@ def display(body: Project):
 @app.post("/api/meshes", response_model=Job)
 def create_mesh(body: Build):
     setup = Project.model_validate(store.revision(body.revision)["setup"])
+    if setup.is_empty:
+        raise ValueError(
+            "This model has no drawing yet. Import a DXF or DWG at Import, assign the "
+            "component roles and materials, then generate the mesh."
+        )
     if setup.dimension != "2D":
         raise ValueError(
             "Mesh generation is available for 2D sections. The extrusion is a geometry preview."
@@ -408,6 +415,11 @@ def resolve_legacy_fixture(jid: UUID, revision: UUID | None = None):
 @app.post("/api/decks", response_model=Job)
 def create_deck(body: Deck):
     setup = Project.model_validate(store.revision(body.revision)["setup"])
+    if setup.is_empty:
+        raise ValueError(
+            "This model has no drawing yet. Prepare the input deck only after importing a "
+            "drawing, meshing it and reviewing the fixed nodes."
+        )
     if setup.dimension != "2D":
         raise ValueError(
             "Input generation is available for 2D sections. The extrusion is a geometry preview."
@@ -429,19 +441,29 @@ def decks():
 
 @app.post("/api/runs", response_model=Job)
 def submit(body: Submit):
-    if body.mode == "ABAQUS":
-        from integrations.abaqus.launcher import configured_launcher
+    if body.mode == "DEMO":
+        raise ValueError(
+            "DEMO execution has been withdrawn for new submissions. Historical DEMO runs "
+            "remain readable. Select ABAQUS to analyse the reviewed input deck."
+        )
+    setup = Project.model_validate(store.revision(body.revision)["setup"])
+    if setup.is_empty:
+        raise ValueError(
+            "This model has no drawing yet. Import a drawing and prepare an input deck "
+            "before submitting an analysis."
+        )
+    from integrations.abaqus.launcher import configured_launcher
 
-        configured_launcher()
-        if body.scenario != "success":
-            raise ValueError("Synthetic scenarios apply to DEMO runs only.")
+    configured_launcher()
+    if body.scenario != "success":
+        raise ValueError("Synthetic scenarios are no longer available for new submissions.")
     store.revision(body.revision)
     return store.submit(
         str(body.revision),
         body.name,
         body.mode,
         str(body.token),
-        body.scenario,
+        "success",
         body.cpus,
         deck=str(body.deck),
     )
@@ -478,6 +500,44 @@ def cancel(jid: UUID):
 @app.post("/api/jobs/{jid}/retry", response_model=Job)
 def retry(jid: UUID):
     return store.retry(str(jid))
+
+
+@app.get("/api/jobs/{jid}/display-metadata")
+def display_metadata(jid: UUID):
+    """Run-wide camera bounds and colour ranges for result playback.
+
+    New extraction records this in ``results.json``. A retained result without it
+    is read once, server-side, into a derived cache keyed by the run and the
+    index digest. Original artifacts are never rewritten and no solver runs.
+    """
+    job = store.job(jid)
+    if job["status"] != "Completed":
+        raise store.Conflict("Results are available only after extraction completes.")
+    import json as _json
+
+    directory = store.job_dir(jid)
+    index_path = directory / "results.json"
+    if not index_path.is_file():
+        raise KeyError("Result index unavailable")
+    index = _json.loads(index_path.read_text(encoding="utf-8"))
+    recorded = index.get("display")
+    if isinstance(recorded, dict) and recorded.get("bounds"):
+        return {**recorded, "source": "recorded"}
+    digest = store.digest(index_path)
+    cache = store.root() / "cache" / "display" / f"{jid}-{digest[:16]}.json"
+    if cache.is_file():
+        return {**_json.loads(cache.read_text(encoding="utf-8")), "source": "cache"}
+    from integrations.abaqus.interchange import display_metadata as derive
+
+    try:
+        derived = derive(directory, index)
+    except (OSError, KeyError, ValueError) as exc:
+        raise store.Conflict(
+            "Display metadata is unavailable for this retained result: " + str(exc)
+        ) from exc
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(store.encoded(derived), encoding="utf-8")
+    return {**derived, "source": "derived"}
 
 
 @app.get("/api/jobs/{jid}/artifacts/{name}")

@@ -14,6 +14,10 @@ export interface paths {
         /**
          * Health
          * @description Identifiable readiness probe used by the launcher and instance reuse.
+         *
+         *     ``build`` fingerprints the Python sources that are actually running and the
+         *     built frontend asset, so an uncommitted build is distinguishable from a
+         *     released one and a stale process can never be mistaken for the current code.
          */
         get: operations["health_api_health_get"];
         put?: never;
@@ -31,7 +35,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Capabilities */
+        /**
+         * Capabilities
+         * @description What the running services can actually do, with the reason when they cannot.
+         */
         get: operations["capabilities_api_capabilities_get"];
         put?: never;
         post?: never;
@@ -374,6 +381,30 @@ export interface paths {
         put?: never;
         /** Retry */
         post: operations["retry_api_jobs__jid__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{jid}/display-metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Display Metadata
+         * @description Run-wide camera bounds and colour ranges for result playback.
+         *
+         *     New extraction records this in ``results.json``. A retained result without it
+         *     is read once, server-side, into a derived cache keyed by the run and the
+         *     index digest. Original artifacts are never rewritten and no solver runs.
+         */
+        get: operations["display_metadata_api_jobs__jid__display_metadata_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -988,6 +1019,11 @@ export interface components {
             dimension: "2D" | "3D";
             /** Group */
             group?: string | null;
+            /**
+             * Example
+             * @default false
+             */
+            example: boolean;
         };
         /** Plane */
         "Plane-Input": {
@@ -1115,17 +1151,17 @@ export interface components {
             units: "N-mm-s-tonne";
             plane?: components["schemas"]["Plane-Input"];
             /** Vertices */
-            vertices: components["schemas"]["Vertex"][];
+            vertices?: components["schemas"]["Vertex"][];
             /** Edges */
-            edges: components["schemas"]["Edge-Input"][];
+            edges?: components["schemas"]["Edge-Input"][];
             /** Faces */
-            faces: components["schemas"]["Face-Input"][];
+            faces?: components["schemas"]["Face-Input"][];
             /** Components */
-            components: components["schemas"]["Component"][];
+            components?: components["schemas"]["Component"][];
             /** Materials */
-            materials: components["schemas"]["Material-Input"][];
+            materials?: components["schemas"]["Material-Input"][];
             /** Selections */
-            selections: components["schemas"]["Selection-Input"][];
+            selections?: components["schemas"]["Selection-Input"][];
             mounting?: components["schemas"]["Mounting-Input"];
             contact?: components["schemas"]["Contact-Input"];
             motion?: components["schemas"]["Motion-Input"];
@@ -1253,8 +1289,11 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "synthetic" | "dxf" | "dwg";
-            /** Filename */
+            kind: "empty" | "synthetic" | "dxf" | "dwg";
+            /**
+             * Filename
+             * @default
+             */
             filename: string;
             /**
              * Digest
@@ -1273,8 +1312,11 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "synthetic" | "dxf" | "dwg";
-            /** Filename */
+            kind: "empty" | "synthetic" | "dxf" | "dwg";
+            /**
+             * Filename
+             * @default
+             */
             filename: string;
             /**
              * Digest
@@ -1412,7 +1454,7 @@ export interface components {
             deck: string;
             /**
              * Mode
-             * @default DEMO
+             * @default ABAQUS
              * @enum {string}
              */
             mode: "DEMO" | "ABAQUS";
@@ -2227,6 +2269,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    display_metadata_api_jobs__jid__display_metadata_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

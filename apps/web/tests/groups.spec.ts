@@ -44,7 +44,7 @@ test('a project holds several named models that can be duplicated and browsed', 
 
 test('an in-progress region selection survives a language switch', async ({ page, request }) => {
   const revision = await (
-    await request.post('/api/projects', { data: { name: 'Selection locale' } })
+    await request.post('/api/projects', { data: { name: 'Selection locale', example: true } })
   ).json()
   await page.goto('/#workspace/' + revision.id)
   await page.getByRole('button', { name: 'Expand Weatherstrip' }).click()
