@@ -12,19 +12,21 @@ comparison passed.
 | Solver | Abaqus/Standard 2024 |
 | Formulation | 2D plane stress (`plane_stress`), nonlinear geometry, implicit dynamic ramp |
 | Elements | CPS3 (triangle), CPS4R (reduced-integration quad) |
-| Rigid body | One R2D2 rigid panel profile with a reference node |
+| Rigid body | One or two R2D2 rigid profiles (moving door, optional moving body), each with its own reference node, contact surface and assembled instance |
 | Material | Linear elastic, or hyperfoam with uniaxial test data (`*Hyperfoam, N=1`) |
 | Contact | Hard general contact (`pressure-overclosure=HARD`), all exterior, Coulomb friction |
-| Motion | Single moving panel, prescribed displacement along Y, one closing step |
+| Motion | Door closing from above the seal; body seating from above or below with the sign checked against the measured contact side; one or two steps |
 | Fixture | Reviewed mesh-node selection (`WSFIX`); legacy CAD-edge mounting resolved to nodes |
 | Mesh reuse | A new mesh is required only when geometry, roles, region fill or mesh controls change |
 | Drawing curves | Exact B-spline (`SPLINE`) with control points/knots/weights, or the AutoCAD-compatible cubic through fit points; chord tolerance 0.02 mm for display and approximation |
-| History output | `U1, U2, RF1, RF2` at the panel reference point |
+| History output | `U1, U2, RF1, RF2` at the reference point that owns each step |
 | Field output | `U`, `RF` (nodal), `LE`, `S` (element), `CSTRESS` (contact) requests |
 | Units | N, mm, s, tonne (density in tonne/mm³, stress in MPa) |
 
-Not supported: 3D solving, multiple moving panels, body-then-door two-step closing, oblique or
-reversed panel motion, arbitrary STEP assemblies, curved sweeps, installation preload,
+Not supported: 3D solving, more than two moving rigid profiles, simultaneous panel motion, a door
+that closes from **below** the seal (the door travel is negative by schema; a bottom mount uses the
+moving-body role, whose travel sign is open), oblique X/Y motion, a profile that straddles the seal
+or has an ambiguous contact side, arbitrary STEP assemblies, curved sweeps, installation preload,
 full-perimeter closing, additional constitutive models.
 
 ## Physical assumptions
@@ -34,7 +36,9 @@ full-perimeter closing, additional constitutive models.
 - The panel is rigid. Deformation of the mating component is not modelled.
 - Contact is hard in the normal direction with Coulomb friction; no cohesive or adhesive model.
 - The prescribed travel starts from the assembled position. The reported initial vertical clearance is
-  the minimum gap between the faceted seal boundary and the panel profile at that position.
+  the minimum gap between the faceted seal boundary and the panel profile at that position, measured
+  along Y over the shared X range. It is positive for a panel above **or** below the seal; the contact
+  side is measured from the drawn profile, not assumed.
 - Force reporting is either total reaction (N) or reaction per millimetre of thickness (N/mm), chosen
   explicitly and recorded in the run metadata.
 - Signed global components are preserved end to end. The chart projects `U` and `RF` onto the
@@ -66,6 +70,9 @@ and the client-side "Export displayed curve" CSV.
 | Abaqus launcher argument construction (batch fixture) | PASS | `tests/test_abaqus.py::test_windows_batch_launcher_spaces_and_fixed_arguments` |
 | Completion-evidence detection, license diagnosis | PASS | `tests/test_abaqus.py` |
 | History alignment, step identity and projection | PASS | `tests/test_abaqus.py::test_histories_align_in_time_and_normalize` |
+| Role-aware clearance, contact normals, two-step deck and per-motion projection | PASS (license-free) | `tests/test_two_step.py` (24 tests, A–M and the user scenario) |
+| Readiness exposes the assembly measurement and penetration blocker | PASS (license-free) | `tests/test_two_step.py::test_readiness_exposes_the_bottom_body_measurement` |
+| Assembled viewport instances and Motion/Review diagnostics | PASS (browser) | `apps/web/tests/assembly.spec.ts` |
 | Door response is projected, sign-reversible, exported | PASS | `apps/web/tests/curve.spec.ts` |
 | ODB extraction round trip (`abaqus python`, manufactured ODB) | PASS (optional) | gated by `SIMPLIFY_ABAQUS_TEST_LAUNCHER` |
 | **Real licensed Abaqus/Standard closing analysis** | **PASS** | below |
@@ -295,7 +302,7 @@ recorded artifacts; it does not establish physical correlation, contact accuracy
 | Area | Blocker |
 |---|---|
 | DWG conversion | **Resolved for reading.** The original `examples/hollow-section_2.dwg` (AutoCAD 2018, `AC1032`, SHA-256 `8592c3c2…aac771`) is read natively by ACadSharp 3.8.35 (MIT); no ODA converter, DXF intermediate or CAD automation takes part. Reading is proven for this drawing and for the entity types it contains (`LINE`, `LWPOLYLINE` with bulges, `SPLINE` with fit points). Other DWG versions are accepted by the reader but were not exercised. |
-| Licensed execution breadth | Door-only closing is executed, including on the original drawing. Body-then-door two-step closing is still not implemented, so it cannot be executed. |
+| Licensed execution breadth | Door-only closing is executed, including on the original drawing. Two-step body-then-door deck preparation is implemented for both above and below body mounts, but **no licensed two-step ODB has been produced or extracted**, so no two-panel trajectory, contact or force result is evidenced. |
 | Friction assignment | One global coefficient; per-pair overrides are not implemented. |
 | Drawing role review | Roles are assigned per connected component after import; an in-viewport chain review with per-chain WS/Door/Body confirmation is not implemented. |
 | Fixture history view | **Resolved 2026-11-22.** A submitted setup now resolves the mesh job recorded by its deck and verifies the digest chain before drawing archived labels. An unverifiable archive reports why; a newer mesh is never substituted. |
@@ -370,3 +377,64 @@ Status by category:
 3. **Real solver executed:** no new licensed solve; the existing retained runs were not modified.
 4. **Result extraction succeeded:** unchanged; no extraction was run this phase.
 5. **Sensitivity/correlation qualified:** no.
+
+### Panel placement, contact orientation and motion projection - 2026-11-22
+
+Status by category, kept separate:
+
+1. **Code implemented:** yes - role-aware clearance for a profile above **or** below the seal,
+   geometric contact-side detection, per-profile R2D2 orientation, per-motion projection direction,
+   separate viewport instances and Motion/Review diagnostics.
+2. **Automated tests passed:** yes - `tests/test_two_step.py` (24 tests: A-M scenarios, the reported
+   user arrangement, readiness exposure and penetration blocker), `apps/web/tests/assembly.spec.ts`
+   (scene instances/offsets and localized Motion/Review diagnostics), the existing renderer,
+   playback, picking and review browser tests, and the full Python suite.
+3. **Real solver executed:** **NO.** No licensed run was started, no license was consumed, and no
+   retained ODB, INP, mesh or history file was modified.
+4. **Result extraction succeeded:** **NO** for a two-step ODB. The extractor now selects the
+   reference that owns each step and projects it along that step's own direction, but that path was
+   not run against licensed output in this pass.
+5. **Sensitivity/correlation qualified:** **NO.**
+
+The reported arrangement - door above the seal at -5.5 mm over 1.3 s, body below the seal at
++5 mm over 1.0 s, both initial offsets 0 mm - now prepares a deck containing the `WS`, `PANEL` and
+`BODY` parts, the `PANEL_RP` and `BODY_RP` references, `Body seating` then `Closing`, the declared
+initial placements and displacement BCs, and one rigid contact surface per part whose SPOS side
+faces the seal. That is deck-preparation evidence, not solver evidence.
+
+What the geometric checks actually establish:
+
+- **Clearance.** The minimum of the piecewise-linear difference between the FE seal boundary and the
+  FE rigid profile over their shared X range, evaluated exactly at every breakpoint (including
+  sloped, curved and vertical segments). The reported value is positive for both mounts; the
+  separation convention is not an absolute value, because a profile on the wrong side of the seal
+  keeps a negative separation and is rejected as initial penetration.
+- **Normals.** Recomputed as `(-dy, dx)/|...|` from the connectivity written into each part, not from
+  the presence of `SPOS`. Every door segment normal has a negative Y component and every
+  below-mounted body segment normal a positive one, i.e. toward the seal under the Abaqus local-2
+  (SPOS) convention. The above-seal orientation is the one used by the retained licensed door-only
+  runs, which did reach contact (first contact at 5.70 mm travel, final `RF2` -0.016966 N); the body
+  orientation mirrors that executed convention. Neither is a new contact-pressure result.
+- **Projection.** `align_histories` is checked as an exact arithmetic identity: raw `u1/u2/rf1/rf2`
+  stay signed, while `displacement` and `force` are projected onto the step's own direction
+  (door `[0,-1]`, bottom body `[0,+1]`). No raw evidence is rewritten.
+
+**Gate 7 remains BLOCKED.** A licensed Abaqus/Standard 2024 run of this exact arrangement is still
+required to show that step 1 moves only the body, step 2 only the door, the seal contact carries
+over, the attained positions match the deck, the reaction signs are physically consistent, and no
+rigid-body or overconstraint artefact appears. Until then the deck preparation is supported and the
+solver physics are not claimed.
+
+Supported geometry limitations of this increment:
+
+- The door closes from above; its travel is negative by schema. A bottom-mounted profile must use
+  the moving-body role, whose travel sign is free.
+- Motion is a single vertical translation along Y. Oblique X/Y motion, a profile that straddles the
+  seal boundary at the assembled position, and an ambiguous contact side are rejected explicitly.
+- Clearance is measured along Y over the shared X range, not as a minimum normal distance to an
+  arbitrary surface.
+- More than two moving rigid profiles and simultaneous motion are not supported.
+- A moving-body component can be introduced from a native DWG (which allows open contours) or a
+  model that already carries one. The DXF reader still rejects open non-PANEL contours and merges
+  multiple open PANEL contours into one component, so a DXF-only two-panel drawing cannot yet
+  declare a separate body profile.

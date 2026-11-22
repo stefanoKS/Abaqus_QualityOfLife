@@ -7,6 +7,52 @@ Repository: `stefanoKS/Abaqus_QualityOfLife`
 Environment: Windows, Python 3.11.9 (`.venv`), Node.js 24.16.0, npm 11.13.0, Edge with WebGL,
 Abaqus/Standard 2024 installed at `C:\SIMULIA\Commands\abq2024.bat`.
 
+## A6. Repair delivery — bottom-mounted body placement, contact orientation, motion projection
+
+Date: 2026-11-22. Baseline: `f1cb37b`, clean working tree. No licensed solver was launched, no
+license was consumed, no retained ODB/INP/mesh/history was modified, and the live instance was not
+restarted.
+
+### Reported defect
+
+A legitimate two-panel assembly with the door above the seal and the body **below** it was rejected
+at deck preparation with "The panel starts below the seal exterior". `vertical_gap()` assumed every
+rigid profile lies above the seal; `write_two_step_inp()` reused that assumption for the body; the
+result metadata hard-coded `direction = [0, -1]` for both motions; and the viewport grouped every
+R2D2 element into `PANEL-1` with the door offset.
+
+### Delivered repair
+
+| Area | Change |
+|---|---|
+| Clearance | `deck.clearance_report()` classifies the contact side from the drawn profile and measures the minimum vertical separation of the actual piecewise-linear FE surfaces over their shared X range (sloped, curved and vertical segments included). The separation is positive for both mounts. Distinct `ClearanceError` codes: `initial_penetration`, `motion_away`, `no_x_overlap`, `side_ambiguous`, `unsupported_geometry`. |
+| Contact normals | `deck.orient_for_contact()` reverses a below-mounted profile's R2D2 connectivity so its SPOS side faces the seal; the door above keeps the legacy right-to-left order. Each part keeps its own `PROFILE` elset, connectivity and reference node. |
+| Motion metadata | `deck.motion_assessment()` records each profile's side, direction, offset, clearance and gap reach. `results._metadata()` derives the door (`[0,-1]` above) and body (`[0,+1]` below) directions separately. `interchange.align_histories()` projects onto the step's own direction; raw `U1/U2/RF1/RF2` are untouched. `extract_odb._history()` matches step names case-insensitively and refuses to project an unknown step onto the door reference. |
+| Viewport | `makeScene()` groups mesh elements by assembled instance (`WS-1`, `PANEL-1`, `BODY-1`), applies each profile's own offset, and keeps instance-qualified picking identity. A DOM caption previews the assembled offsets. |
+| Diagnostics | Readiness returns a geometric `assembly` block before a deck exists. Motion and Review show door/body clearance, side, offset, travel, direction and gap reach, with an explicit "travel past the gap does not guarantee contact" caveat. Penetration, wrong-sign travel and missing X overlap become localized readiness blockers (ja/en). |
+
+### Gate status
+
+| Gate | Result | Evidence |
+|---|---|---|
+| 1 · Geometric clearance | PASS | `tests/test_two_step.py` scenarios A–I |
+| 2 · Rigid contact normals | PASS | scenario J, normals recomputed from written connectivity |
+| 3 · INP and step boundaries | PASS | user-scenario test: parts, instances, RPs, both steps, BCs, initial placements |
+| 4 · Result projection | PASS | scenario L and per-motion metadata assertions |
+| 5 · Viewport and Edge regression | PASS | `apps/web/tests/assembly.spec.ts`, `renderer.spec.ts`, full Playwright suite |
+| 6 · Existing suites | PASS | 200 Python passed + 1 opt-in skip; 61 Playwright passed; i18n 648 keys; encoding, typecheck, build pass |
+| 7 · Licensed two-step validation | **BLOCKED** | no authorized licensed run; no solver physics claimed |
+
+### Supported geometry limitations
+
+- The door closes from above the seal (negative travel by schema); a bottom-mounted profile uses the
+  moving-body role, whose travel sign is free.
+- Motion is a single vertical translation along Y. Oblique X/Y motion, a profile that straddles the
+  seal at the assembled position, and an ambiguous contact side are rejected explicitly.
+- Clearance is measured along Y over the shared X range, not as a minimum normal distance to an
+  arbitrary surface.
+- More than two moving rigid profiles and simultaneous motion are not supported.
+
 ## A4. Repair delivery — drawing ownership, Review authority, playback, Abaqus-only execution
 
 Date: 2026-11-22. Baseline: `d7b6728` (parent `240460c`), clean tree. No new solver process was

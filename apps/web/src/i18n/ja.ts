@@ -49,6 +49,16 @@ export const ja = {
   'readiness.mounting.reviewed': '{count} 個の固定ノードが保存済みです。',
   'readiness.motion.travel_not_closing':
     '移動量が閉じ方向ではありません。Motion で負の移動量を設定してください。',
+  'readiness.motion.initial_penetration':
+    '{label}がシール内部に {depth} mm 入っています。Motion で初期 Y オフセットを確認してください。',
+  'readiness.motion.direction_away':
+    '{label}の移動がシールから離れる方向です。{side}にあるため、移動方向を反転してください。',
+  'readiness.motion.no_x_overlap':
+    '{label}の形状がシールと X 方向に重なっておらず、垂直クリアランスを測定できません。',
+  'readiness.motion.side_ambiguous':
+    '{label}の形状がシールの上側とも下側とも判定できません。垂直方向の接触面を 1 つにしてください。',
+  'readiness.motion.unsupported_geometry':
+    '{label}の形状またはシール境界に垂直クリアランスを測定できる面がありません。',
   'readiness.deck.missing':
     '入力デッキがありません。Review / Run でデッキを生成してください。',
   'readiness.deck.superseded_mesh':
@@ -399,13 +409,44 @@ export const ja = {
     'このモードを使う前に、Components で 1 つの構成部品に可動ボディの役割を割り当ててください。',
   'motion.bodyOffset': 'ボディ初期 Y オフセット (mm)',
   'motion.bodyTravel': 'ボディ移動量 (mm、符号付き)',
-  'motion.bodyTravelHint': '0 以外。負で下方向に着座',
+  'motion.bodyTravelHint': '0 以外。符号は取付側に合わせます',
   'motion.bodyDuration': 'ボディ着座時間 (s)',
   'motion.offset': '初期 Y オフセット (mm)',
   'motion.travel': 'Y 方向の強制移動量 (mm)',
   'motion.duration': 'ステップ時間 (s)',
   'motion.help':
     '移動は組み付け状態のパネル位置から開始します。接触開始位置は形状または解析結果で確認してください。',
+
+  'assembly.title': '組立初期位置',
+  'assembly.saveToRefresh': '保存すると測定値が更新されます。',
+  'assembly.needsMesh': 'メッシュを生成すると初期クリアランスと移動方向を測定します。',
+  'assembly.role.door': '可動ドア',
+  'assembly.role.body': '可動ボディ',
+  'assembly.clearance': '初期クリアランス',
+  'assembly.mountedSide': '取付側',
+  'assembly.offset': '初期 Y オフセット',
+  'assembly.travel': '移動量と方向',
+  'assembly.reachesGap': '移動量が初期ギャップに到達',
+  'assembly.yes': 'はい',
+  'assembly.no': 'いいえ',
+  'assembly.sideAbove': 'シールの上側',
+  'assembly.sideBelow': 'シールの下側',
+  'assembly.directionDown': '下方向 (−Y)',
+  'assembly.directionUp': '上方向 (+Y)',
+  'assembly.gapNotReached':
+    '{label}: 移動量 {travel} mm は初期ギャップ {gap} mm より小さいため、このステップでは接触しない見込みです。',
+  'assembly.contactNotGuaranteed':
+    '初期ギャップを超える移動量は必要条件であり、接触を保証しません。接触開始は解析結果で確認してください。',
+  'assembly.issue.no_x_overlap':
+    '{label}の形状がシールと X 方向に重なっていないため、垂直クリアランスを測定できません。',
+  'assembly.issue.side_ambiguous':
+    '{label}の形状がシールの上側とも下側とも判定できません。このテンプレートは垂直方向の接触面が 1 つ必要です。',
+  'assembly.issue.initial_penetration':
+    '初期貫入: {label}はシール内部に {depth} mm 入っています。初期 Y オフセットを確認してください。',
+  'assembly.issue.motion_away':
+    '{label}の移動がシールから離れる方向です。{side}にあります。移動方向を反転してください。',
+  'assembly.issue.unsupported_geometry':
+    '{label}の形状またはシール境界に垂直クリアランスを測定できる面がありません。',
 
   'extrusion.title': '押出セグメント',
   'extrusion.length': 'セグメント長さ (mm)',
@@ -664,6 +705,7 @@ export const ja = {
   'viewport.fit': '全体表示に戻す',
   'viewport.xySection': 'XY 断面',
   'viewport.segment3d': '3D セグメント',
+  'viewport.assembledPosition': '組立初期位置',
   'viewport.noGeometry': '表示できる形状がありません',
   'viewport.unavailable': '取得できません',
   'viewport.grayUnavailable': '灰色 · U は取得できません',

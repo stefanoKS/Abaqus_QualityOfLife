@@ -72,7 +72,8 @@
 }
 .seal-vtk-orientation,
 .seal-vtk-tip,
-.seal-vtk-legend {
+.seal-vtk-legend,
+.seal-vtk-assembly {
   position: absolute;
   font:
     500 12px/1.5 ui-monospace,
@@ -84,6 +85,21 @@
   top: 18px;
   left: 17px;
   color: #536975;
+}
+.seal-vtk-assembly {
+  top: 18px;
+  right: 17px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  color: #536975;
+}
+.seal-vtk-assembly strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+.seal-vtk-assembly span {
+  white-space: nowrap;
 }
 .seal-vtk-tip {
   bottom: 9px;

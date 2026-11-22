@@ -57,6 +57,13 @@ test('repeated display changes reuse or replace actors without leaking or mispic
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
   const withMesh = await actorCount(page)
   expect(withMesh).toBeGreaterThan(0)
+  // Rigid surfaces are drawn on their assembled instance, and the viewport
+  // names the assembly it is previewing.
+  await expect(page.getByTestId('vtk-viewport')).toHaveAttribute(
+    'data-scene-instances',
+    'WS-1,PANEL-1',
+  )
+  await expect(page.getByTestId('assembly-preview')).toContainText('PANEL-1')
   await page.getByRole('button', { name: 'Toggle mesh' }).click()
   await expect.poll(() => actorCount(page)).toBe(twoD.primitives.length)
   await page.getByRole('button', { name: 'Toggle mesh' }).click()

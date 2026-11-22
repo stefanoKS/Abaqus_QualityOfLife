@@ -1,12 +1,29 @@
 """Supported 2-D vertical closing template. User strings never become INP keywords."""
 
-from bisect import bisect_left, bisect_right
 from collections import defaultdict
-from math import isfinite
+from math import hypot, isfinite
 
 from packages.engineering import fixture as fixtures
 
 ELEMENT_SIZES = {"CPS3": 3, "CPS4": 4, "CPS4R": 4, "R2D2": 2}
+
+# mm. A profile closer than this counts as touching. Anything deeper into the
+# seal is a genuine initial penetration and is rejected, never clamped.
+CLEARANCE_TOLERANCE = 1e-7
+
+
+class ClearanceError(ValueError):
+    """A geometric clearance rejection with a stable code for diagnostics.
+
+    ``details`` carries the measured quantities (panel label, penetration
+    depth, contact side) so the API can explain the same condition the deck
+    writer refuses, without the caller parsing prose.
+    """
+
+    def __init__(self, code, message, **details):
+        super().__init__(message)
+        self.code = code
+        self.details = details
 
 
 def scalar(value):
@@ -24,7 +41,13 @@ def set_lines(keyword, labels):
 
 
 def panel_order(panel, nodes):
-    """Follow one open chain from its right end; SPOS faces down on a horizontal panel."""
+    """Follow one open chain from its right end.
+
+    For an R2D2 segment whose nodes run from 1 to 2 the SPOS side is 90 degrees
+    counter-clockwise from the 1-to-2 direction, which is the lower side for a
+    horizontal panel read right-to-left. ``orient_for_contact`` reverses this
+    ordering for a profile mounted below the seal.
+    """
     neighbors = defaultdict(list)
     for e in panel:
         a, b = e["nodes"]
@@ -54,6 +77,40 @@ def panel_order(panel, nodes):
     if len(ordered) != len(panel):
         raise ValueError("The moving panel has disconnected paths.")
     return ordered
+
+
+def surface_normal(nodes, element):
+    """Unit normal of the SPOS side of one R2D2 segment.
+
+    Abaqus puts SPOS on the local-2 side, i.e. 90 degrees counter-clockwise
+    from the node-1-to-node-2 direction in the XY plane. The tests verify the
+    generated connectivity against this definition rather than trusting the
+    ``SPOS`` keyword.
+    """
+    a, b = nodes[element["nodes"][0]], nodes[element["nodes"][1]]
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length = hypot(dx, dy)
+    if length <= 0:
+        raise ValueError("A rigid segment has zero length.")
+    return (-dy / length, dx / length)
+
+
+def orient_for_contact(ordered, side):
+    """Order R2D2 connectivity so the SPOS side of every segment faces the seal.
+
+    ``panel_order`` walks right-to-left, so SPOS faces down: correct for a door
+    above the seal, wrong for a body below it. Reversing both the element order
+    and each node pair turns the chain around without changing its node set or
+    its element set, and leaves the body's SPOS side facing up toward the seal.
+    """
+    if side == "above":
+        return ordered
+    if side == "below":
+        return [
+            dict(element, nodes=[element["nodes"][1], element["nodes"][0]])
+            for element in reversed(ordered)
+        ]
+    raise ValueError("Unsupported rigid profile contact side: " + str(side))
 
 
 def mesh_parts(project, mesh):
@@ -143,31 +200,209 @@ def exterior(ws):
     return {side: entries[0] for side, entries in sides.items() if len(entries) == 1}
 
 
+def _segments(nodes, pairs):
+    """Piecewise-linear segments as ``(x0, y0, x1, y1)`` with ``x0 <= x1``."""
+    segments = []
+    for first, second in pairs:
+        a, b = nodes[first], nodes[second]
+        x0, y0, x1, y1 = float(a[0]), float(a[1]), float(b[0]), float(b[1])
+        if x0 > x1:
+            x0, y0, x1, y1 = x1, y1, x0, y0
+        segments.append((x0, y0, x1, y1))
+    segments.sort()
+    return segments
+
+
+def _boundary_segments(nodes, boundary):
+    """Exterior seal sides as left-to-right segments on the assembled mesh."""
+    return _segments(nodes, list(boundary))
+
+
+def _profile_segments(nodes, elements):
+    """A rigid profile's FE surface as left-to-right segments."""
+    return _segments(nodes, [element["nodes"] for element in elements])
+
+
+def _height(segment, x, choose):
+    """Y of one segment at ``x``; a vertical segment yields its extreme Y.
+
+    A vertical seal side is a Y interval at a single X. The nearest point for a
+    panel above is the top of that interval, so ``choose`` selects ``max`` for
+    the minimum separation and ``min`` for the maximum.
+    """
+    x0, y0, x1, y1 = segment
+    if x1 - x0 <= CLEARANCE_TOLERANCE:
+        return choose(y0, y1)
+    return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
+
+
+def _separation(profile, seal, label):
+    """Extremes of ``profile_y - seal_y`` over the profiles' shared X range.
+
+    ``minimum`` is the closest approach when the profile is above the seal and
+    ``-maximum`` is the closest approach when it is below. No absolute value is
+    taken: a profile drawn on the wrong side keeps a negative separation. Each
+    difference is affine between segment endpoints, so its extreme lies at an
+    endpoint of the overlap; sloped and curved FE segments are evaluated
+    exactly at those endpoints.
+    """
+    if not profile or not seal:
+        raise ClearanceError(
+            "unsupported_geometry",
+            f"The {label} profile or the seal boundary has no measurable surface.",
+            label=label,
+        )
+    left = max(min(s[0] for s in profile), min(s[0] for s in seal))
+    right = min(max(s[2] for s in profile), max(s[2] for s in seal))
+    if right - left <= CLEARANCE_TOLERANCE:
+        raise ClearanceError(
+            "no_x_overlap",
+            f"The {label} profile does not overlap the seal in X, so no vertical "
+            "clearance can be measured.",
+            label=label,
+            overlap=round(max(0.0, right - left), 9),
+        )
+    minimum, maximum = float("inf"), float("-inf")
+    for p in profile:
+        for s in seal:
+            low = max(p[0], s[0])
+            high = min(p[2], s[2])
+            if high < low - CLEARANCE_TOLERANCE:
+                continue
+            samples = (low,) if high - low <= CLEARANCE_TOLERANCE else (low, high)
+            for x in samples:
+                minimum = min(minimum, _height(p, x, min) - _height(s, x, max))
+                maximum = max(maximum, _height(p, x, max) - _height(s, x, min))
+    return minimum, maximum
+
+
+def _contact_side(minimum, maximum, label):
+    """Which side of the seal the drawn profile occupies: ``above`` or ``below``."""
+    if minimum >= -CLEARANCE_TOLERANCE:
+        return "above"
+    if maximum <= CLEARANCE_TOLERANCE:
+        return "below"
+    # The drawn profile crosses the seal boundary. The dominant side still
+    # identifies the mounting side so the offset measurement can report a real
+    # penetration instead of pretending the panel is mounted on the other side.
+    center = (minimum + maximum) / 2.0
+    if center > CLEARANCE_TOLERANCE:
+        return "above"
+    if center < -CLEARANCE_TOLERANCE:
+        return "below"
+    raise ClearanceError(
+        "side_ambiguous",
+        f"The {label} profile is neither clearly above nor below the seal, so its "
+        "contact side is ambiguous. This template needs one vertical contact side.",
+        label=label,
+    )
+
+
+def motion_direction(side):
+    """Unit Y motion that moves a profile on ``side`` toward the seal."""
+    if side == "above":
+        return [0.0, -1.0]
+    if side == "below":
+        return [0.0, 1.0]
+    raise ValueError("Unsupported rigid profile contact side: " + str(side))
+
+
+def _require_motion_toward_seal(side, travel, label):
+    if (side == "above" and travel < 0) or (side == "below" and travel > 0):
+        return
+    raise ClearanceError(
+        "motion_away",
+        f"The {label} travel moves away from the seal: this {label} is {side} the "
+        f"seal, so its travel must be {'negative' if side == 'above' else 'positive'}.",
+        label=label,
+        side=side,
+        travel=round(float(travel), 9),
+    )
+
+
+def clearance_report(nodes, boundary, panel, offset, travel=None, label="panel"):
+    """Role-aware initial clearance of one rigid profile against the seal.
+
+    The contact side comes from the drawn profile (offset 0), so a body mounted
+    below the seal is a valid bottom panel and never reads as a negative door
+    clearance. ``clearance`` is a positive separation convention for both
+    sides; a real initial penetration, an ambiguous side, a missing X overlap
+    and motion away from the seal are rejected with distinct codes.
+    """
+    profile = _profile_segments(nodes, panel)
+    seal = _boundary_segments(nodes, boundary)
+    minimum, maximum = _separation(profile, seal, label)
+    side = _contact_side(minimum, maximum, label)
+    # The initial offset is a rigid translation along Y, so it shifts both
+    # extremes exactly; no re-evaluation of the surfaces is required.
+    signed = minimum + offset if side == "above" else -(maximum + offset)
+    if signed < -CLEARANCE_TOLERANCE:
+        raise ClearanceError(
+            "initial_penetration",
+            f"The {label} starts inside the seal: {format(-signed, '.6g')} mm initial "
+            "penetration. Review its initial Y offset.",
+            label=label,
+            side=side,
+            depth=round(-signed, 9),
+        )
+    if travel is not None:
+        _require_motion_toward_seal(side, travel, label)
+    return {"side": side, "clearance": max(0.0, signed), "direction": motion_direction(side)}
+
+
 def vertical_gap(nodes, boundary, panel, offset):
-    """Minimum signed vertical separation between assembled piecewise-linear FE profiles."""
-    segments = [(nodes[e["nodes"][1]], nodes[e["nodes"][0]]) for e in reversed(panel)]
-    starts = [a[0] for a, _ in segments]
-    ends = [b[0] for _, b in segments]
+    """Minimum positive vertical separation between assembled FE profiles.
 
-    def height(a, b, x, vertical):
-        if b[0] == a[0]:
-            return vertical(a[1], b[1])
-        return a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0])
+    Compatibility wrapper for the door template. The sign follows the measured
+    contact side, so a profile below the seal reports the same positive
+    clearance as one above it; it is not an absolute value.
+    """
+    return clearance_report(nodes, boundary, panel, offset)["clearance"]
 
-    minimum = float("inf")
-    for i, j in boundary:
-        a, b = sorted((nodes[i], nodes[j]), key=lambda p: p[0])
-        left = bisect_left(ends, a[0])
-        right = bisect_right(starts, b[0])
-        for c, d in segments[left:right]:
-            # Each difference is affine between segment endpoints, so its minimum is at an end.
-            for x in (max(a[0], c[0]), min(b[0], d[0])):
-                minimum = min(minimum, height(c, d, x, min) + offset - height(a, b, x, max))
-    if not isfinite(minimum):
-        raise ValueError("The panel must overlap the seal in X for vertical closing.")
-    if minimum < -1e-7:
-        raise ValueError("The panel starts below the seal exterior. Review its initial Y offset.")
-    return max(0.0, minimum)
+
+def motion_assessment(nodes, boundary, elements, motion, role, instance, label):
+    """Clearance, contact side, direction and gap reach for one moving profile."""
+    # A zero travel has its own validation elsewhere; measuring it here must not
+    # be reported as motion away from the seal.
+    report = clearance_report(
+        nodes, boundary, elements, motion.offset, motion.travel or None, label
+    )
+    return {
+        "role": role,
+        "instance": instance,
+        "side": report["side"],
+        "direction": report["direction"],
+        "initial_offset_mm": motion.offset,
+        "clearance_mm": report["clearance"],
+        "travel_mm": motion.travel,
+        "duration_s": motion.duration,
+        # Necessary to cross the measured gap, never a guarantee of contact.
+        "reaches_initial_gap": abs(motion.travel) >= report["clearance"],
+    }
+
+
+def assembly_assessment(project, mesh):
+    """Door and body clearance, contact side and motion direction on one mesh.
+
+    Pure geometry on a queued mesh: no deck, artifact or solver state is
+    written. Raises :class:`ClearanceError` for a real geometric rejection so
+    the caller can report the same condition the deck writer enforces.
+    """
+    nodes, ws, panel, body = _mesh_parts(project, mesh)
+    boundary = exterior(ws)
+    result = {
+        "door": motion_assessment(
+            nodes, boundary, panel, project.motion, role="door", instance="PANEL-1",
+            label="door",
+        ),
+        "body": None,
+    }
+    if body:
+        result["body"] = motion_assessment(
+            nodes, boundary, body, project.motion.body, role="body", instance="BODY-1",
+            label="body",
+        )
+    return result
 
 
 def material_cards(material, name):
@@ -237,7 +472,12 @@ def write_inp(project, mesh, fixture=None):
         return write_two_step_inp(project, mesh, fixture)
     nodes, ws, panel = mesh_parts(project, mesh)
     boundary = exterior(ws)
-    clearance = vertical_gap(nodes, boundary, panel, project.motion.offset)
+    door = motion_assessment(
+        nodes, boundary, panel, project.motion, role="door", instance="PANEL-1", label="door"
+    )
+    clearance = door["clearance_mm"]
+    # SPOS must face the seal; a door mounted above it keeps the legacy order.
+    panel = orient_for_contact(panel, door["side"])
     seal_nodes = sorted({n for e in ws for n in e["nodes"]})
     panel_nodes = sorted({n for e in panel for n in e["nodes"]})
     seal_node_set = set(seal_nodes)
@@ -251,6 +491,8 @@ def write_inp(project, mesh, fixture=None):
         "Abaqus QOL 2D plane stress / implicit dynamic closing",
         "** Units: N, mm, s, tonne. Panel RF2 is total reaction for the specified thickness.",
         f"** Initial vertical clearance on the assembled mesh: {scalar(clearance)} mm.",
+        f"** Door is {door['side']} the seal; the contact normal and travel direction are "
+        f"[{', '.join(scalar(v) for v in door['direction'])}].",
         f"** Prescribed Y travel: {scalar(project.motion.travel)} mm; measured from initial placement.",
         f"** Fixed weatherstrip nodes: {len(fixed)} from {source}.",
         "*Part, name=WS",
@@ -353,8 +595,17 @@ def write_two_step_inp(project, mesh, fixture=None):
         raise ValueError("Set a non-zero body travel for body-then-door analysis.")
     nodes, ws, panel, body = _mesh_parts(project, mesh)
     boundary = exterior(ws)
-    panel_gap = vertical_gap(nodes, boundary, panel, project.motion.offset)
-    body_gap = vertical_gap(nodes, boundary, body, project.motion.body.offset)
+    door = motion_assessment(
+        nodes, boundary, panel, project.motion, role="door", instance="PANEL-1", label="door"
+    )
+    seated = motion_assessment(
+        nodes, boundary, body, project.motion.body, role="body", instance="BODY-1", label="body"
+    )
+    # Each rigid part is oriented independently: the door above the seal keeps
+    # the legacy right-to-left order, the body below it is turned around so its
+    # SPOS side faces up toward the seal.
+    panel = orient_for_contact(panel, door["side"])
+    body = orient_for_contact(body, seated["side"])
     seal_nodes = sorted({n for e in ws for n in e["nodes"]})
     panel_nodes = sorted({n for e in panel for n in e["nodes"]})
     body_nodes = sorted({n for e in body for n in e["nodes"]})
@@ -376,12 +627,16 @@ def write_two_step_inp(project, mesh, fixture=None):
         "*Heading",
         "Abaqus QOL 2D plane stress / implicit dynamic body seating then door closing",
         "** Units: N, mm, s, tonne. RF2 is total reaction for the specified thickness.",
-        f"** Initial door clearance on the assembled mesh: {scalar(panel_gap)} mm.",
-        f"** Initial body clearance on the assembled mesh: {scalar(body_gap)} mm.",
+        f"** Initial door clearance on the assembled mesh: {scalar(door['clearance_mm'])} mm; "
+        f"door is {door['side']} the seal.",
+        f"** Initial body clearance on the assembled mesh: {scalar(seated['clearance_mm'])} mm; "
+        f"body is {seated['side']} the seal.",
         f"** Step 1 body travel: {scalar(project.motion.body.travel)} mm over "
-        f"{scalar(project.motion.body.duration)} s; door held.",
+        f"{scalar(project.motion.body.duration)} s; body direction "
+        f"[{', '.join(scalar(v) for v in seated['direction'])}]. Door held.",
         f"** Step 2 door travel: {scalar(project.motion.travel)} mm over "
-        f"{scalar(project.motion.duration)} s; body held at its seated position.",
+        f"{scalar(project.motion.duration)} s; door direction "
+        f"[{', '.join(scalar(v) for v in door['direction'])}]. Body held at its seated position.",
         f"** Fixed weatherstrip nodes: {len(fixed)} from {source}.",
         "*Part, name=WS",
         "*Node",
@@ -411,7 +666,7 @@ def write_two_step_inp(project, mesh, fixture=None):
     lines += ["*Surface, type=ELEMENT, name=SEAL_EXTERIOR"]
     lines += [f"{eid}, S{side}" for eid, side in boundary.values()]
 
-    def rigid_part(part, elements, element_nodes, surface, extra_sets):
+    def rigid_part(part, elements, element_nodes, surface, extra_sets, side):
         lines_local = ["*End Part", f"*Part, name={part}", "*Node"]
         lines_local += [
             f"{n}, {scalar(nodes[n][0])}, {scalar(nodes[n][1])}" for n in element_nodes
@@ -429,17 +684,20 @@ def write_two_step_inp(project, mesh, fixture=None):
         ]
         lines_local += extra_sets
         lines_local += [
+            # Connectivity was ordered above so SPOS faces the seal; the test
+            # suite recomputes each normal from this connectivity.
+            f"** {part} is {side} the seal; SPOS faces the seal.",
             f"*Surface, type=ELEMENT, name={surface}",
             "PROFILE, SPOS",
         ]
         return lines_local, reference
 
     panel_part, panel_rp = rigid_part(
-        "PANEL", panel, panel_nodes, "PANEL_FACE", edge_sets["moving_panel"]
+        "PANEL", panel, panel_nodes, "PANEL_FACE", edge_sets["moving_panel"], door["side"]
     )
     lines += panel_part
     body_part, body_rp = rigid_part(
-        "BODY", body, body_nodes, "BODY_FACE", edge_sets["vehicle_body"]
+        "BODY", body, body_nodes, "BODY_FACE", edge_sets["vehicle_body"], seated["side"]
     )
     lines += body_part
     lines += [

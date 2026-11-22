@@ -44,10 +44,11 @@ import { Facts } from './shared/components/Facts'
 import { NumberInput } from './shared/components/NumberInput'
 import { hasInvalidField, useAnyInvalidField } from './shared/components/draftGuard'
 import { AssemblyTree } from './features/workspace/AssemblyTree'
+import { AssemblyDiagnostics } from './features/workspace/AssemblyDiagnostics'
 import { componentLabel } from './features/workspace/componentLabel'
 import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
 import { orderedStates } from './features/workspace/workflowStates'
-import { findingKey, type Readiness } from './features/workspace/readiness'
+import { findingKey, findingVars, type Readiness } from './features/workspace/readiness'
 import {
   MESH_STAGES,
   STAGE,
@@ -478,6 +479,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
     () => p.components.filter((c) => c.role === 'vehicle_body').map(componentLabel),
     [p.components],
   )
+  // The viewport draws each rigid profile on its own assembled instance at its
+  // own initial offset; the body is never shifted by the door offset.
+  const rigidInstances = useMemo(
+    () =>
+      p.components
+        .filter(
+          (c) =>
+            c.role === 'moving_panel' ||
+            (p.analysis.mode === 'body_then_door' && c.role === 'vehicle_body'),
+        )
+        .map((c) =>
+          c.role === 'moving_panel'
+            ? { component: c.id, instance: 'PANEL-1', offset: p.motion.offset }
+            : { component: c.id, instance: 'BODY-1', offset: p.motion.body.offset },
+        ),
+    [p.components, p.analysis.mode, p.motion.offset, p.motion.body.offset],
+  )
   function target(next: SelectionMode) {
     setMode(next)
     if (next === 'component') {
@@ -782,7 +800,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
       )}
       {!locked && readiness?.first_blocker && (
         <div className="readiness-banner" aria-live="polite" data-testid="next-action">
-          <span>{t(findingKey(readiness.first_blocker.code), readiness.first_blocker.params)}</span>
+          <span>{t(findingKey(readiness.first_blocker.code), findingVars(readiness.first_blocker, t))}</span>
           <button
             type="button"
             onClick={() =>
@@ -924,6 +942,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
               hidden={hidden}
               mesh={showMesh ? meshFile : null}
               panelOffset={p.motion.offset}
+              rigidInstances={rigidInstances}
               boxSelect={fixtureMode && !!compatibleMesh}
               boxOperation={boxOperation}
               selectedNodes={shownFixture}
@@ -1382,6 +1401,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     }
                   />
                   <p>{t('motion.help')}</p>
+                  <AssemblyDiagnostics
+                    assessment={readiness?.assembly ?? null}
+                    dirty={dirty}
+                  />
                 </>
               )}
       {dimension && stage !== STAGE.results && (
@@ -1570,6 +1593,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       <option value="per_mm">{t('review.perMm')}</option>
                     </select>
                   </label>
+                  <AssemblyDiagnostics
+                    assessment={readiness?.assembly ?? null}
+                    dirty={dirty}
+                  />
                 </>
               )}
               {stage === STAGE.mesh && !dimension && (

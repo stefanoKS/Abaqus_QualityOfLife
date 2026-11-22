@@ -15,7 +15,7 @@ export type {
 } from './viewportModel'
 
 export function Viewport(props: ViewportProps) {
-  const { t } = useI18n()
+  const { t, formatNumber } = useI18n()
   // The renderer effect must not depend on the language: recreating it would
   // discard the camera state the user is working with.
   const translate = useRef(t)
@@ -42,6 +42,7 @@ export function Viewport(props: ViewportProps) {
       props.results?.frame,
       props.deformed,
       props.panelOffset,
+      props.rigidInstances,
       props.resultComponent,
       props.resultRange,
       colorsKey,
@@ -299,7 +300,15 @@ export function Viewport(props: ViewportProps) {
   return (
     <div className="seal-viewport" data-testid="vtk-viewport" data-dimension={props.dimension}
       data-frame-time={props.results?.frame ? String(props.results.frame.time) : ''}
-      data-scene-actors={scene.surfaces.length}>
+      data-scene-actors={scene.surfaces.length}
+      data-scene-instances={[
+        ...new Set(
+          scene.surfaces
+            .map((surface) => surface.instance)
+            .filter((name): name is string => Boolean(name))
+        ),
+      ].join(',')}
+    >
       <div
         className="seal-vtk-host"
         ref={host}
@@ -342,6 +351,18 @@ export function Viewport(props: ViewportProps) {
       <div className="seal-vtk-orientation">
         {props.dimension === '2D' ? t('viewport.xySection') : t('viewport.segment3d')}
       </div>
+      {props.mesh && (props.rigidInstances?.length ?? 0) > 0 && (
+        <div className="seal-vtk-assembly" data-testid="assembly-preview">
+          <strong>{t('viewport.assembledPosition')}</strong>
+          {props.rigidInstances!.map((row) => (
+            <span key={row.instance} data-instance={row.instance} data-offset={row.offset}>
+              {row.instance}{' '}
+              {Number(row.offset) > 0 ? '+' : ''}
+              {formatNumber(row.offset)} {props.lengthUnit ?? 'mm'}
+            </span>
+          ))}
+        </div>
+      )}
       {error ? (
         <div role="alert" className="seal-vtk-empty">
           {error}

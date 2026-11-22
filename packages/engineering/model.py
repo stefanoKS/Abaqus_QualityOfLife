@@ -158,14 +158,18 @@ class BodyMotion(Model):
     """Step-1 motion of the moving body in the two-panel template."""
 
     offset: Coord = 0
-    # Signed Y travel. Seating normally moves down (negative), but the schema
-    # does not assume the door and body share a sign.
+    # Signed Y travel. The sign follows the mounted side: a body above the seal
+    # seats downward (negative), a body below it seats upward (positive). The
+    # deck writer checks the sign against the measured side.
     travel: Annotated[float, Field(ge=-10000, le=10000)] = 0
     duration: Positive = 1.0
 
 
 class Motion(Model):
     axis: Literal["Y"] = "Y"
+    # The door template closes from above the seal, so its travel is negative.
+    # A bottom-mounted profile belongs to the moving-body role, whose travel is
+    # signed independently.
     travel: Annotated[float, Field(ge=-10000, lt=0)] = -5.5
     offset: Coord = 0
     duration: Positive = 1.3

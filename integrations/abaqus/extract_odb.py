@@ -75,12 +75,23 @@ def _history(step, metadata, start_time):
     """History from the reference point that owns this step.
 
     Legacy metadata has only ``panel_reference``/``closing``; two-step metadata
-    names a body reference in step 1 and the door reference in step 2.
+    names a body reference in step 1 and the door reference in step 2. Each
+    step carries its own projection direction, so the body's upward seating is
+    never projected onto the door's downward closing axis.
     """
+    steps = metadata.get("steps") or []
     motion = next(
-        (entry for entry in metadata.get("steps", []) if entry.get("name") == step.name),
+        (
+            entry
+            for entry in steps
+            if str(entry.get("name", "")).strip().casefold() == str(step.name).strip().casefold()
+        ),
         None,
     )
+    if steps and motion is None:
+        # Never project an unknown step onto the door reference: that would
+        # label body seating as a door response.
+        return []
     ref = (
         {"instance": motion["instance"], "label": motion["reference_label"]}
         if motion and "reference_label" in motion

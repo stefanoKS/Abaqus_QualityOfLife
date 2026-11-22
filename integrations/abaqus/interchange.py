@@ -116,6 +116,8 @@ def result_header(metadata, mode, instances):
         "closing": metadata.get("closing"),
         "steps": metadata.get("steps"),
         "body": metadata.get("body"),
+        # Measured per-profile clearance, contact side and projection direction.
+        "assembly": metadata.get("assembly"),
         "fixture": metadata.get("fixture"),
         "history_components": list(COMPONENTS),
         "history_description": (

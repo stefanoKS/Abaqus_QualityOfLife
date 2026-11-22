@@ -36,6 +36,16 @@ STAGE_ACTION = {
     "results": "open_results",
 }
 
+# A clearance rejection is a motion defect: the deck writer refuses the same
+# condition, so readiness names it before the engineer tries to prepare a deck.
+CLEARANCE_FINDINGS = {
+    "no_x_overlap": "motion.no_x_overlap",
+    "side_ambiguous": "motion.side_ambiguous",
+    "initial_penetration": "motion.initial_penetration",
+    "motion_away": "motion.direction_away",
+    "unsupported_geometry": "motion.unsupported_geometry",
+}
+
 
 def finding(code, stage, severity, params=None, artifact=None):
     return {
@@ -67,6 +77,46 @@ def _mesh_state(project, setup, jobs):
     active = completed[0] if completed else None
     latest = compat_jobs[0] if compat_jobs else None
     return active, latest, compat
+
+
+def _assembly(active, setup, findings):
+    """Measured door/body clearance for the Motion and Review diagnostics.
+
+    Returns ``None`` before a compatible mesh exists. A real geometric
+    rejection becomes a motion blocker carrying the same stable code the deck
+    writer raises, so the browser explains the condition before an engineer
+    tries to prepare a deck that would be refused.
+    """
+    if active is None:
+        return None
+    import json
+
+    from integrations.abaqus.deck import ClearanceError, assembly_assessment
+
+    try:
+        mesh = json.loads(
+            (store.job_dir(active["id"]) / "mesh.json").read_text(encoding="utf-8")
+        )
+        return assembly_assessment(setup, mesh)
+    except ClearanceError as exc:
+        findings.append(
+            finding(
+                CLEARANCE_FINDINGS.get(exc.code, "motion.unsupported_geometry"),
+                "motion",
+                BLOCKER,
+                dict(exc.details),
+                artifact="mesh:" + active["id"],
+            )
+        )
+        return {
+            "door": None,
+            "body": None,
+            "code": exc.code,
+            "error": str(exc),
+            "details": dict(exc.details),
+        }
+    except (OSError, ValueError, KeyError) as exc:
+        return {"door": None, "body": None, "error": str(exc)}
 
 
 def evaluate(rid):
@@ -174,6 +224,10 @@ def evaluate(rid):
     if setup.analysis.mode == "body_then_door" and setup.motion.body.travel == 0:
         findings.append(finding("motion.body_travel_missing", "motion", BLOCKER))
 
+    # Measured after the coarse motion checks so a missing travel keeps its own
+    # specific reason instead of reading as a direction error.
+    assembly = _assembly(active, setup, findings)
+
     deck = next((j for j in deck_jobs if j["status"] == "Completed"), None)
     if deck is None:
         findings.append(finding("deck.missing", "review", BLOCKER))
@@ -245,10 +299,10 @@ def evaluate(rid):
         "deck": deck["id"] if deck else None,
         "run": latest_run["id"] if latest_run else None,
     }
-    return _document(revision, setup, findings, counts, latest_run, head_id)
+    return _document(revision, setup, findings, counts, latest_run, head_id, assembly)
 
 
-def _document(revision, setup, findings, counts, latest_run, head_id):
+def _document(revision, setup, findings, counts, latest_run, head_id, assembly=None):
     blockers = [f for f in findings if f["severity"] == BLOCKER]
     if setup.is_empty:
         state = "empty"
@@ -273,6 +327,8 @@ def _document(revision, setup, findings, counts, latest_run, head_id):
             {"stage": first["stage"], "action": first["action"]} if first else None
         ),
         "counts": counts,
+        # Measured assembly geometry; nothing here is solver evidence.
+        "assembly": assembly,
         "updated": _iso(time.time()),
         "setup_updated": _iso(revision["created"]),
     }

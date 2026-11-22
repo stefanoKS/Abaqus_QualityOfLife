@@ -1,5 +1,51 @@
 # Abaqus QOL implementation handoff
 
+## Two-panel placement, contact orientation and motion projection · 2026-11-22 (Gates 1–6 PASS, Gate 7 BLOCKED)
+
+Baseline `f1cb37b`, clean tree. The reported arrangement — door **above** the seal moving −5.5 mm
+over 1.3 s, body **below** the seal moving +5 mm over 1.0 s, both initial offsets 0 mm — now
+prepares a complete two-step deck. No licensed solver was launched, no license was consumed, no
+retained ODB/INP/mesh/history was modified and the live instance was not restarted.
+
+| Item | Repair | Evidence |
+|---|---|---|
+| F1 role-aware clearance | `clearance_report()`/`_separation()` in [deck.py](integrations/abaqus/deck.py) classify the contact side from the drawn profile and measure the minimum vertical separation of the real piecewise-linear FE surfaces over their shared X range (sloped, curved, vertical segments). Positive separation for above **and** below; no `abs()`. Distinct `ClearanceError` codes `initial_penetration`, `motion_away`, `no_x_overlap`, `side_ambiguous`, `unsupported_geometry`. `vertical_gap()` stays as a compatibility wrapper and the legacy 1.80 mm door gap is unchanged. | A–I in [test_two_step.py](tests/test_two_step.py) |
+| F2 rigid normals | `orient_for_contact()` reverses a below-mounted profile's R2D2 connectivity so SPOS faces the seal; the door above keeps the legacy order. Each part keeps its own `PROFILE` elset, connectivity and RP; the writer still emits one `SPOS` surface per part. | J recomputes every normal from the INP connectivity |
+| F3 per-motion direction | `motion_assessment()` + `results._metadata()` derive door `[0,−1]` and body `[0,+1]` independently; `placement` and `assembly` record side/direction/clearance/gap reach. `align_histories()` projects per step; `_history()` in [extract_odb.py](integrations/abaqus/extract_odb.py) matches step names case-insensitively and refuses to project an unknown step onto the door reference. Raw signed components are never rewritten. | L, per-motion metadata, `tests/test_abaqus.py` |
+| F4 viewport | [viewportModel.ts](apps/web/src/viewportModel.ts) groups mesh elements by instance (`WS-1`, `PANEL-1`, `BODY-1`) and applies each profile's own offset; picking identity, actors, camera and mesh toggle are unchanged. [Viewport.tsx](apps/web/src/Viewport.tsx) adds `data-scene-instances` and an assembled-offset caption. | `apps/web/tests/assembly.spec.ts`, `renderer.spec.ts` |
+| F5 diagnostics | Readiness returns a geometric `assembly` block before a deck exists; [AssemblyDiagnostics.tsx](apps/web/src/features/workspace/AssemblyDiagnostics.tsx) shows clearance, side, offset, travel/direction and gap reach in Motion and Review, with ja/en codes and the explicit caveat that travel past the gap does not guarantee contact. Penetration/away/overlap become readiness blockers. | `test_readiness_exposes_the_bottom_body_measurement`, `assembly.spec.ts` |
+| F6 fixtures | The two-step test project now accepts a body Y, sign, offset and X range; meshes are shared per scenario. | 24 tests in `test_two_step.py` |
+
+**Gate summary:** 1 clearance PASS · 2 normals PASS · 3 INP/step boundaries PASS · 4 projection PASS
+· 5 viewport/Edge PASS · 6 all existing suites PASS · **7 licensed two-step validation BLOCKED** — no
+authorized licensed run, so no solver physics, contact onset or force correlation is claimed.
+
+**Files changed.** `integrations/abaqus/deck.py`, `results.py`, `interchange.py`, `extract_odb.py`;
+`services/readiness.py`; `packages/engineering/model.py` (comments only); `apps/web/src/Viewport.tsx`,
+`Workspace.tsx`, `viewportModel.ts`, `viewport.css`, `style.css`, `features/workspace/readiness.ts`,
+new `features/workspace/AssemblyDiagnostics.tsx`, `i18n/ja.ts`, `i18n/en.ts`;
+`tests/test_two_step.py`, new `apps/web/tests/assembly.spec.ts`, `apps/web/tests/renderer.spec.ts`;
+docs updated. No schema/API contract field changed, so `generated.ts` was not regenerated.
+
+**Tests run (this machine, isolated data):** pytest **200 passed, 1 opt-in skipped**; i18n **648
+keys** in both dictionaries; encoding pass (40 files); typecheck pass; build release
+**`3d43dd8a4e82`** (entry `index-B2yxHlH9.js`, 4 files); Playwright **61 passed** (58 prior + 3 new).
+
+**Supported geometry limits.** The door closes from above (negative travel by schema); a bottom
+mount uses the moving-body role. Motion is one vertical translation along Y; oblique X/Y motion, a
+profile straddling the seal and an ambiguous contact side are rejected. Clearance is measured along
+Y over the shared X range, not as a minimum normal distance. More than two moving rigid profiles and
+simultaneous motion are unsupported. A moving body can come from a native DWG (open contours
+allowed); the DXF reader still rejects open non-PANEL contours and merges open PANEL contours, so a
+DXF-only drawing cannot yet declare a separate body profile.
+
+**Next executable slice.** (1) Run an authorized licensed two-step case on a trusted two-panel
+drawing with retained INP/ODB and verify step-1-only body motion, step-2-only door motion, held-DOF
+zero displacement, carried-over seal contact and reaction signs; record it under
+[engineering-validation.md](docs/engineering-validation.md). (2) Then continue the outstanding
+follow-ups below — RunView per-step filtering, missing-history representation and per-pair friction.
+(3) If two-panel DXF workflow is required, add a declarable body layer/role to the DXF import.
+
 ## Independent release review · 2026-11-22
 
 **Hold software RC sign-off.** The automated regression passed, but fresh checks on disposable data reopened Gates 1 and 4 and identified a silent input error in Gate 3. This review supersedes the RC verdict in implementation report A5.
@@ -201,9 +247,9 @@ cavity 0.11288 -> 0.01974 mm, door 0.01423 mm, fit points beyond 0.02 mm 10/21 -
 mesh ran licensed as `d0d409c2-6fc9-4e69-95a1-c75069075d68` (door-only, completed, contact at 5.70 mm,
 +0.016966 N projected).
 
-**Open:** in-viewport drawing-role review, body-first/door-second two-panel analysis, per-pair
-friction, and 3D solving. Human uncoached usability acceptance (Gate 7) was **not run**; the task
-sheet is in the implementation report. Physical qualification remains **blocked** on a trusted
+**Open:** in-viewport drawing-role review, **licensed** body-first/door-second two-panel validation,
+per-pair friction, and 3D solving. Human uncoached usability acceptance (Gate 7) was **not run**; the
+task sheet is in the implementation report. Physical qualification remains **blocked** on a trusted
 reference curve and an agreed tolerance. The release-safety gate table is in
 [docs/implementation-report.md](docs/implementation-report.md) (section A5).
 
@@ -249,7 +295,12 @@ on another machine. The fixture patch changes the force curve, so neither value 
    resolved, inspected and saved.
 2. **Confirm drawing roles before building regions (brief 3).** [DXF import](packages/engineering/dxf.py) currently buckets layers `PANEL` and `MOVING_PANEL` into one panel and polygonizes the rest. Ordinary-layer open profiles can fail before the user can assign roles. Introduce staged analytic linework review and explicit connected-profile selection for door/INR, optional body and WS. Reuse existing hole detection, cavity fill, intersections and source metadata. **Accept when** two open panel profiles and a nested WS share a generic layer and the user can identify both panels, confirm material/void loops and generate the section. Cover open polyline handling and ambiguous inputs. The [ODA adapter](integrations/drawings.py) exists; genuine DWG conversion needs an installed converter and suitable nonconfidential DWG. DXF implementation can proceed now. The requested public ESI workflow comparison still needs a source-backed note.
 3. **Partition a WS face (brief 4).** The material-card editor and assignment to existing faces already work. Add a validated preview/commit line cut on authoritative CAD with a base-revision check; preserve the [generic topology guard](services/api/main.py). Preserve holes and unaffected assignments, return child faces sharing a single interface, and review affected edge assignments. **Accept when** a browser-drawn partition receives sponge and solid materials, a Gmsh mesh has shared interface nodes and the cavity stays empty. Test missed, tangent, cavity-crossing and sliver cuts, including non-destructive rejection.
-4. **Role-aware motion and two steps (brief 6).** The [schema](packages/engineering/model.py) contains a vehicle-body role, but the [mesher](packages/engineering/mesh.py), [viewport](apps/web/src/viewportModel.ts), [writer](integrations/abaqus/deck.py), [metadata/DEMO adapter](integrations/abaqus/results.py) and [extractor](integrations/abaqus/extract_odb.py) assume one rigid panel/reference. Implement independent direction, distance, initial placement and RP identity. Door alone closes in one step. With two panels, move the body first with the door held; hold the attained body position while the door moves in step two. Hold the same selected WS nodes throughout, retaining installed stresses/deformation/contact. Generalize direction-dependent clearance and rigid-side orientation. **Accept when** licensed oblique and two-panel cases reach contact and ODB trajectories independently demonstrate all moved and held DOFs at both step boundaries.
+4. **Role-aware motion and two steps (brief 6).** **Implementation delivered 2026-11-22** (see the
+   top section): independent direction, distance, initial placement, RP identity and contact
+   orientation for the door and the body, including a body mounted below the seal. Still open: the
+   **licensed** acceptance — a two-panel case that reaches contact and an ODB trajectory that
+   independently demonstrates all moved and held DOFs at both step boundaries. Oblique X/Y motion
+   remains unsupported.
 5. **Friction on contact pairs (brief 7).** The model and writer currently use one global coefficient. Map selected exterior WS CAD edges to actual element sides and their opposing panel surface. Support a default plus explicit overrides, retain eligible self-contact, and diagnose conflicting overlaps or internal bonded edges. **Accept when** two patches at 0.3 and 0.7 survive a compatible edit, the deck names the expected sides/opponents, and a licensed case with tangential travel exercises the assignments. A normal-only closing curve cannot establish friction sensitivity.
 6. **Validation completion (brief 9).** Exercise the full workflow through the browser, worker and licensed extractor. Retain run IDs, exact mesh/deck hashes, step-local and cumulative times, projected and signed global data, and measured checks. Perform mesh and time/ramp sensitivity runs. Physical correlation additionally needs a trusted reference with matched geometry, material, loading and agreed tolerances. 3D grouping and extrusion preview remain available; 3D solving follows validated 2D.
 
@@ -267,10 +318,12 @@ on another machine. The fixture patch changes the force curve, so neither value 
 
 Use the [repository instructions](AGENTS.md) for normal commands and the [recovery guide](docs/migration-and-recovery.md) before investigating an unknown worker. Preserve the current licensed door-only runs as regression comparisons. Use an isolated data directory for new cases. For each completed slice, record the new API/schema behavior, historical compatibility, browser action exercised, test results, and any licensed run ID in the [implementation report](docs/implementation-report.md) and [validation record](docs/engineering-validation.md).
 
-Last verified on this machine (2026-11-22, isolated root `I:\GithubProjects\Abaqus_QOL_impl`):
-`python -m pytest -q` → **184 passed, 1 skipped**; `test:i18n` → **619 keys** in both dictionaries;
-`test:encoding` → pass (39 source files); `typecheck` → pass; `build` → release
-**`5cac5e2a1e92`**, entry `index-BcID6OYd.js`, API 3, 4 files; `playwright test` → **58 passed**.
+Last verified on this machine (2026-11-22, current checkout, isolated test data):
+`python -m pytest -q` → **200 passed, 1 skipped**; `test:i18n` → **648 keys** in both dictionaries;
+`test:encoding` → pass (40 source files); `typecheck` → pass; `build` → release
+**`3d43dd8a4e82`**, entry `index-B2yxHlH9.js`, API 3, 4 files; `playwright test` → **61 passed**
+(isolated `--test-data` server on 8876, live 8765 untouched). No new solver process was launched and
+no license was consumed.
 Generated contract hash matches the checkout (`4D376FBB…`). Earlier isolated instances on 8898/8899
 exercised release pinning and data-root refusal, and a second API on one data directory was refused
 with the owner's PID. No new solver process was launched and no license was consumed. The retained licensed run

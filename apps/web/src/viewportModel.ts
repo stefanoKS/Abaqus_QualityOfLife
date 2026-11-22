@@ -69,6 +69,12 @@ export interface ViewportProps {
   deformed?: boolean
   resetKey?: number
   panelOffset?: number
+  /**
+   * Rigid profiles as separate assembled instances. The moving door is
+   * ``PANEL-1`` and the moving body ``BODY-1``; each keeps its own initial
+   * offset so one panel's placement never moves the other.
+   */
+  rigidInstances?: { component: string; instance: string; offset: number }[]
   lengthUnit?: string
   /** Nodal displacement quantity used for contouring. */
   resultComponent?: 'magnitude' | 'U1' | 'U2' | 'U3'
@@ -303,20 +309,51 @@ export function makeScene(props: ViewportProps): Scene {
   }
   const surfaces: Surface[] = []
   if (props.mesh && props.dimension === '2D') {
-    for (const rigid of [false, true]) {
+    // Mesh surfaces are grouped by assembled instance. Continuum elements stay
+    // on WS-1; every rigid profile is drawn on its own instance with its own
+    // initial offset, so a bottom-mounted body is not shifted with the door.
+    const groups = new Map<
+      string,
+      { instance: string; offset: number; elements: ViewMesh['elements'] }
+    >()
+    const rigidByComponent = new Map(
+      (props.rigidInstances ?? []).map((row) => [row.component, row])
+    )
+    for (const element of props.mesh.elements) {
+      let instance = 'WS-1'
+      let offset = 0
+      if (element.type === 'R2D2') {
+        const rigid = rigidByComponent.get(element.component)
+        instance = rigid?.instance ?? 'PANEL-1'
+        offset = rigid?.offset ?? (props.panelOffset ?? 0)
+      }
+      let group = groups.get(instance)
+      if (!group) {
+        group = { instance, offset, elements: [] }
+        groups.set(instance, group)
+      }
+      group.elements.push(element)
+    }
+    const order = ['WS-1', 'PANEL-1', 'BODY-1']
+    const rank = (name: string) => {
+      const index = order.indexOf(name)
+      return index < 0 ? order.length : index
+    }
+    for (const name of [...groups.keys()].sort(
+      (a, b) => rank(a) - rank(b) || a.localeCompare(b)
+    )) {
+      const group = groups.get(name)!
       surfaces.push(
         ...instanceSurfaces(
           {
-            instance: rigid ? 'PANEL-1' : 'WS-1',
+            instance: group.instance,
             nodes: props.mesh.nodes.map((node) => [
               node.id,
               node.xyz[0],
-              node.xyz[1] + (rigid ? (props.panelOffset ?? 0) : 0),
+              node.xyz[1] + group.offset,
               node.xyz[2],
             ]),
-            elements: props.mesh.elements
-              .filter((e) => (e.type === 'R2D2') === rigid)
-              .map((e) => ({ ...e, connectivity: e.nodes })),
+            elements: group.elements.map((e) => ({ ...e, connectivity: e.nodes })),
           },
           false,
           props

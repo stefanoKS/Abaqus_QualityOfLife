@@ -46,6 +46,16 @@ export const en: Dictionary = {
   'readiness.mounting.reviewed': '{count} fixed nodes are saved.',
   'readiness.motion.travel_not_closing':
     'The travel is not a closing motion. Set a negative travel in Motion.',
+  'readiness.motion.initial_penetration':
+    '{label} starts {depth} mm inside the seal. Review its initial Y offset in Motion.',
+  'readiness.motion.direction_away':
+    '{label} travel moves away from the seal. It is {side} the seal, so reverse the travel direction.',
+  'readiness.motion.no_x_overlap':
+    '{label} does not overlap the seal in X, so no vertical clearance can be measured.',
+  'readiness.motion.side_ambiguous':
+    '{label} is neither clearly above nor below the seal. This template needs one vertical contact side.',
+  'readiness.motion.unsupported_geometry':
+    '{label} or the seal boundary has no measurable surface for a vertical clearance.',
   'readiness.deck.missing': 'No input deck exists. Prepare one in Review / Run.',
   'readiness.deck.superseded_mesh':
     'A newer mesh supersedes this input deck. Prepare a new deck in Review / Run.',
@@ -396,13 +406,45 @@ export const en: Dictionary = {
     'Assign exactly one component the moving body role in Components before using this mode.',
   'motion.bodyOffset': 'Body initial Y offset (mm)',
   'motion.bodyTravel': 'Body travel (mm, signed)',
-  'motion.bodyTravelHint': 'non-zero; negative seats downward',
+  'motion.bodyTravelHint': 'non-zero; the sign follows the mounted side',
   'motion.bodyDuration': 'Body seating duration (s)',
   'motion.offset': 'Initial Y offset (mm)',
   'motion.travel': 'Prescribed Y travel (mm)',
   'motion.duration': 'Step duration (s)',
   'motion.help':
     'Travel starts at the assembled panel position. Contact onset requires a geometry or results check.',
+
+  'assembly.title': 'Initial assembled position',
+  'assembly.saveToRefresh': 'Save the revision to refresh these measurements.',
+  'assembly.needsMesh':
+    'Generate a mesh to measure the initial clearances and motion directions.',
+  'assembly.role.door': 'Moving door',
+  'assembly.role.body': 'Moving body',
+  'assembly.clearance': 'Initial clearance',
+  'assembly.mountedSide': 'Mounted side',
+  'assembly.offset': 'Initial Y offset',
+  'assembly.travel': 'Travel and direction',
+  'assembly.reachesGap': 'Travel reaches the initial gap',
+  'assembly.yes': 'Yes',
+  'assembly.no': 'No',
+  'assembly.sideAbove': 'above the seal',
+  'assembly.sideBelow': 'below the seal',
+  'assembly.directionDown': 'downward (−Y)',
+  'assembly.directionUp': 'upward (+Y)',
+  'assembly.gapNotReached':
+    '{label}: travel {travel} mm is less than the {gap} mm initial gap, so contact is not expected in this step.',
+  'assembly.contactNotGuaranteed':
+    'Travel past the measured gap is necessary but does not guarantee contact. Contact onset is a solver result.',
+  'assembly.issue.no_x_overlap':
+    '{label} does not overlap the seal in X, so no vertical clearance can be measured.',
+  'assembly.issue.side_ambiguous':
+    '{label} is neither clearly above nor below the seal. This template needs one vertical contact side.',
+  'assembly.issue.initial_penetration':
+    'Initial penetration: {label} starts {depth} mm inside the seal. Review its initial Y offset.',
+  'assembly.issue.motion_away':
+    '{label} travel moves away from the seal. It is {side}, so reverse the travel direction.',
+  'assembly.issue.unsupported_geometry':
+    '{label} or the seal boundary has no measurable surface for a vertical clearance.',
 
   'extrusion.title': 'Extruded segment',
   'extrusion.length': 'Segment length (mm)',
@@ -664,6 +706,7 @@ export const en: Dictionary = {
   'viewport.fit': 'Fit and reset view',
   'viewport.xySection': 'XY section',
   'viewport.segment3d': '3D segment',
+  'viewport.assembledPosition': 'Assembled position',
   'viewport.noGeometry': 'No visible geometry',
   'viewport.unavailable': 'Unavailable',
   'viewport.grayUnavailable': 'Gray · U unavailable',
