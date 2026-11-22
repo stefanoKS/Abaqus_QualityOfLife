@@ -1250,3 +1250,56 @@ input[type='color'] {
 .fixture-actions button {
   flex: 1;
 }
+
+/* Release/API compatibility: one message, one recovery action. */
+.compat-banner {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 16px;
+  background: #fdf1d7;
+  color: #7a4a12;
+  border-bottom: 1px solid #e2c58b;
+  font-size: var(--text-meta);
+}
+.compat-banner span {
+  flex: 1;
+}
+.compat-banner button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* The first actual readiness blocker, with a direct link to its stage. */
+.readiness-banner {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid #e2c58b;
+  border-radius: var(--radius-sm);
+  background: #fffaf0;
+  font-size: var(--text-meta);
+}
+.readiness-banner button {
+  flex: none;
+}
+.run-identity {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Laboratory paste preview: rejections are visible before applying. */
+.paste-rejected {
+  margin: 6px 0;
+  padding-left: 18px;
+  color: #8a2b1f;
+  font-size: var(--text-meta);
+}
+.paste-summary {
+  margin: 6px 0 2px;
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import Plotly from 'plotly.js-basic-dist-min'
+import { nextAxisRange, type AxisLike } from './plotAxis'
 
 /**
  * The curve is drawn once; the frame cursor is updated in place. Rebuilding the
@@ -25,6 +26,8 @@ export function Plot({
   pick.current = onPick
   const ready = useRef(false)
   const bound = useRef(false)
+  // Previous series, used to tell a sign mirror from an ordinary frame change.
+  const previous = useRef<{ x: number[]; y: number[] } | null>(null)
   const cursor = active !== undefined && x[active] !== undefined ? active : -1
 
   // Mount: one resize observer. Click binding waits until Plotly has created the
@@ -50,14 +53,17 @@ export function Plot({
     }
   }, [])
 
-  // Data or axis-title change: keep the reader's zoom if they have one.
+  // Data or axis-title change: keep the reader's zoom if they have one. A sign
+  // mirror refits an automatic axis and mirrors a deliberately zoomed one, so a
+  // reversed positive-travel curve can never stay clipped to positive limits.
   useEffect(() => {
     const el = ref.current!
     const layout = (
-      el as unknown as {
-        layout?: { xaxis?: { range?: number[] }; yaxis?: { range?: number[] } }
-      }
+      el as unknown as { layout?: { xaxis?: AxisLike; yaxis?: AxisLike } }
     ).layout
+    const xRange = nextAxisRange(previous.current?.x, x, layout?.xaxis)
+    const yRange = nextAxisRange(previous.current?.y, y, layout?.yaxis)
+    previous.current = { x, y }
     void Plotly.react(
       el,
       [
@@ -89,13 +95,13 @@ export function Plot({
           title: { text: xlabel },
           gridcolor: '#e5ebed',
           zerolinecolor: '#bac7c9',
-          range: layout?.xaxis?.range,
+          range: xRange,
         },
         yaxis: {
           title: { text: ylabel },
           gridcolor: '#e5ebed',
           zerolinecolor: '#bac7c9',
-          range: layout?.yaxis?.range,
+          range: yRange,
         },
         paper_bgcolor: 'transparent',
         plot_bgcolor: 'transparent',

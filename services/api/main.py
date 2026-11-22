@@ -17,17 +17,19 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from integrations import dwg, drawings
 from packages import engineering
 from packages.engineering.model import Project
-from services import store
+from services import readiness, release, store
 from .contracts import (
     Build,
     Deck,
     DuplicateModel,
     Fixture,
     FixtureInfo,
+    GroupCreated,
     GroupSummary,
     Job,
     NewGroup,
     NewProject,
+    NewProjectGroup,
     Revision,
     RevisionSummary,
     Save,
@@ -38,30 +40,41 @@ from .contracts import (
 MAX_DRAWING = 8 * 1024 * 1024
 STARTED = time.time()
 
-API_VERSION = 2
+API_VERSION = 3
 CAPABILITIES_VERSION = 2
+WRITE_METHODS = {"POST", "PUT", "DELETE", "PATCH"}
+
+ROOT = Path(__file__).resolve().parents[2]
+WEB = ROOT / "apps" / "web"
+_DIST_OVERRIDE = os.environ.get("ABAQUS_QOL_WEB_DIST", "").strip()
+RELEASE = release.resolve(WEB, Path(_DIST_OVERRIDE) if _DIST_OVERRIDE else None)
+PORT = int(os.environ.get("ABAQUS_QOL_PORT", "0") or 0)
 
 
 def _fingerprint():
-    """Digest of the running Python sources and the built frontend asset names."""
+    """Digest of the running Python sources and the exact release being served.
+
+    The release directory is content-addressed and immutable, so a build that
+    happens while this instance is running cannot change this digest or the
+    files this instance serves.
+    """
     from hashlib import sha256
 
-    root = Path(__file__).resolve().parents[2]
     entries = []
     for folder in ("services", "packages", "integrations"):
-        for path in sorted((root / folder).rglob("*.py")):
+        for path in sorted((ROOT / folder).rglob("*.py")):
             if "__pycache__" in path.parts:
                 continue
             stat = path.stat()
-            entries.append(f"{path.relative_to(root).as_posix()}:{stat.st_size}:{stat.st_mtime_ns}")
-    frontend = ""
-    index = root / "apps" / "web" / "dist" / "index.html"
-    if index.is_file():
-        entries.append(f"dist/index.html:{index.stat().st_size}")
-        for asset in sorted((root / "apps" / "web" / "dist" / "assets").glob("index-*.js")):
-            frontend = asset.name
-            entries.append(f"assets/{asset.name}:{asset.stat().st_size}")
-    return sha256("\n".join(entries).encode("utf-8")).hexdigest()[:16], frontend
+            entries.append(f"{path.relative_to(ROOT).as_posix()}:{stat.st_size}:{stat.st_mtime_ns}")
+    if RELEASE.directory.is_dir():
+        for path in sorted(RELEASE.directory.rglob("*")):
+            if path.is_file():
+                entries.append(
+                    f"release/{path.relative_to(RELEASE.directory).as_posix()}:"
+                    f"{path.stat().st_size}"
+                )
+    return sha256("\n".join(entries).encode("utf-8")).hexdigest()[:16], RELEASE.entry
 
 
 def _git_head():
@@ -100,9 +113,16 @@ def mesh_artifact(jid):
 @asynccontextmanager
 async def lifespan(_):
     store.initialize()
+    # One API/worker pair owns a data directory. A second instance on another
+    # port with the same SEAL_DATA would share a queue and an artifact tree, so
+    # it is refused before any job can be claimed.
+    store.claim_data_root(os.getpid(), PORT, RELEASE.id)
     # No synthetic model is seeded: a clean installation opens an empty dashboard
     # and every model starts at Import with no drawing.
-    yield
+    try:
+        yield
+    finally:
+        store.release_data_root(os.getpid())
 
 
 app = FastAPI(title="Abaqus QOL", version="0.2.0", lifespan=lifespan)
@@ -111,11 +131,34 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1
 
 @app.middleware("http")
 async def local_writes(request: Request, call_next):
-    if request.method in {"POST", "PUT", "DELETE", "PATCH"}:
+    if request.method in WRITE_METHODS:
         origin = request.headers.get("origin")
         if origin and urlsplit(origin).hostname not in {"localhost", "127.0.0.1", "::1"}:
             return JSONResponse(
                 {"detail": "This workbench accepts local browser requests only."}, 403
+            )
+        # A tab that identifies itself is checked against this instance. An
+        # unidentified client (scripts, tests, older releases) keeps the old
+        # contract; our own browser always identifies itself.
+        client_api = request.headers.get("x-abaqus-qol-api", "")
+        client_entry = request.headers.get("x-abaqus-qol-client", "")
+        if client_api.isdigit() and int(client_api) != API_VERSION:
+            return JSONResponse(
+                {
+                    "detail": "This browser build does not match the running API. "
+                    "Close Abaqus QOL and start it again from start-abaqus-qol.cmd.",
+                    "code": "compatibility.api_mismatch",
+                },
+                409,
+            )
+        if client_entry and client_entry not in {RELEASE.entry, "dev"}:
+            return JSONResponse(
+                {
+                    "detail": "This browser tab is from a different release than the "
+                    "running API. Reload the page.",
+                    "code": "compatibility.stale_tab",
+                },
+                409,
             )
         length = request.headers.get("content-length", "")
         if not length.isdigit() or int(length) > MAX_DRAWING + 1024 * 1024:
@@ -153,7 +196,10 @@ def health():
         "capabilities": CAPABILITIES_VERSION,
         "build": BUILD,
         "git": GIT,
-        "frontend": FRONTEND,
+        # The exact browser release this instance pinned at startup. A later
+        # build publishes a new release; it cannot change these values.
+        **RELEASE.as_health(),
+        "data": store.data_identity(),
     }
 
 
@@ -222,6 +268,52 @@ def duplicate_model(pid: UUID, body: DuplicateModel = DuplicateModel()):
     return revision_payload(store.save(setup, source_id=head["source_id"], group=group["id"]))
 
 
+@app.get("/api/jobs")
+def job_list():
+    """Lightweight activity list for the launcher and polling.
+
+    Deliberately omits manifests, fixture node lists and logs: the startup check
+    only needs to know whether anything is still owned, and dashboard lists use
+    the paginated detail endpoints on demand.
+    """
+    keys = (
+        "id",
+        "project",
+        "project_name",
+        "name",
+        "mode",
+        "status",
+        "phase",
+        "solver",
+        "extraction",
+        "created",
+    )
+    return [{key: job.get(key) for key in keys} for job in store.jobs()]
+
+
+@app.post("/api/project-groups", response_model=GroupCreated, status_code=201)
+def create_project_group(body: NewProjectGroup):
+    """Create a project group and its first model as one durable operation."""
+    model_name = (body.model_name or body.name).strip()
+    if not model_name:
+        raise ValueError("Enter a name for the first model.")
+    setup = engineering.synthetic(model_name) if body.example else engineering.empty(model_name)
+    if body.dimension == "3D":
+        setup.dimension, setup.formulation = "3D", "extrusion_preview"
+    model = store.create_group_with_model(
+        body.name, setup.model_dump(mode="json"), str(body.token)
+    )
+    created = store.group_of(model["project"])
+    return {
+        "group": {
+            "id": created["id"],
+            "name": created["name"],
+            "created": model["created"],
+        },
+        "model": revision_payload(model),
+    }
+
+
 @app.post("/api/projects", response_model=Revision)
 def create(body: NewProject):
     if body.group and not store.group_exists(str(body.group)):
@@ -239,6 +331,17 @@ def create(body: NewProject):
 @app.get("/api/revisions/{rid}", response_model=Revision)
 def revision(rid: UUID):
     return revision_payload(store.revision(rid))
+
+
+@app.get("/api/revisions/{rid}/readiness")
+def revision_readiness(rid: UUID):
+    """The single readiness calculation shared by the sidebar, Review and API.
+
+    Every finding carries a stable reason code, the stage that resolves it and
+    the artifact it refers to; the browser translates the code in Japanese and
+    English. Direct API acceptance uses the same blockers.
+    """
+    return readiness.evaluate(rid)
 
 
 def topology(setup):
@@ -371,6 +474,14 @@ def save_fixture(jid: UUID, body: Fixture):
     row = store.job(jid)
     if row["mode"] != "MESH" or row["status"] != "Completed" or not row["mesh_digest"]:
         raise store.Conflict("Generate the mesh before reviewing its fixed nodes.")
+    current = store.fixture(jid)
+    current_hash = current["hash"] if current else ""
+    if body.expected_hash is not None and body.expected_hash != current_hash:
+        raise store.Conflict(
+            "The fixed nodes were changed by another tab or session. Reopen Mounting to "
+            f"see the current selection ({current['count'] if current else 0} nodes), then "
+            "save again."
+        )
     labels = engineering.fixture.normalize(body.labels, mesh_artifact(jid))
     return store.set_fixture(
         jid, row["mesh_digest"], engineering.fixture.labels_hash(labels), labels
@@ -431,6 +542,7 @@ def create_deck(body: Deck):
         str(body.token),
         mesh=str(body.mesh),
         compat=engineering.mesh_compat(setup),
+        expected_fixture=body.fixture_hash,
     )
 
 
@@ -577,6 +689,7 @@ def tail(jid: UUID, name: str):
     return {"text": read_tail(store.job_dir(jid) / name, 16384)}
 
 
-dist = Path(__file__).resolve().parents[2] / "apps/web/dist"
-if dist.is_dir():
-    app.mount("/", StaticFiles(directory=dist, html=True))
+# Serve only the immutable release resolved at startup. A build that happens
+# later publishes a new directory and manifest; it cannot replace these files.
+if RELEASE.directory.is_dir():
+    app.mount("/", StaticFiles(directory=str(RELEASE.directory), html=True))

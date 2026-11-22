@@ -36,6 +36,26 @@ npm --prefix apps/web run build
 Useful launcher flags: `--port 8766` (different port), `--no-browser`, `--rebuild` (force a browser
 rebuild), `--prepare` (prepare the environment and exit).
 
+### Matched browser and API releases
+
+`npm --prefix apps/web run build` now publishes a content-addressed release into
+`apps/web/releases/<id>/` and records `apps/web/dist/release.json`. The API resolves that manifest
+once at startup and serves only that directory, so building a newer release never replaces the files a
+running instance is using. `/api/health` reports the pinned release, its entry asset, the API
+generation (`api`) and the data-directory identity (`data`).
+
+A tab compares the release it actually loaded with `/api/health`. If the pair is incompatible it shows
+one recovery message: **Reload** for a stale tab, or close the workbench and start it again from
+`start-abaqus-qol.cmd` when the API generation differs. Project creation, import, deck preparation and
+submission stay disabled until the pair matches. The API also rejects a *write* that identifies itself
+from a different release or API generation (HTTP 409), and an unidentified script keeps the older
+contract.
+
+One data directory has one owner. A second API/worker pair on another port pointing at the same
+`SEAL_DATA` is refused before it can claim a job, with the owning PID and port in the message; use a
+separate `SEAL_DATA` for an independent test instance. `--takeover` stops the old instance only when
+no job is active **and** the running job list was readable.
+
 Open [the local workbench](http://127.0.0.1:8765). The command starts FastAPI, serves the built UI
 and starts an independent worker. Close the browser freely. Press **Ctrl+C** in the serving terminal
 to stop the API and let the worker finish its current operation. Queued work resumes at the next
@@ -96,6 +116,21 @@ readable.
 Generate mesh. When a reviewed fixture exists, the app names how many fixed nodes are affected and
 requires **Regenerate** or **Cancel**. Cancel leaves everything untouched; a successful regeneration
 starts with zero reviewed nodes, so Mounting must be reviewed before a deck is prepared.
+
+**Paste laboratory data safely.** In Materials, open a hyperfoam card's test data and choose **Paste
+table data**. The paste is parsed into a review, not applied directly: a documented header row and
+blank lines are accepted, every data row must have exactly three finite values (stress, axial strain,
+lateral strain), and any malformed non-blank row is listed with its source row number. **Apply** stays
+disabled while a rejection exists, **Cancel** leaves the saved card untouched, and the accepted rows
+are shown on a preview curve before they are committed.
+
+**Correct an invalid number.** Type the value and leave the field; the invalid text stays visible with
+a field-specific message, and Save, Generate mesh, Prepare and Submit stay disabled. Press **Escape**
+to restore the saved value deliberately, or correct the value. Leaving the step with an invalid draft
+is refused so the edit is not silently discarded.
+
+The dashboard has separate **project** (group) and **model** filters. Each run row shows the model,
+dimension, revision, a short run ID and a timestamp with seconds, so two same-named runs are distinct.
 
 ## Abaqus only, with identifiable history
 
@@ -190,7 +225,10 @@ workflow and reached contact (edge-based and box-selected fixtures). Run IDs, in
 recorded in [docs/engineering-validation.md](docs/engineering-validation.md).
 
 **Not yet implemented:** drawing-role review before region construction, the material-region
-partition tool, role-aware arbitrary in-plane motion, and per-pair friction overrides. **Not yet
-verified:** physical solution accuracy, contact convergence, mesh convergence and production license
-behaviour — these need a trusted reference curve and an agreed engineering tolerance. Historical DEMO
-output is not evidence. New submissions are Abaqus-only. 3D remains a preview.
+partition tool, role-aware arbitrary in-plane motion, and per-pair friction overrides. 3D solving,
+body-first/door-second loading and local friction overrides are separate engineering work and are not
+offered. A request for one of those methods is refused before a license is spent: the API names the
+unsupported method, and the interface does not present it as available. **Not yet verified:** physical
+solution accuracy, contact convergence, mesh convergence and production license behaviour — these need
+a trusted reference curve and an agreed engineering tolerance. Historical DEMO output is not evidence.
+New submissions are Abaqus-only. 3D remains a preview.

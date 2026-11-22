@@ -1,6 +1,7 @@
 .venv/
 node_modules/
 dist/
+apps/web/releases/
 __pycache__/
 .pytest_cache/
 *.pyc

@@ -7,6 +7,51 @@ import type { Dictionary } from './ja'
 export const en: Dictionary = {
   'app.name': 'Abaqus QOL',
 
+  // Frontend/API compatibility. One message, one recovery action.
+  'compat.staleTab':
+    'This tab shows a different browser build than the running API. Reload the page.',
+  'compat.apiMismatch':
+    'This interface and the running API are different generations. Close Abaqus QOL and start it again from start-abaqus-qol.cmd.',
+  'compat.unreachable':
+    'The local API cannot be reached. Check that Abaqus QOL is running, then reload.',
+  'compat.reload': 'Reload',
+  'compat.writesDisabled':
+    'Project creation, import, deck preparation and submission stay disabled until the pair is compatible.',
+
+  // Revision readiness: stable reason codes, resolved by the owning stage.
+  'readiness.drawing.missing': 'No drawing yet. Import a DXF or DWG at Import.',
+  'readiness.drawing.extrusion_preview':
+    'This model is a 3D extrusion preview. Simulation needs a 2D plane-stress drawing.',
+  'readiness.drawing.digest_missing':
+    "The drawing's source digest is missing. Import the original drawing again.",
+  'readiness.components.unassigned':
+    '{count} components have no role. Assign their roles in Components.',
+  'readiness.components.no_moving_panel':
+    'No moving panel is assigned. Give the door component its role in Components.',
+  'readiness.components.no_seal': 'No seal is assigned. Give the seal component its role.',
+  'readiness.material.unassigned':
+    '{count} regions have no material. Assign a material card in Materials.',
+  'readiness.material.none': 'No material cards exist. Assign one in Materials.',
+  'readiness.mesh.missing': 'This revision has no mesh. Generate it in Mesh.',
+  'readiness.mesh.latest_attempt_failed':
+    'The latest mesh attempt was {status}. Regenerate it in Mesh or read the diagnostic.',
+  'readiness.mesh.previous_attempt_failed':
+    'The latest attempt was {status}, but an earlier compatible mesh is still usable. Check the displayed mesh.',
+  'readiness.mounting.missing':
+    'Fixed nodes are not reviewed. Select and save them in Mounting.',
+  'readiness.mounting.reviewed': '{count} fixed nodes are saved.',
+  'readiness.motion.travel_not_closing':
+    'The travel is not a closing motion. Set a negative travel in Motion.',
+  'readiness.deck.missing': 'No input deck exists. Prepare one in Review / Run.',
+  'readiness.deck.superseded_mesh':
+    'A newer mesh supersedes this input deck. Prepare a new deck in Review / Run.',
+  'readiness.deck.stale_fixture':
+    'Fixed nodes changed after this deck was prepared. Review Mounting and prepare the deck again.',
+  'readiness.run.active': 'Run {job} is {status}.',
+  'readiness.run.failed': 'The last run {job} failed. Read the diagnostic and submit again.',
+  'readiness.revision.historical':
+    'This revision is history. Duplicate it from the current revision to edit.',
+
   'nav.workspace': 'Workspace',
   'nav.dashboard': 'Dashboard',
   'nav.main': 'Main navigation',
@@ -15,6 +60,8 @@ export const en: Dictionary = {
   'nav.dismiss': 'Dismiss message',
 
   'common.openingProject': 'Opening project…',
+  'validation.invalidDraft':
+    'A numeric field has an invalid value. Correct it, or press Escape to restore the saved value, before continuing.',
   'common.cancel': 'Cancel',
 
   'lang.label': 'Interface language',
@@ -40,9 +87,12 @@ export const en: Dictionary = {
   'dashboard.runs': 'Simulation runs',
   'dashboard.revision': 'Revision {number}',
   'dashboard.filterProject': 'Filter by project',
+  'dashboard.filterModel': 'Filter by model',
   'dashboard.filterStatus': 'Filter by status',
   'dashboard.allProjects': 'All projects',
+  'dashboard.allModels': 'All models',
   'dashboard.allStatuses': 'All statuses',
+  'dashboard.runId': 'Run ID',
   'dashboard.colRun': 'Run / project',
   'dashboard.colState': 'State',
   'dashboard.colSubmitted': 'Submitted',
@@ -84,6 +134,7 @@ export const en: Dictionary = {
   'workspace.saveRevision': 'Save revision',
   'workspace.reviewRun': 'Review / Run',
   'workspace.workflow': 'Workflow',
+  'workspace.resolveBlocker': 'Open this step',
   'workspace.assemblyTree': 'Assembly tree',
   'workspace.expand': 'Expand {name}',
   'workspace.toggleVisibility': 'Toggle visibility {name}',
@@ -206,6 +257,15 @@ export const en: Dictionary = {
     'Paste three columns from a spreadsheet: nominal stress, axial nominal strain, lateral nominal strain.',
   'materials.pasteTitle': 'Paste table data',
   'materials.pasteApply': 'Apply paste',
+  'materials.pasteConventions':
+    'Columns are stress → axial strain → lateral strain. Stress uses N/mm²; strain is dimensionless. Values are kept as entered, not rounded or sorted.',
+  'materials.pasteSummary': '{accepted} rows accepted, {rejected} rejected.',
+  'materials.pasteHeader': 'Line {line} was treated as a header (values map by column position).',
+  'materials.pasteColumns': 'Line {line}: expected 3 columns, found {count}.',
+  'materials.pasteNumber': 'Line {line}: a value is not a finite number.',
+  'materials.pasteApplyCount': 'Apply {count} rows',
+  'materials.pasteBlocked':
+    'Correct the rejected rows before applying. The saved material data is unchanged.',
   'materials.row': 'Row {row}',
   'materials.samples': '{count} samples',
   'materials.usedBy': 'Used by {count} regions',

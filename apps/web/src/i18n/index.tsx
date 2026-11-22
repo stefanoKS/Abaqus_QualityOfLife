@@ -49,6 +49,7 @@ interface I18nValue {
   t: Translate
   setLang: (lang: Language) => void
   formatDate: (seconds: number) => string
+  formatDateTime: (seconds: number) => string
   formatNumber: (value: number, digits?: number) => string
 }
 
@@ -78,6 +79,17 @@ export function I18nProvider({ children }: { children: ReactNode }) {
           day: 'numeric',
           hour: '2-digit',
           minute: '2-digit',
+        }),
+      // Runs of the same name are distinguished by ID and by a timestamp with
+      // seconds, never by display name alone.
+      formatDateTime: (seconds) =>
+        new Date(seconds * 1000).toLocaleString(locales[lang], {
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
         }),
       formatNumber: (number, digits = 3) =>
         number.toLocaleString(locales[lang], {

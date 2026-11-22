@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from 'react'
 import { useTranslate } from '../../i18n'
+import { setFieldInvalid } from './draftGuard'
 
 export interface NumberInputProps {
   label: string
@@ -54,6 +55,13 @@ export function NumberInput({
     ((min !== undefined && parsed < min) || (max !== undefined && parsed > max))
   const invalid = (draft.trim() !== '' && parsed === null) || outsideRange
   const message = invalid ? t('materials.err.finite') : ''
+
+  // An invalid draft stays visible and blocks the write actions until it is
+  // corrected or explicitly abandoned with Escape.
+  useEffect(() => {
+    setFieldInvalid(id, invalid)
+    return () => setFieldInvalid(id, false)
+  }, [id, invalid])
   const describedBy = [rangeHint ? id + '-hint' : '', message && touched ? id + '-error' : '']
     .filter(Boolean)
     .join(' ')
@@ -62,7 +70,8 @@ export function NumberInput({
     setTouched(true)
     const next = parse(raw)
     if (next === null || (min !== undefined && next < min) || (max !== undefined && next > max)) {
-      setDraft(String(value))
+      // Keep the invalid text on screen so the engineer can see and correct it;
+      // never revert to the saved value while Save could then appear to succeed.
       return
     }
     if (next !== value) onChange(next)

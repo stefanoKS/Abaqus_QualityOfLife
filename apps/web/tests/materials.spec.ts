@@ -107,3 +107,110 @@ test('material cards are editable, validated, versioned and written to the deck'
   expect(deck).not.toContain('MAT_3')
   expect(deck).toContain('0.95')
 })
+
+test('an invalid numeric draft stays visible and blocks save and navigation', async ({
+  page,
+  request,
+}) => {
+  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: 'Numeric draft', example: true } })
+  ).json()
+  await page.goto('/#workspace/' + revision.id)
+  const workflow = page.getByRole('navigation', { name: 'Workflow' })
+  await workflow.getByRole('button', { name: 'Motion' }).click()
+
+  const travel = page.getByLabel('Prescribed Y travel (mm)')
+  await expect(travel).toHaveValue('-5.5')
+  await travel.fill('5')
+  await travel.press('Tab')
+
+  // The old behaviour restored -5.5 on blur and let Save proceed.
+  await expect(travel).toHaveValue('5')
+  await expect(page.locator('.field-error')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save revision' })).toBeDisabled()
+
+  // Leaving the step is refused instead of silently discarding the edit.
+  await workflow.getByRole('button', { name: 'Review / Run' }).click()
+  await expect(page.locator('.toast')).toContainText('invalid value')
+  await expect(workflow.locator('button[data-stage="motion"]')).toHaveAttribute(
+    'aria-current',
+    'step',
+  )
+
+  // Escape is the explicit restoration, and it unblocks navigation.
+  await travel.press('Escape')
+  await expect(travel).toHaveValue('-5.5')
+  await expect(page.locator('.field-error')).toHaveCount(0)
+  await workflow.getByRole('button', { name: 'Review / Run' }).click()
+  await expect(workflow.locator('button[data-stage="review"]')).toHaveAttribute('aria-current', 'step')
+})
+
+test('a malformed laboratory row blocks the paste until it is corrected', async ({
+  page,
+  request,
+}) => {
+  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: 'Paste review', example: true } })
+  ).json()
+  await page.goto('/#workspace/' + revision.id)
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Materials' })
+    .click()
+  await page.locator('.material-row').filter({ hasText: 'Cellular EPDM' }).click()
+
+  const before = (await (await request.get('/api/revisions/' + revision.id)).json()) as Revision
+  const savedRows = before.setup.materials.find((m) => m.id === 'bulb_foam')!.test_data
+
+  await page.getByRole('button', { name: 'Paste table data' }).click()
+  const textarea = page.getByLabel('Paste table data')
+  await textarea.fill(
+    [
+      'stress,strain_axial,strain_lateral',
+      '0.10,0.05,-0.02',
+      '0.20,0.10,-0.04',
+      '0.40,oops,-0.02',
+      '0.50,0.20,-0.08',
+    ].join('\n'),
+  )
+  await expect(page.getByTestId('paste-summary')).toContainText('3 rows accepted, 1 rejected')
+  await expect(page.getByTestId('paste-rejected')).toContainText('Line 4')
+  await expect(page.getByRole('button', { name: /Apply \d+ rows/ })).toBeDisabled()
+
+  // Cancel leaves the saved card untouched.
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page.getByRole('heading', { name: /Uniaxial test data/ })).toContainText(
+    `${savedRows.length} samples`,
+  )
+
+  // Correct the middle row and apply the complete preview.
+  await page.getByRole('button', { name: 'Paste table data' }).click()
+  await textarea.fill(
+    [
+      'stress,strain_axial,strain_lateral',
+      '0.10,0.05,-0.02',
+      '0.20,0.10,-0.04',
+      '0.40,0.15,-0.06',
+      '0.50,0.20,-0.08',
+    ].join('\n'),
+  )
+  await expect(page.getByTestId('paste-summary')).toContainText('4 rows accepted, 0 rejected')
+  await page.getByRole('button', { name: 'Apply 4 rows' }).click()
+  await page.getByRole('button', { name: 'Save revision' }).click()
+  await expect(page.locator('.crumb')).toContainText('Revision 02')
+
+  const projects = (await (await request.get('/api/projects')).json()) as {
+    id: string
+    revision: string
+  }[]
+  const head = projects.find((project) => project.id === revision.project)!
+  const saved = (await (await request.get('/api/revisions/' + head.revision)).json()) as Revision
+  const card = saved.setup.materials.find((m) => m.id === 'bulb_foam')!
+  expect(card.version).toBe(2)
+  expect(card.test_data).toEqual([
+    [0.1, 0.05, -0.02],
+    [0.2, 0.1, -0.04],
+    [0.4, 0.15, -0.06],
+    [0.5, 0.2, -0.08],
+  ])
+})

@@ -4,6 +4,7 @@ import type { Project } from '../../api'
 import { useTranslate } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
 import { Plot } from '../../Plot'
+import { setFieldInvalid } from '../../shared/components/draftGuard'
 
 type Material = Project['materials'][number]
 type Triple = [number, number, number]
@@ -92,15 +93,21 @@ function Cell({
   disabled?: boolean
   invalid?: boolean
 }) {
+  const id = useId()
   const [draft, setDraft] = useState(() => String(value))
   useEffect(() => setDraft(String(value)), [value])
+  const malformed = draft.trim() !== '' && !Number.isFinite(Number(draft))
+  useEffect(() => {
+    setFieldInvalid(id, malformed)
+    return () => setFieldInvalid(id, false)
+  }, [id, malformed])
   return (
     <input
       type="number"
       inputMode="decimal"
       step="any"
       aria-label={label}
-      aria-invalid={invalid || undefined}
+      aria-invalid={invalid || malformed || undefined}
       disabled={disabled}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
@@ -108,14 +115,68 @@ function Cell({
         const next = Number(draft)
         if (Number.isFinite(next) && draft.trim() !== '') {
           if (next !== value) onCommit(next)
-        } else setDraft(String(value))
+        }
+        // Keep a malformed draft visible; Escape is the explicit way back.
       }}
       onKeyDown={(e) => {
         if (e.key === 'Enter') e.currentTarget.blur()
-        if (e.key === 'Escape') setDraft(String(value))
+        if (e.key === 'Escape') {
+          setDraft(String(value))
+          setFieldInvalid(id, false)
+        }
       }}
     />
   )
+}
+
+interface PasteLine {
+  line: number
+  cells: string[]
+  row: Triple | null
+  reason: 'columns' | 'number' | null
+}
+
+interface PasteAnalysis {
+  lines: PasteLine[]
+  rows: Triple[]
+  headerLine: number | null
+}
+
+/**
+ * Parse pasted laboratory data into a reviewable draft.
+ *
+ * Documented headers (three alphabetic column names) and blank lines are
+ * supported. Any other non-blank line that is not exactly three finite numbers
+ * is rejected with its source row number; the caller must not apply the paste
+ * while a rejection exists.
+ */
+function analysePaste(paste: string): PasteAnalysis {
+  const lines: PasteLine[] = []
+  const rows: Triple[] = []
+  let headerLine: number | null = null
+  paste.split(/\r?\n/).forEach((raw, index) => {
+    const line = index + 1
+    if (!raw.trim()) return
+    const cells = raw.trim().split(/[\s,;]+/).filter(Boolean)
+    if (cells.length !== 3) {
+      lines.push({ line, cells, row: null, reason: 'columns' })
+      return
+    }
+    const numbers = cells.map((cell) => Number(cell))
+    if (numbers.every((value) => Number.isFinite(value))) {
+      const row = numbers as Triple
+      rows.push(row)
+      lines.push({ line, cells, row, reason: null })
+      return
+    }
+    const alphabetic = cells.every((cell) => /[A-Za-z]/.test(cell) && !/\d/.test(cell))
+    if (headerLine === null && lines.length === 0 && alphabetic) {
+      headerLine = line
+      return
+    }
+    lines.push({ line, cells, row: null, reason: 'number' })
+  })
+  return { lines, rows, headerLine }
 }
 
 function TestDataTable({
@@ -131,6 +192,11 @@ function TestDataTable({
   const [paste, setPaste] = useState('')
   const [pasting, setPasting] = useState(false)
   const rows = material.test_data
+  // Parse into a draft first. A malformed non-blank row blocks applying, and the
+  // saved card stays untouched until the engineer accepts a complete preview.
+  const analysis = useMemo(() => analysePaste(paste), [paste])
+  const rejected = analysis.lines.filter((line) => !line.row)
+  const canApply = rejected.length === 0 && analysis.rows.length > 0
   function update(index: number, column: 0 | 1 | 2, value: number) {
     const next = rows.map((row, i) =>
       i === index ? ([column === 0 ? value : row[0], column === 1 ? value : row[1], column === 2 ? value : row[2]] as Triple) : row,
@@ -138,15 +204,10 @@ function TestDataTable({
     onChange(next)
   }
   function applyPaste() {
-    const parsed: Triple[] = []
-    for (const line of paste.split(/\r?\n/)) {
-      const cells = line.trim().split(/[\s,;]+/).filter(Boolean)
-      if (cells.length !== 3) continue
-      const numbers = cells.map(Number)
-      if (numbers.every((value) => Number.isFinite(value)))
-        parsed.push(numbers as Triple)
-    }
-    if (parsed.length) onChange(parsed)
+    if (!canApply) return
+    // Values are kept exactly as parsed, in source order. Nothing is sorted,
+    // rounded, deduplicated or invented.
+    onChange(analysis.rows)
     setPaste('')
     setPasting(false)
   }
@@ -239,15 +300,62 @@ function TestDataTable({
       {pasting && (
         <div className="paste-panel">
           <small>{t('materials.pasteHint')}</small>
+          <small className="field-hint">{t('materials.pasteConventions')}</small>
           <textarea
             aria-label={t('materials.pasteTitle')}
             value={paste}
             rows={5}
             onChange={(e) => setPaste(e.target.value)}
           />
-          <button type="button" disabled={!paste.trim()} onClick={applyPaste}>
-            {t('materials.pasteApply')}
-          </button>
+          {paste.trim() !== '' && (
+            <p className="paste-summary" data-testid="paste-summary">
+              {t('materials.pasteSummary', {
+                accepted: analysis.rows.length,
+                rejected: rejected.length,
+              })}
+            </p>
+          )}
+          {analysis.headerLine !== null && (
+            <small>{t('materials.pasteHeader', { line: analysis.headerLine })}</small>
+          )}
+          {rejected.length > 0 && (
+            <ul className="paste-rejected" data-testid="paste-rejected">
+              {rejected.map((line) => (
+                <li key={line.line}>
+                  {line.reason === 'columns'
+                    ? t('materials.pasteColumns', { line: line.line, count: line.cells.length })
+                    : t('materials.pasteNumber', { line: line.line })}
+                </li>
+              ))}
+            </ul>
+          )}
+          {analysis.rows.length >= 2 && (
+            <Plot
+              x={analysis.rows.map((row) => row[1])}
+              y={analysis.rows.map((row) => row[0])}
+              xlabel={t('materials.nominalStrain')}
+              ylabel={t('materials.stress')}
+            />
+          )}
+          <div className="row-actions">
+            <button type="button" disabled={!canApply} onClick={applyPaste}>
+              {t('materials.pasteApplyCount', { count: analysis.rows.length })}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPaste('')
+                setPasting(false)
+              }}
+            >
+              {t('common.cancel')}
+            </button>
+          </div>
+          {rejected.length > 0 && (
+            <small className="field-error" role="alert">
+              {t('materials.pasteBlocked')}
+            </small>
+          )}
         </div>
       )}
       {rows.length >= 2 && (

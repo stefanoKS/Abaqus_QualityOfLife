@@ -26,6 +26,19 @@ class NewGroup(Contract):
     name: Name
 
 
+class NewProjectGroup(Contract):
+    """One user action: create a project group and its first model together."""
+
+    name: Name
+    model_name: Name | None = None
+    dimension: Literal["2D", "3D"] = "2D"
+    example: bool = False
+    # Request identity supplied once per user action. Repeating the request with
+    # the same token returns the original group and model instead of creating
+    # another pair after a lost response.
+    token: UUID
+
+
 class Group(Contract):
     id: str
     name: str
@@ -47,6 +60,11 @@ class Revision(Contract):
     group_name: str | None = None
     mesh_compat: str | None = None
     setup: Project
+
+
+class GroupCreated(Contract):
+    group: Group
+    model: Revision
 
 
 class Summary(Contract):
@@ -88,12 +106,20 @@ class Deck(Build):
     """Prepare the input deck from an already reviewed mesh."""
 
     mesh: UUID
+    # Hash of the fixed-node set the engineer reviewed. A fixture changed by
+    # another tab must conflict before the deck is enqueued; omitted by older
+    # clients, which keeps their existing behaviour.
+    fixture_hash: str | None = Field(default=None, max_length=64)
 
 
 class Fixture(Contract):
     """Instance-qualified mesh node labels, e.g. ``WS-1:15``."""
 
     labels: list[str] = Field(default_factory=list, max_length=20000)
+    # Optimistic concurrency: the hash of the fixture the editor loaded. The empty
+    # string means "I believe no fixture is saved yet". ``None`` is a legacy
+    # unconditional write.
+    expected_hash: str | None = Field(default=None, max_length=64)
 
 
 class FixtureInfo(Contract):
@@ -119,6 +145,8 @@ class Job(BaseModel):
     project: str
     number: int
     project_name: str
+    group: str | None = None
+    group_name: str | None = None
     name: str
     dimension: str
     mode: str

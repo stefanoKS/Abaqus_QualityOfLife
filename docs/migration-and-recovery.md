@@ -28,16 +28,28 @@ Moving to a differently named directory is therefore **explicit and optional**:
 4. Confirm the project list and one historical run still open before deleting the old copy.
 
 Never copy a database while the API or worker is running. Never point two installations at the same
-directory.
+directory: the launcher and the API now enforce this with `<data>/instance.json`, which records the
+owning PID, port, release and data digest. A second launch on another port with the same data
+directory is refused before it starts a worker, naming the owning process; a separate `SEAL_DATA` is
+required for an independent test instance. The record is removed on clean shutdown and is taken over
+only when the recorded process no longer exists, so a crashed launch does not block the next one.
 
 ## Backup
 
 1. Stop the application as above.
 2. Copy the entire data directory, keeping the directory structure.
-3. Record the application version and the current git commit with the backup.
+3. Record the application version, the current git commit and the `/api/health` fingerprint — `build`,
+   `release`, `api`, `frontend` — with the backup.
 
 The database is append-only for revisions, so a backup taken after a clean shutdown is self-consistent
-without further tooling.
+without further tooling. A retainable run needs the SQLite file together with its referenced drawing,
+mesh, deck, result and ODB directories under `<data>/drawings/` and `<data>/jobs/`; the two must be
+restored as one unit or the revision/run links will point at missing artifacts. `cache/` may be
+omitted (it is derived) but keeping it makes the restore faster.
+
+Browser release directories (`apps/web/releases/<id>/`) live with the code, not with the data. They are
+content-addressed and can be rebuilt from source; a restore does not need to copy them. A running
+instance never depends on a newer build replacing them.
 
 ## Restore
 
@@ -62,7 +74,12 @@ Two additional startup behaviours are idempotent:
   that predate the recorded block. This cache is read-only with respect to the run directory; deleting
   it only makes the next request derive it again. It never triggers a solver run.
 
-Schema version 1 is unchanged by this release; project grouping is additive.
+Schema version 1 is unchanged by this release; project grouping is additive. The release-safety pass
+adds one table, `creations(token, group_id, project_id, revision_id, created)`, which records an
+idempotent project-group-plus-first-model action. It is created with `CREATE TABLE IF NOT EXISTS`; no
+existing row is rewritten, and a previous build ignores it. If the table is present but a retry row is
+missing, the retry behaves like a first request and the transaction still creates both rows or
+neither.
 
 `services/store.py::initialize()` uses `CREATE TABLE IF NOT EXISTS`, so a fresh installation and an
 existing database take the same path and repeated initialization is a no-op.

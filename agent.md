@@ -1,11 +1,62 @@
 # Abaqus QOL implementation handoff
 
-**Snapshot - 2026-11-22 (repair pass).** The local branch is `main`; this pass started at `d7b6728`
-(parent `240460c`) with a clean working tree. Commits `dabffe3` (fixture correctness + splines),
-`b1c3db6` (native DWG) and `d7b6728` (result actor reuse) are preserved. No new solver process was
-launched; the retained licensed run was replayed read-only from an isolated copy.
+## Independent release review · 2026-11-22
 
-**Delivered in this pass** (details and gate table in the
+**Hold software RC sign-off.** The automated regression passed, but fresh checks on disposable data reopened Gates 1 and 4 and identified a silent input error in Gate 3. This review supersedes the RC verdict in implementation report A5.
+
+1. Fix data-root ownership and takeover first. With the two reads synchronized, both callers of `claim_data_root` accepted ownership of one empty directory on different ports. Use an atomic cross-process claim held through worker shutdown, and test two simultaneous launcher processes. A queued mesh also returned an empty `GET /api/jobs` list. Include all job kinds and refuse takeover when activity or process termination is unresolved, including on older APIs.
+2. Compare and update the fixture hash in one SQLite write transaction. Two synchronized HTTP PUTs carrying the same reviewed hash and different valid node sets both returned 200. Require one success and one 409, and verify the deck contains the winning selection.
+3. Fix blank numeric drafts. In Edge a committed travel of −6.1 mm was cleared, the field stayed blank, and Save revision returned 200 with −6.1 mm. Check the header and stage-specific save buttons, navigation, and Escape.
+4. Make release publication recover from an interrupted copy. With only the release index present, retrying the publisher exited 0 and published a manifest pointing to a missing entry script. Stage and verify the complete release before publishing the manifest, and exercise retry on an incomplete directory.
+
+Fresh verification on the current tree yielded 122 Python tests passed and one opt-in skip, 500 translation keys per language, and a passing TypeScript check. The four targeted checks above used temporary data or release trees. The final isolated browser log (`.local/final2/browser3.log` in the implementation checkout) records 41 passes. An earlier attempt recorded a high-DPI selection failure. The checkout and isolated release directories match byte-for-byte for all four files. A read-only health check found port 8765 serving release `ec2cedaa9dfe`, API 3. No live restart or licensed solve was performed during review.
+
+After these fixes, rerun the affected gates in isolation. Supervised operator acceptance, numerical sensitivity and physical correlation remain outstanding under the engineering validation record.
+
+**Snapshot - 2026-11-22 (release-safety pass).** The local branch is `main`; the checkout was clean at
+`9df297f` (one commit after `d7b6728`), which already contains the repairs the previous audit saw as
+uncommitted. Those commits are preserved. This pass added the release/compatibility, atomic-creation,
+data-root ownership, readiness and numeric/paste repairs described below. No new solver process was
+launched and no license was consumed; the retained licensed run was not modified.
+
+**Delivered in the release-safety pass (2026-11-22, on top of `9df297f`):**
+
+- **Matched releases.** `npm run build` publishes `apps/web/releases/<content-id>/` plus
+  `apps/web/dist/release.json`; the API resolves the manifest once and mounts only that directory.
+  `/api/health` reports `release`, `frontend`, `api` (3) and `data`. A rebuild publishes a new
+  directory and cannot change the files a running instance serves (verified: A stayed on
+  `ba3873ae2788` / `index-Nu0v-nbm.js`, served it 200 and the new asset 404; B served
+  `3f88561050cf` / `index-CAOdvt4j.js`).
+- **Compatibility gate.** A tab compares its loaded entry and API generation with `/api/health`;
+  a mismatch shows one localized recovery message and disables creation, import, deck preparation
+  and submission. Identified writes from a stale tab/release/API are refused with 409; unidentified
+  scripts keep the old contract. `apps/web/src/Compatibility.tsx`, `compatibility.ts`.
+- **Atomic project creation.** `POST /api/project-groups` creates the group, project and first model
+  in one SQLite transaction keyed by a client token; a repeat after a lost response returns the
+  original pair and a failure leaves no group. The dashboard retries with the same token. Legacy
+  `/api/groups` and `/api/projects` remain.
+- **Startup ownership.** One `instance.json` owner per data directory; a second API/worker on the same
+  `SEAL_DATA` is refused with PID/port before claiming work. `--takeover` refuses when the running
+  job list cannot be read; a booting launcher's lock is joined rather than stolen; the startup job view
+  uses the lightweight `/api/jobs` with a `/api/runs` fallback.
+- **Readiness contract.** `GET /api/revisions/{rid}/readiness` returns stable reason codes with stage,
+  action, severity and artifact; the workspace header shows the first blocker with a link to its stage.
+  Rows cover drawing, roles, materials, mesh attempts, mounting, motion, deck staleness, running/failed
+  run and historical revisions. Keys are localized in both dictionaries.
+- **Fixture/deck concurrency.** `PUT /api/meshes/{id}/fixture` accepts `expected_hash`; a stale tab is
+  rejected (409) without mutation. `POST /api/decks` accepts the reviewed `fixture_hash`; a changed
+  fixture is rejected before enqueueing. Both are backward compatible when the fields are omitted.
+- **Numeric and paste integrity.** Invalid numeric drafts stay visible, block Save/Generate/Prepare/
+  Submit and block step navigation; Escape restores the saved value. Laboratory paste is parsed into a
+  preview with header/blank-line support, source row numbers, rejected-row reasons, blocked Apply and
+  an unchanged card on cancel/invalid paste.
+- **Playback axes.** A sign mirror now refits an automatic axis and mirrors a deliberately zoomed
+  interval; reversing twice restores the range. Verified in a real WebGL browser against actual Plotly
+  axis limits.
+- **Dashboard identity.** Separate project and model filters; run rows carry group, model, dimension,
+  revision, short run ID and a seconds-precision timestamp.
+
+**Earlier delivered in this branch** (details and gate table in the
 [implementation report](docs/implementation-report.md#a4-repair-delivery--drawing-ownership-review-authority-playback-abaqus-only-execution)):
 
 - New models are explicitly empty (`source.kind = "empty"`), open at Import, and never seed geometry.
@@ -39,10 +90,11 @@ cavity 0.11288 -> 0.01974 mm, door 0.01423 mm, fit points beyond 0.02 mm 10/21 -
 mesh ran licensed as `d0d409c2-6fc9-4e69-95a1-c75069075d68` (door-only, completed, contact at 5.70 mm,
 +0.016966 N projected).
 
-**Open:** in-viewport drawing-role review, body-first/door-second two-panel analysis, and per-pair
-friction. The historical view now pairs a run with its own archived mesh and verified labels; the
-API-restart, custom-port startup and double-click-wrapper gates were exercised in this pass. See the
-gate table in the implementation report (section A4).
+**Open:** in-viewport drawing-role review, body-first/door-second two-panel analysis, per-pair
+friction, and 3D solving. Human uncoached usability acceptance (Gate 7) was **not run**; the task
+sheet is in the implementation report. Physical qualification remains **blocked** on a trusted
+reference curve and an agreed tolerance. The release-safety gate table is in
+[docs/implementation-report.md](docs/implementation-report.md) (section A5).
 
 **Two acceptance commands.**
 
@@ -104,4 +156,13 @@ on another machine. The fixture patch changes the force curve, so neither value 
 
 Use the [repository instructions](AGENTS.md) for normal commands and the [recovery guide](docs/migration-and-recovery.md) before investigating an unknown worker. Preserve the current licensed door-only runs as regression comparisons. Use an isolated data directory for new cases. For each completed slice, record the new API/schema behavior, historical compatibility, browser action exercised, test results, and any licensed run ID in the [implementation report](docs/implementation-report.md) and [validation record](docs/engineering-validation.md).
 
-Last verified on this machine (2026-11-22): `python -m pytest tests -q` → 105 passed, 1 skipped; `node scripts/check-translations.mjs` → 463 keys; `typecheck` and `build` → pass; `playwright test` → 33 passed; the packaged CMD launcher on `--port 8897` with isolated data served the built bundle and an empty project list. No new solver process was launched. The retained licensed run `989fec4a-98fa-4a61-999a-e16ec886ac68` was replayed from an isolated copy: 66 frames, camera stable after pan+zoom, final 1.300 s, travel 6.5 mm, signed `RF2` −0.0169664863 N, matching `history.csv`. The earlier licensed runs `54b7be8c-d260-4a65-adcf-0205263032f3` and `39f696ee-c757-44ba-bb42-9e8f9671bfe6` remain the fixture regression anchors.
+Last verified on this machine (2026-11-22, isolated root `I:\GithubProjects\Abaqus_QOL_impl`):
+`python -m pytest -q` → **122 passed, 1 skipped**; `test:i18n` → **500 keys** in both dictionaries;
+`typecheck` → pass; `build` → release `ec2cedaa9dfe`, entry `index-CwQ1OlF7.js`, API 3; `playwright
+test` → **41 passed** in the final isolated log. Isolated instances on 8898/8899 exercised release pinning and sequential data-root refusal,
+and a second API on the same data directory was refused with the owner's PID. No new solver process
+was launched and no license was consumed. The retained licensed run
+`989fec4a-98fa-4a61-999a-e16ec886ac68` was not modified in this pass; its earlier replay (66 frames,
+final 1.300 s, travel 6.5 mm, signed `RF2` −0.0169664863 N) remains the record. The earlier licensed
+runs `54b7be8c-d260-4a65-adcf-0205263032f3` and `39f696ee-c757-44ba-bb42-9e8f9671bfe6` remain the
+fixture regression anchors.

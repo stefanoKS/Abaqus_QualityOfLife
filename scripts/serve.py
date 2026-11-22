@@ -31,6 +31,13 @@ WEB = ROOT / "apps" / "web"
 PRODUCT = "Abaqus QOL"
 DEFAULT_PORT = 8765
 
+# `python scripts/serve.py` puts `scripts/`, not the repository root, on sys.path.
+# The launcher must be able to import `services` even when it is invoked from
+# another working directory, otherwise the instance-identity check silently
+# degrades to "unidentifiable" and a second double-click refuses to reuse.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 
 def lock_path(port):
     """One lock per port, so a custom-port launch never joins the default instance."""
@@ -156,11 +163,17 @@ def health(port, timeout=1.0):
 def local_identity():
     """Build identity of the code in this checkout, read without starting services."""
     try:
-        from services.api.main import BUILD, FRONTEND
+        from services import store
+        from services.api.main import API_VERSION, BUILD, FRONTEND
 
-        return {"build": BUILD, "frontend": FRONTEND}
+        return {
+            "build": BUILD,
+            "frontend": FRONTEND,
+            "api": API_VERSION,
+            "data": store.data_identity(),
+        }
     except Exception:  # a broken checkout reports itself as unidentifiable
-        return {"build": "", "frontend": ""}
+        return {"build": "", "frontend": "", "api": 0, "data": ""}
 
 
 def compatibility(payload):
@@ -170,6 +183,10 @@ def compatibility(payload):
     if not payload.get("build") or not payload.get("api"):
         return "legacy"
     expected = local_identity()
+    if payload.get("data") and expected.get("data") and payload["data"] != expected["data"]:
+        return "different-data"
+    if payload.get("api") != expected.get("api"):
+        return "different-api"
     if payload.get("build") != expected["build"]:
         return "different-build"
     return "current"
@@ -185,13 +202,25 @@ def describe(payload):
 
 
 def active_jobs(port, timeout=2.0):
-    """Jobs the running instance still owns; stopping it would lose work."""
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/api/jobs", timeout=timeout
-        ) as response:
-            jobs = json.loads(response.read())
-    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+    """Jobs the running instance still owns; stopping it would lose work.
+
+    Uses the lightweight summary endpoint, with a fallback to the full run list
+    for an older instance. ``None`` means activity could not be established, and
+    callers must refuse takeover rather than assume the instance is idle.
+    """
+    jobs = None
+    for path in ("/api/jobs", "/api/runs"):
+        try:
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}{path}", timeout=timeout
+            ) as response:
+                jobs = json.loads(response.read())
+            break
+        except urllib.error.HTTPError:
+            continue
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            return None
+    if jobs is None:
         return None
     return [
         job
@@ -271,14 +300,36 @@ def open_when_ready(port, label):
     print(f"{PRODUCT}: {label} did not report ready within 60 s.", flush=True)
 
 
+def pid_alive(pid):
+    try:
+        import psutil
+
+        return bool(pid) and psutil.pid_exists(int(pid))
+    except (ImportError, TypeError, ValueError):
+        try:
+            os.kill(int(pid), 0)
+        except (OSError, TypeError, ValueError):
+            return False
+        return True
+
+
 def acquire_lock(port):
-    """Return ``True`` when this launch owns the port lock, or the owner's details."""
+    """Return ``True`` when this launch owns the port lock, or the owner's details.
+
+    A simultaneous cold launch must not steal the lock from the launch that is
+    still booting: the owner is only replaced when its process is gone or the
+    record is old enough to be certainly abandoned.
+    """
     path = lock_path(port)
     path.parent.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
         try:
             with path.open("x", encoding="utf-8") as handle:
-                handle.write(json.dumps({"pid": os.getpid(), "port": port}))
+                handle.write(
+                    json.dumps(
+                        {"pid": os.getpid(), "port": port, "started": time.time()}
+                    )
+                )
             return True
         except FileExistsError:
             try:
@@ -286,6 +337,11 @@ def acquire_lock(port):
             except (OSError, ValueError):
                 owner = {}
             if health(owner.get("port", port), timeout=0.5):
+                return owner
+            age = time.time() - float(owner.get("started") or 0)
+            if pid_alive(owner.get("pid")) and age < 180:
+                # Another launch is still starting. Join it rather than replacing
+                # its lock and starting a second worker.
                 return owner
             # A crashed launch left the lock behind; take it over.
             path.unlink(missing_ok=True)
@@ -301,6 +357,7 @@ def store_root():
 def serve(port, test_data=None, browser=True):
     sys.path.insert(0, str(ROOT))
     os.chdir(ROOT)
+    os.environ["ABAQUS_QOL_PORT"] = str(port)
     if not (WEB / "dist/index.html").is_file():
         raise SystemExit(f"{PRODUCT}: build the browser first: npm --prefix apps/web run build")
     if test_data:
@@ -320,6 +377,14 @@ def serve(port, test_data=None, browser=True):
 
         os.environ["SIMPLIFY_ABAQUS_LAUNCHER"] = str(install_double(store_root()))
         os.environ.setdefault("ABAQUS_QOL_FAKE_SOLVE_SECONDS", "3")
+    # Refuse a second API/worker pair on the same data directory before the
+    # worker can claim anything. The record is released by the API lifespan.
+    from services import store
+
+    try:
+        store.claim_data_root(os.getpid(), port)
+    except store.Conflict as error:
+        raise SystemExit(f"{PRODUCT}: {error}") from None
     import uvicorn
 
     stop = store_root() / ("stop-" + uuid4().hex)
@@ -394,7 +459,9 @@ def main(argv=None):
         verdict = compatibility(existing)
         reason = {
             "legacy": "it predates the build identity fields, so it is an older release",
-            "different-build": "it runs a different build than this checkout",
+            "different-build": "it runs a different browser/API release than this checkout",
+            "different-api": "it runs a different API generation than this browser build",
+            "different-data": "it owns a different data directory than this launch",
         }.get(verdict, "it could not be identified")
         running = active_jobs(args.port)
         print(
@@ -405,6 +472,11 @@ def main(argv=None):
         )
         if running is None:
             print("  jobs    : could not be read from the running instance", flush=True)
+            raise SystemExit(
+                f"{PRODUCT}: refusing to take over port {args.port} because the running "
+                "instance's job state could not be established. Confirm its activity, close "
+                "it manually, then start again. Nothing was stopped."
+            )
         elif running:
             names = ", ".join(f"{job.get('name')} ({job.get('status')})" for job in running[:5])
             print(f"  jobs    : {len(running)} still active ? {names}", flush=True)

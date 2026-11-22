@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import {
   Plus,
   Layers3,
@@ -25,7 +25,23 @@ import {
   type RevisionSummary,
 } from './api'
 import { labelFrom, useI18n } from './i18n'
+import { useCompatibility } from './Compat'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
+
+/** One user action: a project group and its first model, created atomically. */
+type GroupCreated = { group: Group; model: Revision }
+
+function requestToken() {
+  try {
+    return crypto.randomUUID()
+  } catch {
+    // Older embedded browsers: a UUID-shaped random string is sufficient here.
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
+    })
+  }
+}
 
 export function Badge({ value }: { value: string }) {
   const { t } = useI18n()
@@ -59,6 +75,7 @@ export function JobActions({
   notify: (s: string) => void
 }) {
   const { t } = useI18n()
+  const compat = useCompatibility()
   async function act(kind: string) {
     try {
       if (kind === 'duplicate') {
@@ -87,6 +104,7 @@ export function JobActions({
       <button
         title={t('dashboard.duplicate')}
         aria-label={t('dashboard.duplicate')}
+        disabled={!compat.ok}
         onClick={() => act('duplicate')}
       >
         <Copy />
@@ -102,13 +120,14 @@ export function JobActions({
         <button
           title={t('dashboard.cancelJob')}
           aria-label={t('dashboard.cancelJob')}
+          disabled={!compat.ok}
           onClick={() => act('cancel')}
         >
           <Square />
         </button>
       )}
       {job.solver === 'Succeeded' && ['Failed', 'Cancelled'].includes(job.extraction) && (
-        <button onClick={() => act('retry')}>
+        <button onClick={() => act('retry')} disabled={!compat.ok}>
           <RotateCcw />
           {t('dashboard.retryExtraction')}
         </button>
@@ -118,15 +137,21 @@ export function JobActions({
 }
 
 export default function Dashboard({ notify }: { notify: (s: string) => void }) {
-  const { t, formatDate } = useI18n()
+  const { t, formatDate, formatDateTime } = useI18n()
+  const compat = useCompatibility()
   const [groups, gs] = useState<Group[]>([]),
     [runs, rs] = useState<Job[]>([])
-  const [filter, pf] = useState(''),
+  // Project (group) and model are separate filters: a model is not a project.
+  const [projectFilter, pf] = useState(''),
+    [modelFilter, mf] = useState(''),
     [status, sf] = useState(''),
     [creatingGroup, createGroupForm] = useState(false),
     [name, nm] = useState(''),
     [firstModel, first] = useState(''),
-    [dim, dm] = useState('2D')
+    [dim, dm] = useState('2D'),
+    // One token per create-form attempt. A retry after a lost response reuses
+    // it, so the server returns the project and model it already created.
+    [creationToken, setCreationToken] = useState(requestToken)
   const [modelGroup, setModelGroup] = useState<string | null>(null),
     [modelName, mn] = useState(''),
     [modelDim, md] = useState('2D'),
@@ -156,30 +181,45 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
   const projects = groups.flatMap((group) => group.models)
   async function addGroup(e: React.FormEvent) {
     e.preventDefault()
+    if (!compat.ok) {
+      notify(t('compat.writesDisabled'))
+      return
+    }
     setBusy(true)
     try {
-      const group = await request<Group>('/api/groups', 'POST', { name: name.trim() })
-      // A group without a model has nothing to open, so the first model is
-      // created in the same action; it falls back to the project name.
-      const r = await request<Revision>('/api/projects', 'POST', {
-        name: (firstModel.trim() || name).trim(),
+      // One request, one transaction: a group can never exist without its first
+      // model, and a retry with the same token returns the original pair.
+      const created = await request<GroupCreated>('/api/project-groups', 'POST', {
+        name: name.trim(),
+        model_name: (firstModel.trim() || name).trim(),
         dimension: dim,
-        group: group.id,
         example,
+        token: creationToken,
       })
       createGroupForm(false)
       nm('')
       first('')
       setExample(false)
-      go('workspace/' + r.id)
+      setCreationToken(requestToken())
+      await refresh()
+      go('workspace/' + created.model.id)
     } catch (e) {
       notify(err(e))
     } finally {
       setBusy(false)
     }
   }
+
+  function toggleCreateForm() {
+    createGroupForm(!creatingGroup)
+    if (!creatingGroup) setCreationToken(requestToken())
+  }
   async function addModel(e: React.FormEvent, group: string) {
     e.preventDefault()
+    if (!compat.ok) {
+      notify(t('compat.writesDisabled'))
+      return
+    }
     setBusy(true)
     try {
       const r = await request<Revision>('/api/projects', 'POST', {
@@ -220,8 +260,14 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
       notify(err(e))
     }
   }
+  const models = projectFilter
+    ? projects.filter((p) => p.group === projectFilter)
+    : projects
   const visible = runs.filter(
-    (r) => (!filter || filter === r.project) && (!status || status === r.status),
+    (r) =>
+      (!projectFilter || r.group === projectFilter) &&
+      (!modelFilter || modelFilter === r.project) &&
+      (!status || status === r.status),
   )
   return (
     <main className="dashboard page">
@@ -232,7 +278,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           </div>
           <h1>{t('dashboard.title')}</h1>
         </div>
-        <button className="primary" onClick={() => createGroupForm(!creatingGroup)}>
+        <button className="primary" onClick={toggleCreateForm} disabled={!compat.ok}>
           <Plus />
           {t('dashboard.newProject')}
         </button>
@@ -275,12 +321,13 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             {t('dashboard.example')}
           </label>
           <small>{t('dashboard.exampleHint')}</small>
-          <button className="primary" disabled={busy || !name.trim()}>
+          <button className="primary" disabled={busy || !name.trim() || !compat.ok}>
             {t('dashboard.createProject')}
           </button>
           <button type="button" onClick={() => createGroupForm(false)}>
             {t('common.cancel')}
           </button>
+          {!compat.ok && <small className="error-text">{t('compat.writesDisabled')}</small>}
         </form>
       )}
       <h2>
@@ -308,7 +355,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               <div>
                 <strong>{group.name}</strong>
                 <small>
-                  {t('dashboard.modelsCount', { count: group.models.length })} ·{' '}
+                  {t('dashboard.modelsCount', { count: group.models.length })} Â·{' '}
                   {formatDate(group.created)}
                 </small>
               </div>
@@ -364,7 +411,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       <span>
                         <strong>{p.name}</strong>
                         <small>
-                          {p.dimension} · {t('dashboard.revision', { number: p.number })} ·{' '}
+                          {p.dimension} Â· {t('dashboard.revision', { number: p.number })} Â·{' '}
                           {t('dashboard.revisionCount', { count: p.revisions })}
                         </small>
                       </span>
@@ -382,7 +429,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       <button
                         onClick={() => duplicateModel(p.id)}
                         title={t('dashboard.duplicateModel')}
-                        aria-label={t('dashboard.duplicateModel') + ' · ' + p.name}
+                        aria-label={t('dashboard.duplicateModel') + ' Â· ' + p.name}
                       >
                         <Copy />
                       </button>
@@ -416,11 +463,26 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             <ListFilter />
             <select
               aria-label={t('dashboard.filterProject')}
-              value={filter}
-              onChange={(e) => pf(e.target.value)}
+              value={projectFilter}
+              onChange={(e) => {
+                pf(e.target.value)
+                mf('')
+              }}
             >
               <option value="">{t('dashboard.allProjects')}</option>
-              {projects.map((p) => (
+              {groups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}
+                </option>
+              ))}
+            </select>
+            <select
+              aria-label={t('dashboard.filterModel')}
+              value={modelFilter}
+              onChange={(e) => mf(e.target.value)}
+            >
+              <option value="">{t('dashboard.allModels')}</option>
+              {models.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -463,7 +525,11 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                     <td>
                       <strong>{r.name}</strong>
                       <small>
-                        {r.project_name} · {r.dimension} · Rev {r.number}
+                        {(r.group_name ? r.group_name + ' Â· ' : '') + r.project_name} Â·{' '}
+                        {r.dimension} Â· Rev {r.number}
+                      </small>
+                      <small className="run-identity">
+                        {t('dashboard.runId')} {r.id.slice(0, 8)} Â· {formatDateTime(r.created)}
                       </small>
                       <small className="mode-label">
                         {r.mode === 'DEMO' ? t('demo.notice') : r.mode}
@@ -474,7 +540,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       <small>
                         {labelFrom(t, 'phase', r.step || r.phase)}
                         {r.increment != null
-                          ? ' · ' + t('dashboard.increment', { value: r.increment })
+                          ? ' Â· ' + t('dashboard.increment', { value: r.increment })
                           : ''}
                       </small>
                     </td>

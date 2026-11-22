@@ -458,6 +458,14 @@ test.describe('high-DPI selection', () => {
     expect(await count(page)).toBeGreaterThan(0)
     await page.getByRole('button', { name: 'Save fixed nodes' }).click()
     const job = await meshJob(request, revision)
+    // The save is asynchronous; wait for persistence before reading the job.
+    await expect
+      .poll(
+        async () =>
+          ((await (await request.get('/api/jobs/' + job.id)).json()) as Job).fixture?.count ?? 0,
+        { timeout: 15000 },
+      )
+      .toBeGreaterThan(0)
     const stored: Job = await (await request.get('/api/jobs/' + job.id)).json()
     expect(stored.fixture!.labels.every((l) => l.startsWith('WS-1:'))).toBe(true)
   })

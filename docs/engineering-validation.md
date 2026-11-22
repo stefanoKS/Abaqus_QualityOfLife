@@ -315,3 +315,25 @@ recorded artifacts; it does not establish physical correlation, contact accuracy
 - Legacy results produced before this phase have history rows without `u1/u2/rf1/rf2`. They remain
   viewable and exportable with their original U2/RF2 meaning; the chart states that the projected door
   response is unavailable for them.
+
+## Release-safety pass — 2026-11-22
+
+No solver process was launched in this pass and no Abaqus license was consumed. The retained licensed
+runs (`989fec4a-98fa-4a61-999a-e16ec886ac68`, `54b7be8c-d260-4a65-adcf-0205263032f3`,
+`39f696ee-c757-44ba-bb42-9e8f9671bfe6`) and their ODBs, decks, meshes and history files were not
+modified or re-extracted. The pass changed browser release serving, HTTP request validation, readiness
+reporting and UI state handling; it did not change the INP writer, solver invocation, extraction code
+or any physical assumption.
+
+Where this record cites the door-only result (contact at about 5.70 mm, projected +0.016966 N, signed
+`RF2` −0.0169664863 N), that evidence comes from the earlier licensed run and remains a regression
+replay anchor for that artifact, not an acceptance threshold for another model. A new licensed solve
+would be required to claim contact or force accuracy on a different geometry, material or fixture.
+
+Backup/restore drill for this pass: **executed on isolated data**. A retained revision with a completed
+mesh (19 fixed nodes, fixture hash `97eab31a…`), a completed deck (input hash `a8e66b22…`) and its
+`analysis.inp` were created in an isolated data root, the API was stopped, the whole directory was
+copied, the original moved aside and the copy restored. After restart the project, revision, deck job,
+fixture hash and downloaded INP were re-read: the INP SHA-256 matched exactly and the `WSFIX` block was
+present. The `instance.json` left by the stopped process was recognised as stale and taken over by the
+new PID. Low-disk and interrupted-write fault injection were **not** repeated in this pass.

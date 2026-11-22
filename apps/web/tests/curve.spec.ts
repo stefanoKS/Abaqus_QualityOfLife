@@ -104,3 +104,75 @@ test('door response is projected, sign-reversible and exported as displayed', as
   await expect(page.getByRole('heading', { name: 'Force–displacement' })).toBeVisible()
   await expect(page.getByText('Door response', { exact: true })).toBeVisible()
 })
+
+test('reverse axes refit an automatic axis and mirror a zoomed one', async ({ page, request }) => {
+  const revision: Revision = await (
+    await request.post('/api/projects', { data: { name: 'Axis range', example: true } })
+  ).json()
+  const run = await completedRun(request, revision, 'Axis range run')
+  await page.goto('/#results/' + run.id)
+  await expect(page.locator('.run-banner')).toBeVisible({ timeout: 20000 })
+  await expect(page.getByRole('heading', { name: /Force.displacement/ })).toBeVisible({
+    timeout: 20000,
+  })
+
+  type Axis = { range: number[]; autorange: boolean | string }
+  async function axis(which: 'xaxis' | 'yaxis'): Promise<Axis> {
+    return page.evaluate((name) => {
+      const el = document.querySelector('.plot') as unknown as {
+        layout: Record<string, { range: number[]; autorange: boolean | string }>
+      }
+      const found = el.layout[name]
+      return { range: found.range, autorange: found.autorange }
+    }, which)
+  }
+  await page.waitForFunction(() => {
+    const el = document.querySelector('.plot') as unknown as {
+      data?: { x?: number[] }[]
+      layout?: { xaxis?: { range?: number[] } }
+    }
+    return !!el?.data?.[0]?.x?.length && !!el.layout?.xaxis?.range
+  })
+
+  // Full view: the positive-travel curve spans positive X before reversing.
+  const before = await axis('xaxis')
+  expect(before.range[1]).toBeGreaterThan(3)
+
+  await page.getByLabel('Reverse X sign').check()
+  // The old defect kept positive limits and clipped the negated curve. The
+  // refitted axis must actually span the mirrored travel.
+  await expect.poll(async () => (await axis('xaxis')).range[0]).toBeLessThan(-3)
+  const flipped = await axis('xaxis')
+  expect(flipped.range[1]).toBeLessThan(1)
+
+  // Reversing twice restores the automatically fitted interval.
+  await page.getByLabel('Reverse X sign').uncheck()
+  await expect.poll(async () => (await axis('xaxis')).range[1]).toBeGreaterThan(3)
+  const restored = await axis('xaxis')
+  expect(restored.range[0]).toBeCloseTo(before.range[0], 3)
+  expect(restored.range[1]).toBeCloseTo(before.range[1], 3)
+
+  // A deliberate zoom is preserved as the same physical portion, mirrored.
+  const plot = page.locator('.plot')
+  const box = (await plot.boundingBox())!
+  await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.3)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.75)
+  await page.mouse.up()
+  await expect.poll(async () => (await axis('xaxis')).autorange).not.toBe(true)
+  const zoomed = await axis('xaxis')
+  expect(zoomed.range[1] - zoomed.range[0]).toBeLessThan(before.range[1] - before.range[0])
+
+  await page.getByLabel('Reverse X sign').check()
+  await expect
+    .poll(async () => (await axis('xaxis')).range[1])
+    .toBeCloseTo(-zoomed.range[0], 2)
+  const mirrored = await axis('xaxis')
+  expect(mirrored.range[0]).toBeCloseTo(-zoomed.range[1], 2)
+
+  // Reversing back restores the deliberately zoomed interval.
+  await page.getByLabel('Reverse X sign').uncheck()
+  await expect
+    .poll(async () => (await axis('xaxis')).range[0])
+    .toBeCloseTo(zoomed.range[0], 2)
+})

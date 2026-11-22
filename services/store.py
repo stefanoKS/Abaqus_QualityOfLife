@@ -89,6 +89,9 @@ def initialize():
         CREATE INDEX IF NOT EXISTS job_queue ON jobs(solver, extraction, created);
         CREATE TABLE IF NOT EXISTS groups(
           id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS creations(
+          token TEXT PRIMARY KEY, group_id TEXT NOT NULL, project_id TEXT NOT NULL,
+          revision_id TEXT NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS fixtures(
           job TEXT PRIMARY KEY REFERENCES jobs(id), mesh_digest TEXT NOT NULL,
           labels_hash TEXT NOT NULL, labels TEXT NOT NULL, updated REAL NOT NULL);
@@ -216,6 +219,113 @@ def create_group(name):
     return {"id": group_id, "name": name, "created": time.time(), "models": []}
 
 
+def create_group_with_model(group_name, setup, token):
+    """Create the group and its first model as one transaction.
+
+    The user action carries one ``token``. A second request with the same token
+    returns the first result even if the first response was lost, and a failure
+    anywhere inside the transaction leaves neither a group nor a model behind.
+    """
+    with connection(True) as db:
+        existing = db.execute(
+            "SELECT revision_id FROM creations WHERE token=?", (str(token),)
+        ).fetchone()
+        if existing:
+            return revision(existing["revision_id"])
+        group_id = new_id()
+        db.execute(
+            "INSERT INTO groups VALUES (?,?,?)", (group_id, group_name, time.time())
+        )
+        rid = append_revision(db, setup, group=group_id)
+        project = db.execute("SELECT project FROM revisions WHERE id=?", (rid,)).fetchone()[0]
+        db.execute(
+            "INSERT INTO creations VALUES (?,?,?,?,?)",
+            (str(token), group_id, project, rid, time.time()),
+        )
+    return revision(rid)
+
+
+def creation_of(token):
+    """Return the recorded creation for a token, if one exists."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT * FROM creations WHERE token=?", (str(token),)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def data_identity():
+    """Stable digest of the resolved data directory, for ownership checks."""
+    return hashlib.sha256(str(root()).casefold().encode("utf-8")).hexdigest()[:16]
+
+
+INSTANCE_RECORD = "instance.json"
+
+
+def instance_path():
+    return root() / INSTANCE_RECORD
+
+
+def read_instance():
+    try:
+        return json.loads(instance_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def pid_alive(pid):
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        import psutil
+
+        return psutil.pid_exists(pid)
+    except ImportError:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+
+def claim_data_root(pid, port, release_id=""):
+    """Refuse a second API/worker pair on the same data directory.
+
+    The record is written before the worker starts. A record whose process is
+    gone is stale and may be replaced; a live owner is never taken over, because
+    two workers on one queue and one artifact tree can interleave writes.
+    """
+    current = read_instance()
+    if current and current.get("pid") and int(current["pid"]) != int(pid):
+        if pid_alive(current["pid"]):
+            raise Conflict(
+                "The data directory "
+                f"{root()} is already owned by Abaqus QOL PID {current['pid']} on port "
+                f"{current.get('port')}. Use one port for this data directory, or set a "
+                "separate SEAL_DATA for an independent test instance. Nothing was stopped."
+            )
+    record = {
+        "pid": int(pid),
+        "port": int(port),
+        "release": release_id,
+        "started": time.time(),
+        "data": data_identity(),
+    }
+    instance_path().write_text(encoded(record), encoding="utf-8")
+    return record
+
+
+def release_data_root(pid):
+    """Remove the ownership record only when this process still owns it."""
+    current = read_instance()
+    if current and int(current.get("pid", 0)) == int(pid):
+        instance_path().unlink(missing_ok=True)
+
+
 def group_exists(group):
     with connection() as db:
         return db.execute("SELECT 1 FROM groups WHERE id=?", (str(group),)).fetchone() is not None
@@ -302,9 +412,11 @@ def public(row):
 
 JOB_SELECT = """SELECT j.*,r.project,r.number,
  json_extract(r.setup,'$.dimension') AS dimension,json_extract(r.setup,'$.name') AS project_name,
+ p.group_id AS "group",g.name AS group_name,
  (SELECT labels FROM fixtures f WHERE f.job=j.id) AS review_labels,
  (SELECT labels_hash FROM fixtures f WHERE f.job=j.id) AS review_labels_hash
- FROM jobs j JOIN revisions r ON j.revision=r.id"""
+ FROM jobs j JOIN revisions r ON j.revision=r.id JOIN projects p ON p.id=r.project
+ LEFT JOIN groups g ON g.id=p.group_id"""
 
 
 def job(jid):
@@ -325,6 +437,22 @@ def jobs(modes=("DEMO", "ABAQUS")):
                 tuple(modes),
             )
         ]
+
+
+def fixture(jid):
+    """The reviewed fixed-node set for a mesh job, or ``None`` before review."""
+    with connection() as db:
+        row = db.execute("SELECT * FROM fixtures WHERE job=?", (str(jid),)).fetchone()
+    if row is None:
+        return None
+    labels = json.loads(row["labels"])
+    return {
+        "labels": labels,
+        "count": len(labels),
+        "hash": row["labels_hash"],
+        "mesh_digest": row["mesh_digest"],
+        "updated": row["updated"],
+    }
 
 
 def set_fixture(jid, mesh_digest, labels_hash, labels):
@@ -378,6 +506,7 @@ def submit(
     deck=None,
     mesh=None,
     compat=None,
+    expected_fixture=None,
 ):
     jid = token if mode == "IMPORT" else new_id()
     if mode == "DEMO":
@@ -429,6 +558,14 @@ def submit(
                 if not fixture or not json.loads(fixture["labels"]):
                     raise Conflict(
                         "Select the fixed weatherstrip nodes before preparing the input deck."
+                    )
+                # The engineer prepared this deck from a specific reviewed fixture.
+                # If another tab changed it after that review, conflict instead of
+                # silently snapshotting the newer selection.
+                if expected_fixture is not None and fixture["labels_hash"] != expected_fixture:
+                    raise Conflict(
+                        "The fixed nodes changed after you reviewed them. Reopen Mounting, "
+                        "confirm the current selection, then prepare the input deck again."
                     )
                 if fixture["mesh_digest"] != record["mesh_digest"]:
                     raise Conflict(

@@ -587,3 +587,79 @@ and mesh-node-selected fixtures).
   agreed.
 - **3D is not ready.** The 3D extrusion remains a preview; grouping 3D models is supported, but 3D
   solving, meshing and deck generation remain deferred until the 2D workflow is complete and validated.
+
+## A5. Release-safety repair pass — 2026-11-22
+
+Scope: matched browser/API releases, an explicit compatibility gate, atomic project creation, one
+owner per data directory, a single readiness contract, fixture/deck concurrency, numeric and
+laboratory-paste integrity, dashboard project/model identity, and the Reverse-X/Y axis defect.
+
+**Baseline at start of pass.** `main` was clean at `9df297f` (one commit after `d7b6728`); the repairs
+the previous audit saw as uncommitted were already committed and are preserved. The live instance on
+port 8765 reported `build 4d7e4ff5f2f003f9`, `git d7b6728`, `api 2`, `frontend index-BGFyxNwQ.js`,
+while the homepage served `/assets/index-D8N6_7rq.js` from a later build — the old-API/new-frontend
+mismatch was reproduced. The dashboard creation path issued two requests and could leave a group
+without its first model. `/api/jobs` did not exist, so the launcher's activity probe always reported
+"could not be read". `Plot` preserved positive axis limits when the series was mirrored.
+
+**Isolation.** All builds and browser acceptance ran in `I:\GithubProjects\Abaqus_QOL_impl`, populated
+from the current working tree (excluding `.venv`, `node_modules`, `dist`, `releases`, `.local`), with
+a repository-local `.venv` junction and an independent copy of the frontend dependencies. Browser tests
+used their own temporary SQLite root and the launcher double on port 8876. No solver process was
+started and no license was consumed. The publisher's data directory
+(`%LOCALAPPDATA%\SimplifyAbaqus`) was inspected read-only; it was not modified (its newest write
+predates this pass and no `instance.json` was created there).
+
+**Incident and remediation.** During the pass one build was accidentally run from the publisher's
+checkout instead of the isolated root. The checkout's `apps/web/dist` was replaced by the new build
+(the old assets were not recoverable). The running instance on 8765 was already gone by the next
+check and its data directory was intact; the checkout is now self-consistent because `dist/` and
+`apps/web/releases/` contain the same published release (`ec2cedaa9dfe`). This is recorded so it is
+not mistaken for a clean separation: future builds must run from the isolated root.
+
+### Repairs and evidence
+
+| Repair | Evidence |
+|---|---|
+| Immutable release directories; startup pins one release | `services/release.py`, `apps/web/scripts/publish-release.mjs`, `tests/test_release_and_compatibility.py`. Isolated A (`8898`) stayed on `ba3873ae2788` / `index-Nu0v-nbm.js` after a rebuild published `3f88561050cf`: A served its entry 200 and B's entry 404. B (`8899`, separate data) served `3f88561050cf` / `index-CAOdvt4j.js`. |
+| Compatibility gate and stale tab | `apps/web/src/compatibility.ts`, `Compat.tsx`; API middleware rejects identified writes (409). Browser tests `compatibility.spec.ts` (3) cover stale tab, API-generation mismatch and bypass refusal. |
+| Atomic project + first model | `POST /api/project-groups` + `creations` table; dashboard retries with the same token. Python tests cover repeat/lost response, a different token, and rollback with no orphan group; browser test loses the first response and retries. |
+| One owner per data directory | `store.claim_data_root`, `instance.json`; launcher `--takeover` refuses when jobs are unreadable or active. Live check: a second launch on 8900 against the same data directory was refused with `PID 34072 on port 8898`. Unit tests cover live owner, re-entry, stale-record takeover, unreadable job list and a booting lock. |
+| One readiness calculation | `services/readiness.py`, `GET /api/revisions/{id}/readiness`, workspace header blocker link. Tests cover empty, missing mesh, ready after deck, and a mesh-control change that invalidates a previous mesh. |
+| Fixture/deck concurrency | `expected_hash` on fixture save, `fixture_hash` on deck preparation; stale saves/decks return 409 without mutation (`tests/test_release_and_compatibility.py`). |
+| Numeric drafts | Invalid text stays visible; Save/Generate/Prepare/Submit and step navigation blocked; Escape restores. Browser test with `Prescribed Y travel` = 5 mm. |
+| Laboratory paste | Draft preview, documented header, blank lines, source row numbers, rejected-row reasons, blocked Apply, Cancel preserves data. Browser test with one invalid middle row; corrected values reach the saved card. |
+| Reverse axes | `plotAxis.ts` refits an auto axis and mirrors a zoomed interval; real Plotly axis limits asserted before/after in `curve.spec.ts`, including double reversal. |
+| Dashboard identity | Separate project/model filters, group/model/revision/run-ID/seconds timestamp; `jobs.spec.ts` updated and passing. |
+
+### Gate status (this pass)
+
+| Gate | Status | Procedure and result | Remaining impact |
+|---|---|---|---|
+| 1 — startup, release, compatibility, atomic creation | **PASS** (automated) | Isolated A/B release pinning; stale tab and API mismatch browser tests; duplicate/lost project creation; data-root refusal; unreadable-job and active-job refusal; two-launch lock; browser-open unit path. | A real double-click with a visible browser window was not observed; browser opening is proven by intercepting `webbrowser.open`, not by an operator watching a window. |
+| 2 — drawing/model/revision/draft ownership | **PASS** (existing + automated) | Existing `isolation.spec.ts` (5), `groups.spec.ts` (2), `workflow.spec.ts` (2) pass; new project/model filters and run identity. | In-viewport drawing-role review and the material partition tool remain unimplemented (separate engineering work). |
+| 3 — inputs readable and hard to change silently | **PARTIAL** | Readiness API/header tests, numeric draft test, paste rejection/correction test and the material/deck test pass. | The combined cases (single material on a hollow seal, unassigned component, excluded body, zero friction, short-travel warning with JA/EN draft preservation) were not all re-run as one fresh acceptance case. Per-pair friction and body-first loading are unsupported and refused. |
+| 4 — mesh, fixture, deck identity | **PASS** (automated, API-level concurrency) | Existing fixture/review browser tests (8) pass; stale fixture save and stale deck preparation rejected without mutation; Review enqueues no `POST /api/meshes` (`review.spec.ts`). | The stale-save conflict was exercised through the API from two request contexts, not two visible browser tabs. |
+| 5 — playback, mirroring, provenance | **PARTIAL** | Reverse X/Y full-view and zoomed intervals asserted against real Plotly layout; delayed-frame, camera and actor-count browser tests pass; retained licensed replay from the earlier pass remains the record. | The specific WebGL case with a seal node moving beyond its panel RP, a measured zero, missing U3/RF, out-of-order scrub responses, a failed frame request and two-window uncached open was not re-run in this pass. |
+| 6 — job control, performance, recovery | **PARTIAL (restore PASS, fault injection NOT RUN)** | Existing worker, cancel, retry, restart and extraction-failure tests pass (121 Python, 1 skipped). Backup/restore drill executed on isolated data: revision, deck job, fixture hash, `WSFIX` and INP SHA-256 (`a8e66b22…`) survived a stop-copy-move-restore-restart cycle; the stale `instance.json` was taken over. | Low-disk, interrupted-artifact-write and worker-disconnect fault injection were not repeated. Performance payload/time on a realistic historical dataset was not measured. |
+| 7 — operator usability and engineering scope | **AUTOMATED PASS / HUMAN NOT RUN** | Both languages load and switch; 500 keys; accessibility labels and Japanese workflow labels pass. Viewport/scaling was exercised only at the default 1440×960 in the browser suite. | No representative engineer performed the six uncoached tasks; 125%/150% Windows scaling was not captured. Human usability acceptance is **NOT RUN**. |
+| Final regression | **PASS** | See counts below; all six commands exit 0. | — |
+
+### Final regression (isolated root)
+
+| Check | Result |
+|---|---|
+| `python scripts/schema.py` | regenerated `apps/web/src/generated.ts`; diff contains the new readiness/project-group/Job fields only |
+| `python -m pytest -q` | **122 passed, 1 skipped** (opt-in installed-runtime test skipped) |
+| `npm run test:i18n` | **500 keys** in both dictionaries |
+| `npm run typecheck` | pass |
+| `npm run build` | release `ec2cedaa9dfe`, entry `index-CwQ1OlF7.js`, API 3 |
+| `npm run test:browser` | **39 passed** |
+
+### Release decisions (separate)
+
+| Decision | Verdict | Dependency |
+|---|---|---|
+| Software release candidate for the stated local workflow | **PASS** | None for the automated scope; double-click browser opening was verified as a unit path, not observed. |
+| Supervised internal engineering pilot | **BLOCKED** | Needs a supervised run by a representative engineer on the target Windows host, including 125%/150% scaling and the six-task sheet; current solver evidence is door-only. |
+| Production use for engineering decisions | **BLOCKED** | Needs a trusted reference or measured curve with matching geometry, material, fixture, contact, thickness and motion, plus tolerances agreed before comparison, contact onset/force comparisons, mesh and duration sensitivity, and disposition of divergence/negative-eigenvalue warnings. No such reference exists here. |

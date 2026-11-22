@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+﻿import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Languages, LayoutDashboard, Monitor, PanelTop, X } from 'lucide-react'
 import logo from '../assets/logo.png'
@@ -7,6 +7,7 @@ import Workspace from './Workspace'
 import { RunView } from './RunView'
 import { err, go, lastModel, rememberModel, request, type Revision, type Summary, type Job } from './api'
 import { I18nProvider, useI18n, type Language } from './i18n'
+import { CompatibilityBanner, CompatibilityProvider } from './Compat'
 import './theme/tokens.css'
 import './style.css'
 
@@ -75,7 +76,7 @@ function App() {
     }
     void open().catch((e) => {
       if (!ac.signal.aborted) {
-        setError(err(e) + (id ? ' · ' + id : ''))
+        setError(err(e) + (id ? ' Â· ' + id : ''))
       }
     })
     return () => ac.abort()
@@ -127,6 +128,7 @@ function App() {
         </span>
         <LanguageButton />
       </header>
+      <CompatibilityBanner />
       {view === 'dashboard' ? (
         <Dashboard notify={notify} />
       ) : view === 'diagnostics' || view === 'results' ? (
@@ -156,6 +158,8 @@ function App() {
 }
 createRoot(document.getElementById('root')!).render(
   <I18nProvider>
-    <App />
+    <CompatibilityProvider>
+      <App />
+    </CompatibilityProvider>
   </I18nProvider>,
 )

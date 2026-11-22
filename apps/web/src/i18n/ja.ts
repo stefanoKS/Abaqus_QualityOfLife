@@ -8,6 +8,54 @@
 export const ja = {
   'app.name': 'Abaqus QOL',
 
+  // Frontend/API compatibility. One message, one recovery action.
+  'compat.staleTab':
+    'このタブは実行中の API と異なるビルドを表示しています。ページを再読み込みしてください。',
+  'compat.apiMismatch':
+    'この画面と実行中の API の版が一致しません。Abaqus QOL を閉じ、start-abaqus-qol.cmd から起動し直してください。',
+  'compat.unreachable':
+    'ローカル API に接続できません。Abaqus QOL が起動しているか確認し、再読み込みしてください。',
+  'compat.reload': '再読み込み',
+  'compat.writesDisabled':
+    '互換性が確認できるまで、プロジェクト作成・読込・デッキ生成・解析投入は無効です。',
+
+  // Revision readiness: stable reason codes, resolved by the owning stage.
+  'readiness.drawing.missing': '図面が未読込です。Import で DXF または DWG を読み込んでください。',
+  'readiness.drawing.extrusion_preview':
+    'このモデルは 3D 押出プレビューです。2D 平面応力の図面に戻すまで解析できません。',
+  'readiness.drawing.digest_missing':
+    '図面の元ファイル digest が記録されていません。元図面を再読込してください。',
+  'readiness.components.unassigned':
+    '{count} 個の未割当コンポーネントがあります。Components で役割を割り当ててください。',
+  'readiness.components.no_moving_panel':
+    '可動パネルがありません。Components で扉のコンポーネントに役割を割り当ててください。',
+  'readiness.components.no_seal':
+    'シールがありません。Components でシールのコンポーネントに役割を割り当ててください。',
+  'readiness.material.unassigned':
+    '{count} 個の領域に材料がありません。Materials で材料を割り当ててください。',
+  'readiness.material.none': '材料カードがありません。Materials で 1 つ割り当ててください。',
+  'readiness.mesh.missing':
+    'このリビジョンのメッシュがありません。Mesh で生成してください。',
+  'readiness.mesh.latest_attempt_failed':
+    '最新のメッシュ生成は{status}でした。Mesh で再生成するか、原因を確認してください。',
+  'readiness.mesh.previous_attempt_failed':
+    '最新の試行は{status}ですが、以前の互換メッシュは使用できます。表示中のメッシュを確認してください。',
+  'readiness.mounting.missing':
+    '固定ノードが未レビューです。Mounting で固定ノードを選択して保存してください。',
+  'readiness.mounting.reviewed': '{count} 個の固定ノードが保存済みです。',
+  'readiness.motion.travel_not_closing':
+    '移動量が閉じ方向ではありません。Motion で負の移動量を設定してください。',
+  'readiness.deck.missing':
+    '入力デッキがありません。Review / Run でデッキを生成してください。',
+  'readiness.deck.superseded_mesh':
+    '入力デッキはより新しいメッシュに置き換えられています。Review / Run で新しいデッキを生成してください。',
+  'readiness.deck.stale_fixture':
+    'デッキ生成後に固定ノードが変更されています。Mounting を確認し、デッキを生成し直してください。',
+  'readiness.run.active': '実行 {job} は {status} です。',
+  'readiness.run.failed': '直前の実行 {job} は失敗しました。診断を確認して再投入してください。',
+  'readiness.revision.historical':
+    'このリビジョンは履歴です。編集するには最新リビジョンから複製してください。',
+
   'nav.workspace': '作業画面',
   'nav.dashboard': 'ダッシュボード',
   'nav.main': 'メインナビゲーション',
@@ -16,6 +64,8 @@ export const ja = {
   'nav.dismiss': 'メッセージを閉じる',
 
   'common.openingProject': 'プロジェクトを開いています…',
+  'validation.invalidDraft':
+    '数値欄に無効な入力があります。修正するか Esc で保存値に戻してから実行してください。',
   'common.cancel': 'キャンセル',
 
   'lang.label': '表示言語',
@@ -41,9 +91,12 @@ export const ja = {
   'dashboard.runs': '解析実行履歴',
   'dashboard.revision': 'リビジョン {number}',
   'dashboard.filterProject': 'プロジェクトで絞り込む',
+  'dashboard.filterModel': 'モデルで絞り込む',
   'dashboard.filterStatus': '状態で絞り込む',
   'dashboard.allProjects': 'すべてのプロジェクト',
+  'dashboard.allModels': 'すべてのモデル',
   'dashboard.allStatuses': 'すべての状態',
+  'dashboard.runId': '実行 ID',
   'dashboard.colRun': '実行 / プロジェクト',
   'dashboard.colState': '状態',
   'dashboard.colSubmitted': '投入日時',
@@ -85,6 +138,7 @@ export const ja = {
   'workspace.saveRevision': 'リビジョンを保存',
   'workspace.reviewRun': '解析条件確認・実行',
   'workspace.workflow': 'ワークフロー',
+  'workspace.resolveBlocker': 'この手順を開く',
   'workspace.assemblyTree': 'アセンブリツリー',
   'workspace.expand': '{name} を展開',
   'workspace.toggleVisibility': '{name} の表示を切り替え',
@@ -207,6 +261,15 @@ export const ja = {
     '表計算ソフトから 3 列（公称応力, 軸公称ひずみ, 横公称ひずみ）を貼り付けられます。',
   'materials.pasteTitle': '表データを貼り付け',
   'materials.pasteApply': '貼り付けを反映',
+  'materials.pasteConventions':
+    '列は 応力 → 軸ひずみ → 横ひずみ の順です。応力は N/mm²、ひずみは無次元です。値は丸めず、並べ替えずに保持します。',
+  'materials.pasteSummary': '{accepted} 行を受け付け、{rejected} 行を拒否しました。',
+  'materials.pasteHeader': '{line} 行目はヘッダーとして扱いました（列位置で対応）。',
+  'materials.pasteColumns': '{line} 行目: 3 列必要ですが {count} 列でした。',
+  'materials.pasteNumber': '{line} 行目: 有限の数値でない値があります。',
+  'materials.pasteApplyCount': '{count} 行を反映',
+  'materials.pasteBlocked':
+    '拒否された行を修正するまで反映できません。保存済みの材料データは変更されていません。',
   'materials.row': '行 {row}',
   'materials.samples': '{count} サンプル',
   'materials.usedBy': '{count} 領域で使用',

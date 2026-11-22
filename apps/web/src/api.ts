@@ -1,4 +1,5 @@
 import type { components } from './generated'
+import { EXPECTED_API, ownEntry } from './compatibility'
 
 export type Revision = components['schemas']['Revision']
 export type Project = Revision['setup']
@@ -15,10 +16,21 @@ export async function request<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const form = body instanceof FormData
+  // Every request identifies the browser release and API generation it was
+  // built against. The API rejects a write from a half-matched pair; an
+  // unidentified script keeps the original contract.
+  const entry = ownEntry()
+  const headers: Record<string, string> = {
+    'X-Abaqus-QOL-Api': String(EXPECTED_API),
+    // A Vite dev URL is a source module, not a published release entry. The API
+    // accepts the literal `dev` for that case and still enforces `api`.
+    'X-Abaqus-QOL-Client': /^index-.*\.js$/.test(entry) ? entry : 'dev',
+  }
+  if (!form && body !== undefined) headers['Content-Type'] = 'application/json'
   const response = await fetch(path, {
     method,
     signal,
-    headers: form || body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    headers,
     body: body === undefined ? undefined : form ? body : JSON.stringify(body),
   })
   if (!response.ok) {

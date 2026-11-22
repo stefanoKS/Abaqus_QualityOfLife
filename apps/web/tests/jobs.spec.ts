@@ -25,7 +25,10 @@ test('dashboard filters, cancellation and results of an Abaqus run', async ({ pa
     .poll(async () => (await job(cancelled.id)).status, { timeout: 30000 })
     .toBe('Running')
   await page.goto('/#dashboard')
-  await page.getByLabel('Filter by project').selectOption(r.project)
+  // A project is a group of models: the project filter selects the group, and
+  // the model filter selects the model within it.
+  await page.getByLabel('Filter by project').selectOption(r.group!)
+  await page.getByLabel('Filter by model').selectOption(r.project)
   const row = page.getByRole('row').filter({ hasText: cancelled.name })
   await row.getByRole('button', { name: 'Cancel job' }).click()
   await expect(row.locator('.badge')).toHaveAttribute('data-status', 'Cancelled')

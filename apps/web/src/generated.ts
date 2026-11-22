@@ -121,6 +121,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Job List
+         * @description Lightweight activity list for the launcher and polling.
+         *
+         *     Deliberately omits manifests, fixture node lists and logs: the startup check
+         *     only needs to know whether anything is still owned, and dashboard lists use
+         *     the paginated detail endpoints on demand.
+         */
+        get: operations["job_list_api_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/project-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Project Group
+         * @description Create a project group and its first model as one durable operation.
+         */
+        post: operations["create_project_group_api_project_groups_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/revisions/{rid}": {
         parameters: {
             query?: never;
@@ -130,6 +174,30 @@ export interface paths {
         };
         /** Revision */
         get: operations["revision_api_revisions__rid__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/revisions/{rid}/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Revision Readiness
+         * @description The single readiness calculation shared by the sidebar, Review and API.
+         *
+         *     Every finding carries a stable reason code, the stage that resolves it and
+         *     the artifact it refers to; the browser translates the code in Japanese and
+         *     English. Direct API acceptance uses the same blockers.
+         */
+        get: operations["revision_readiness_api_revisions__rid__readiness_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -593,6 +661,8 @@ export interface components {
              * Format: uuid
              */
             mesh: string;
+            /** Fixture Hash */
+            fixture_hash?: string | null;
         };
         /** DuplicateModel */
         DuplicateModel: {
@@ -744,6 +814,8 @@ export interface components {
         Fixture: {
             /** Labels */
             labels?: string[];
+            /** Expected Hash */
+            expected_hash?: string | null;
         };
         /** FixtureInfo */
         FixtureInfo: {
@@ -753,6 +825,20 @@ export interface components {
             count: number;
             /** Hash */
             hash: string;
+        };
+        /** Group */
+        Group: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Created */
+            created: number;
+        };
+        /** GroupCreated */
+        GroupCreated: {
+            group: components["schemas"]["Group"];
+            model: components["schemas"]["Revision"];
         };
         /** GroupSummary */
         GroupSummary: {
@@ -782,6 +868,10 @@ export interface components {
             number: number;
             /** Project Name */
             project_name: string;
+            /** Group */
+            group?: string | null;
+            /** Group Name */
+            group_name?: string | null;
             /** Name */
             name: string;
             /** Dimension */
@@ -1024,6 +1114,32 @@ export interface components {
              * @default false
              */
             example: boolean;
+        };
+        /**
+         * NewProjectGroup
+         * @description One user action: create a project group and its first model together.
+         */
+        NewProjectGroup: {
+            /** Name */
+            name: string;
+            /** Model Name */
+            model_name?: string | null;
+            /**
+             * Dimension
+             * @default 2D
+             * @enum {string}
+             */
+            dimension: "2D" | "3D";
+            /**
+             * Example
+             * @default false
+             */
+            example: boolean;
+            /**
+             * Token
+             * Format: uuid
+             */
+            token: string;
         };
         /** Plane */
         "Plane-Input": {
@@ -1735,6 +1851,59 @@ export interface operations {
             };
         };
     };
+    job_list_api_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    create_project_group_api_project_groups_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewProjectGroup"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     revision_api_revisions__rid__get: {
         parameters: {
             query?: never;
@@ -1753,6 +1922,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revision_readiness_api_revisions__rid__readiness_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                rid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

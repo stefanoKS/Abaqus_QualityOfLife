@@ -95,6 +95,29 @@ mesh. When a reviewed fixture exists, the app states how many fixed nodes are af
 reviewed nodes, so Mounting must be reviewed before a deck can be prepared. Even identical node
 labels or mesh bytes require that fresh review.
 
+**Correct an invalid number.** A number you type stays visible even when it is invalid. The field
+explains the problem, and **Save revision**, **Generate mesh**, **Prepare input deck** and submit stay
+disabled; leaving the step is refused with the same explanation. Correct the value, or press
+**Escape** to restore the saved value deliberately. Nothing is saved behind your back.
+
+**Paste laboratory data.** In a hyperfoam card, **Paste table data** parses the clipboard into a review.
+Three columns are expected (stress, axial nominal strain, lateral nominal strain), values are kept in
+source order without rounding or sorting, blank lines are ignored, and one documented header line is
+accepted. Any other malformed non-blank row is listed with its line number and blocks **Apply**; the
+saved card is untouched by Cancel or by an invalid paste. The preview curve shows the accepted rows
+before you commit them.
+
+**When the browser and API do not match.** The header strip appears if this tab loaded a different
+browser release than the running API, or if the API generation changed. It gives one action: reload for
+a stale tab, or close Abaqus QOL and start it again for an API mismatch. Project creation, import, deck
+preparation and submission are disabled until the pair matches. This is intentional: it prevents a
+half-matched pair from changing a project or queueing a solver.
+
+**Two tabs and the saved fixture.** Saving fixed nodes records the fixture version the tab loaded. If
+another tab saved a newer selection first, your save is rejected with the current node count instead of
+overwriting it; reopen Mounting and review the current selection. Preparing a deck also sends the exact
+fixture you reviewed, so a deck cannot silently capture somebody else's newer nodes.
+
 ### Mesh reuse and invalidation
 
 The mesh is identified by its geometry, component roles, region fill and mesh controls — not by the
@@ -118,7 +141,8 @@ cannot be verified instead of drawing labels on a newer mesh.
 
 Linear elastic asks for density, Young's modulus and Poisson's ratio. Hyperfoam shows an editable
 uniaxial test-data table (nominal stress, axial nominal strain, lateral nominal strain). You can paste
-three columns from a spreadsheet.
+three columns from a spreadsheet; the paste is reviewed with source row numbers and rejected-row
+reasons before it replaces the card.
 
 Hard validation errors block saving and disable **Save revision**. Engineering warnings (for example
 non-monotonic axial strain) are shown but do not block saving.

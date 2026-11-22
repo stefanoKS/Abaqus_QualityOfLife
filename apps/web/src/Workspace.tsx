@@ -30,9 +30,11 @@ import type { TranslationKey } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 import { Facts } from './shared/components/Facts'
 import { NumberInput } from './shared/components/NumberInput'
+import { useAnyInvalidField } from './shared/components/draftGuard'
 import { AssemblyTree } from './features/workspace/AssemblyTree'
 import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
 import { orderedStates } from './features/workspace/workflowStates'
+import { findingKey, type Readiness } from './features/workspace/readiness'
 import {
   MESH_STAGES,
   STAGE,
@@ -104,12 +106,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
     [issue, setIssue] = useState(''),
     [generation, refresh] = useState(0)
   const [cap, setCap] = useState<Record<string, string>>({}),
-    [related, setRelated] = useState<Job[]>([])
+    [related, setRelated] = useState<Job[]>([]),
+    [readiness, setReadiness] = useState<Readiness | null>(null)
   const [runName, setRunName] = useState(() => t('review.defaultRunName')),
     [cpus, setCpus] = useState(1)
   // Regeneration supersedes a reviewed fixture, so it is a deliberate choice.
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
   // A submitted setup replays its own archived mesh, never the newest one.
+  const invalidField = useAnyInvalidField()
   const [archived, setArchived] = useState<{ mesh: Job | null; error: string }>({
     mesh: null,
     error: '',
@@ -355,6 +359,17 @@ export default function Workspace({ initial, locked, notify }: Props) {
       })
     return () => ac.abort()
   }, [deck?.id, problem])
+  // The API owns the readiness calculation so the header, Review and a direct
+  // API request cannot disagree about the next engineering action.
+  useEffect(() => {
+    const ac = new AbortController()
+    request<Readiness>('/api/revisions/' + rev.id + '/readiness', 'GET', undefined, ac.signal)
+      .then(setReadiness)
+      .catch(() => {
+        if (!ac.signal.aborted) setReadiness(null)
+      })
+    return () => ac.abort()
+  }, [rev.id, generation])
   useEffect(() => {
     if (!dirty) return
     const guard = (e: BeforeUnloadEvent) => {
@@ -447,6 +462,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
     } else select(null)
   }
   function changeStage(i: number) {
+    // An invalid numeric draft is not silently committed or discarded by leaving
+    // the step: keep it visible and make the engineer correct it or press Escape.
+    if (invalidField) {
+      notify(t('validation.invalidDraft'))
+      return
+    }
     const id = stageId(i)
     setStage(i)
     setShowMesh(MESH_STAGES.includes(id))
@@ -496,6 +517,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
       revision: rev.id,
       token: crypto.randomUUID(),
       mesh: compatibleMesh.id,
+      // The exact fixture the engineer reviewed. If another tab saved a newer
+      // selection, the server rejects this deck instead of snapshotting it.
+      fixture_hash: fixture?.hash ?? '',
     })
     setPendingDeck(job.id)
     refresh((g) => g + 1)
@@ -503,7 +527,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
   }
   async function saveFixture(labels: string[]) {
     if (!compatibleMesh) return
-    await request<Job>('/api/meshes/' + compatibleMesh.id + '/fixture', 'PUT', { labels })
+    await request<Job>('/api/meshes/' + compatibleMesh.id + '/fixture', 'PUT', {
+      labels,
+      // Optimistic concurrency: reject a save from a tab that loaded an older
+      // fixture instead of overwriting the other tab's reviewed set.
+      expected_hash: fixture?.hash ?? '',
+    })
     setPendingFixture(null)
     refresh((g) => g + 1)
     message(t('mesh.fixtureSaved', { count: labels.length }))
@@ -577,9 +606,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
       ? component?.name
       : (edge?.name ?? face?.name ?? pick?.id)
   const dimension = p.dimension === '3D'
-  const blockedReason = invalidMaterials.length
-    ? invalidMaterials.map((m) => m.name).join(' · ')
-    : ''
+  const blockedReason = invalidField
+    ? t('validation.invalidDraft')
+    : invalidMaterials.length
+      ? invalidMaterials.map((m) => m.name).join(' · ')
+      : ''
   return (
     <main className="workspace page">
       <div className="crumb">
@@ -653,6 +684,21 @@ export default function Workspace({ initial, locked, notify }: Props) {
         <p className="error-text blocked-banner" role="alert">
           {t('materials.err.finite')} — {blockedReason}
         </p>
+      )}
+      {!locked && readiness?.first_blocker && (
+        <div className="readiness-banner" aria-live="polite" data-testid="next-action">
+          <span>{t(findingKey(readiness.first_blocker.code), readiness.first_blocker.params)}</span>
+          <button
+            type="button"
+            onClick={() =>
+              changeStage(
+                (STAGE as Record<string, number>)[readiness.first_blocker!.stage] ?? stage,
+              )
+            }
+          >
+            {t('workspace.resolveBlocker')}
+          </button>
+        </div>
       )}
       <div className="workgrid">
         <aside className="left card">
@@ -1569,7 +1615,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <button
                     className="primary wide"
                     disabled={
-                      busy || !fixtureReviewed || !motionValid || fixturePending || !!pendingDeck
+                      busy ||
+                      !fixtureReviewed ||
+                      !motionValid ||
+                      fixturePending ||
+                      !!blockedReason ||
+                      !!pendingDeck
                     }
                     title={
                       fixturePending
@@ -1628,6 +1679,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       dirty ||
                       busy ||
                       fixturePending ||
+                      invalidField ||
                       !runName.trim() ||
                       cap.abaqus !== 'Configured'
                     }
