@@ -74,6 +74,25 @@ export function MeshReview({
           </>
         )}
       </dl>
+      <h3>{t('mesh.components')}</h3>
+      <dl data-testid="mesh-components">
+        {quality.components.map((row) => (
+          <div key={row.id} data-component={row.id} data-included={row.included}>
+            <dt>{row.name}</dt>
+            <dd>
+              {row.role === 'moving_panel'
+                ? t('mesh.role.door')
+                : row.role === 'vehicle_body'
+                  ? t('mesh.role.body')
+                  : t('mesh.role.seal')}{' '}
+              ?{' '}
+              {row.elementType ? row.elementType : t('mesh.noElements')} ?{' '}
+              {row.count.toLocaleString()} {t('mesh.elementsUnit')}
+              {row.included ? '' : ' ? ' + t('mesh.excludedFromAnalysis')}
+            </dd>
+          </div>
+        ))}
+      </dl>
       {quality.regions.length > 0 && (
         <>
           <h3>{t('mesh.regions')}</h3>

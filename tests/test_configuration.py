@@ -76,7 +76,10 @@ def test_launcher_alias_and_legacy_precedence(clean_env, tmp_path):
 
     clean_env.delenv("SIMPLIFY_ABAQUS_LAUNCHER")
     clean_env.delenv("ABAQUS_QOL_LAUNCHER")
-    with pytest.raises(ValueError, match="ABAQUS_QOL_LAUNCHER"):
+    # With no override the launcher is discovered; disable discovery to assert absence.
+    clean_env.setattr(launcher.shutil, "which", lambda name: None)
+    clean_env.setattr(launcher, "DISCOVERY_DIRS", ())
+    with pytest.raises(ValueError, match="No Abaqus launcher found"):
         launcher.configured_launcher()
 
 

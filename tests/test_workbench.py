@@ -190,7 +190,12 @@ def test_upload_confined_and_capability_diagnostics(client):
         == 403
     )
     assert client.get("/api/projects", headers={"Host": "example.com"}).status_code == 400
-    assert "not configured" in client.get("/api/capabilities").json()["abaqus"]
+    capabilities = client.get("/api/capabilities").json()
+    # Either a discovered installation or an actionable explanation must be present.
+    assert capabilities["abaqus"] == "Configured" or "Abaqus launcher" in capabilities["abaqus"]
+    assert capabilities["abaqusSource"]
+    assert capabilities["odaRequired"] is False
+    assert capabilities["schemaVersion"] >= 2
     # Complete the imported assembly through the same saved-project / worker path.
     setup = new["setup"]
     for c in setup["components"]:

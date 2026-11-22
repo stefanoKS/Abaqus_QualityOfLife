@@ -51,6 +51,96 @@ def configured_launcher():
     return _launcher(value)
 
 
+# Discovery order for an installation the user did not configure explicitly.
+DISCOVERY_NAMES = ("abq2024", "abaqus")
+DISCOVERY_DIRS = (
+    Path("C:/SIMULIA/Commands"),
+    Path("C:/SIMULIA/Commands/abq2024"),
+    Path("C:/Program Files/SIMULIA/Commands"),
+    Path("C:/Program Files (x86)/SIMULIA/Commands"),
+    Path("C:/SIMULIA/CAE/Commands"),
+)
+LAUNCHER_SUFFIXES = ("", ".bat", ".cmd", ".exe")
+
+
+def _checked(path):
+    """Validate a candidate launcher and return its resolved path."""
+    return _launcher(str(path))
+
+
+def _excluded(path):
+    """Never run an executable that arrived with a drawing or a queued job."""
+    roots = []
+    data = os.environ.get("SEAL_DATA")
+    if data:
+        roots.append(Path(data))
+    for root in roots:
+        try:
+            path.resolve().relative_to(root.resolve())
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def discovery():
+    """Locate the Abaqus launcher, returning ``(path, source, detail)``.
+
+    ``source`` names how the path was found so diagnostics can state whether the
+    user chose it or the application discovered it. An explicit override that
+    fails validation raises with the path and the reason instead of silently
+    falling back, because a deliberate choice must be corrected, not ignored.
+    """
+    name, value = launcher_setting()
+    if value:
+        try:
+            return _checked(value), f"override {name}", "validated from the environment"
+        except ValueError as error:
+            raise ValueError(
+                f"{name} is set to {value}, which is not a usable launcher: {error} "
+                f"Clear {name} to let the application find the installation automatically."
+            ) from error
+    searched = []
+    for candidate in DISCOVERY_NAMES:
+        found = shutil.which(candidate)
+        if found:
+            searched.append(f"Path:{candidate}")
+            path = Path(found)
+            if not _excluded(path):
+                try:
+                    return _checked(path), f"Path ({candidate})", "found on the Windows Path"
+                except ValueError:
+                    pass
+        for directory in DISCOVERY_DIRS:
+            for suffix in LAUNCHER_SUFFIXES:
+                probe = directory / (candidate + suffix)
+                if probe.is_file() and not _excluded(probe):
+                    try:
+                        return _checked(probe), f"known location ({probe.parent})", "found in a standard installation directory"
+                    except ValueError:
+                        continue
+    raise ValueError(
+        "No Abaqus launcher found. Looked for "
+        + ", ".join(f"{candidate}" for candidate in DISCOVERY_NAMES)
+        + " on the Windows Path and in "
+        + ", ".join(str(directory) for directory in DISCOVERY_DIRS)
+        + ". Install Abaqus 2024, or set "
+        + ENV_LAUNCHER
+        + " to the launcher path."
+    )
+
+
+def resolve_launcher():
+    """The single resolver used by capabilities, submission, extraction and tests."""
+    path, source, detail = discovery()
+    return {"path": str(path), "source": source, "detail": detail}
+
+
+def configured_launcher():
+    """Validated launcher path: explicit override first, then discovery."""
+    return Path(resolve_launcher()["path"])
+
+
 def _start(path, arguments, job_dir, log_stream):
     path = _launcher(path)
     kwargs = {

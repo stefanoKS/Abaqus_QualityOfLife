@@ -120,10 +120,15 @@ def main():
 
     os.environ["SEAL_DATA"] = str(data)
     if options.licensed:
-        launcher = os.environ.get("SIMPLIFY_ABAQUS_LAUNCHER", "")
-        if not launcher:
-            raise SystemExit("Set SIMPLIFY_ABAQUS_LAUNCHER to run the licensed case.")
-        print(f"launcher     : {launcher}")
+        # One resolver shared with the API and worker: explicit override first,
+        # then the supported launcher discovered on Path or in SIMULIA/Commands.
+        from integrations.abaqus import launcher as abaqus_launcher
+
+        try:
+            found = abaqus_launcher.resolve_launcher()
+        except ValueError as error:
+            raise SystemExit(str(error))
+        print(f"launcher     : {found['path']} ({found['source']})")
 
     with TestClient(app, base_url="http://127.0.0.1") as api:
         project = api.post("/api/projects", json={"name": "DWG acceptance"}).raise_for_status().json()

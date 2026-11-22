@@ -22,6 +22,16 @@ export interface MeshQuality {
   byType: { type: string; count: number }[]
   regions: { id: string; name: string; count: number }[]
   edgeSegments: { id: string; name: string; segments: number }[]
+  /** One row per component: role, inclusion, element type and count. */
+  components: {
+    id: string
+    name: string
+    role: string
+    included: boolean
+    elementType: string
+    count: number
+    segments: number
+  }[]
   shortestEdge: number
   longestEdge: number
   /** Longest polygon edge divided by the shortest one, within a single element. */
@@ -62,6 +72,34 @@ export function meshQuality(mesh: MeshFile, project: Project): MeshQuality {
       worst = element.id
     }
   }
+  const perComponent = new Map<string, { types: Set<string>; count: number }>()
+  for (const element of mesh.elements) {
+    const row = perComponent.get(element.component) ?? { types: new Set<string>(), count: 0 }
+    row.types.add(element.type)
+    row.count += 1
+    perComponent.set(element.component, row)
+  }
+  const edgeIds = new Map(project.edges.map((edge) => [edge.id, edge.component]))
+  const segmentsByComponent = new Map<string, number>()
+  for (const [edgeId, list] of Object.entries(mesh.edge_nodes ?? {})) {
+    const component = edgeIds.get(edgeId)
+    if (!component) continue
+    segmentsByComponent.set(component, (segmentsByComponent.get(component) ?? 0) + Math.max(0, list.length - 1))
+  }
+  const components = project.components.map((component) => {
+    const row = perComponent.get(component.id)
+    const excluded = String(component.role) === 'vehicle_body'
+    const types = row ? [...row.types] : []
+    return {
+      id: component.id,
+      name: component.name,
+      role: String(component.role),
+      included: Boolean(row) && !excluded,
+      elementType: types.join(' + '),
+      count: row?.count ?? 0,
+      segments: segmentsByComponent.get(component.id) ?? 0,
+    }
+  })
   const names = new Map(project.faces.map((face) => [face.id, face.name]))
   const edgeNames = new Map(project.edges.map((edge) => [edge.id, edge.name]))
   return {
@@ -73,6 +111,7 @@ export function meshQuality(mesh: MeshFile, project: Project): MeshQuality {
       name: names.get(id) ?? id,
       count: list.length,
     })),
+    components,
     edgeSegments: Object.entries(mesh.edge_nodes ?? {}).map(([id, list]) => ({
       id,
       name: edgeNames.get(id) ?? id,

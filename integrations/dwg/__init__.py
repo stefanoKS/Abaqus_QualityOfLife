@@ -39,6 +39,39 @@ def helper():
     return path
 
 
+def status():
+    """Report whether the packaged reader and its library are usable.
+
+    Readiness is only claimed when both files exist, so an import that would fail
+    names the missing component before the user uploads a drawing.
+    """
+    library = HELPER.parent / "ACadSharp.dll"
+    missing = [
+        part.name
+        for part, path in ((HELPER, HELPER), (library, library))
+        if not path.is_file()
+    ]
+    label = "ACadSharp 3.8.35 (native, MIT)"
+    if missing:
+        return {
+            "ready": False,
+            "label": label,
+            "helper": str(HELPER),
+            "missing": missing,
+            "message": "Native DWG reader incomplete: missing "
+            + ", ".join(missing)
+            + " in integrations/dwg/bin. Restore the files from the repository; "
+            "no CAD converter is required.",
+        }
+    return {
+        "ready": True,
+        "label": label,
+        "helper": str(HELPER),
+        "missing": [],
+        "message": "Native DWG reader ready",
+    }
+
+
 def read(path):
     """Return the decoded inventory of ``path`` or raise :class:`DwgError`."""
     path = Path(path)

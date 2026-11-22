@@ -149,6 +149,105 @@ def health(port, timeout=1.0):
     return payload if payload.get("product") == PRODUCT else None
 
 
+def local_identity():
+    """Build identity of the code in this checkout, read without starting services."""
+    try:
+        from services.api.main import BUILD, FRONTEND
+
+        return {"build": BUILD, "frontend": FRONTEND}
+    except Exception:  # a broken checkout reports itself as unidentifiable
+        return {"build": "", "frontend": ""}
+
+
+def compatibility(payload):
+    """Classify an instance found on the port: ``current`` or a reason it is not."""
+    if not payload:
+        return "not-ours"
+    if not payload.get("build") or not payload.get("api"):
+        return "legacy"
+    expected = local_identity()
+    if payload.get("build") != expected["build"]:
+        return "different-build"
+    return "current"
+
+
+def describe(payload):
+    return (
+        f"PID {payload.get('pid')}, started {time.strftime('%Y-%m-%d %H:%M', time.localtime(payload.get('started', 0)))}, "
+        f"version {payload.get('version', 'unknown')}, build {payload.get('build') or 'unidentified (older release)'}"
+        + (f", git {payload['git']}" if payload.get("git") else "")
+        + (f", frontend {payload['frontend']}" if payload.get("frontend") else "")
+    )
+
+
+def active_jobs(port, timeout=2.0):
+    """Jobs the running instance still owns; stopping it would lose work."""
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/jobs", timeout=timeout
+        ) as response:
+            jobs = json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return None
+    return [
+        job
+        for job in jobs
+        if job.get("status") in ("Queued", "Running")
+        or job.get("extraction") in ("Queued", "Running")
+    ]
+
+
+def stop_instance(port):
+    """Stop only the processes this product started, never an Abaqus solver."""
+    payload = health(port) or {}
+    pids = {payload.get("pid")}
+    try:
+        import psutil
+    except ImportError:
+        psutil = None
+    data = str(store_root())
+    if psutil is not None:
+        for process in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                command = " ".join(process.info.get("cmdline") or [])
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+            # A worker is ours only when it runs the worker module on this data directory.
+            if "services.worker" in command and data in command:
+                pids.add(process.info["pid"])
+    stopped = []
+    for pid in pids:
+        if not pid:
+            continue
+        try:
+            process = psutil.Process(pid) if psutil else None
+        except Exception:
+            process = None
+        if process is None:
+            continue
+        # Only the Python processes that serve this product are candidates.
+        try:
+            command = " ".join(process.cmdline())
+        except Exception:
+            command = ""
+        if "services.api" not in command and "services.worker" not in command:
+            continue
+        if "abaqus" in command.lower():
+            continue
+        process.terminate()
+        stopped.append(pid)
+    for pid in stopped:
+        try:
+            psutil.Process(pid).wait(timeout=10)
+        except Exception:
+            pass
+    for _ in range(40):
+        if port_available(port):
+            return stopped
+        time.sleep(0.25)
+    return stopped
+
+
 def port_available(port):
     with socket.socket() as probe:
         try:
@@ -239,6 +338,8 @@ def main(argv=None):
     parser.add_argument(
         "--test-data", action="store_true", help="Temporary isolated database for browser tests"
     )
+    parser.add_argument("--status", action="store_true", help="report the instance on the port and exit")
+    parser.add_argument("--takeover", action="store_true", help="stop a stale instance when no job is active")
     parser.add_argument("--no-browser", action="store_true", help="Do not open a browser")
     parser.add_argument("--rebuild", action="store_true", help="Rebuild the browser bundle first")
     parser.add_argument("--prepare", action="store_true", help="Prepare dependencies and exit")
@@ -261,15 +362,61 @@ def main(argv=None):
         return 0
 
     existing = health(args.port)
-    if existing:
+    if args.status:
+        if existing:
+            print(f"{PRODUCT} on port {args.port}: {describe(existing)}")
+            print(f"  compatibility: {compatibility(existing)}")
+        else:
+            print(f"{PRODUCT}: nothing is serving port {args.port}.")
+        return 0
+    if existing and compatibility(existing) == "current":
         print(
-            f"{PRODUCT} is already running on http://127.0.0.1:{args.port} "
-            f"(PID {existing.get('pid')}). Opening it.",
+            f"{PRODUCT} is already running on http://127.0.0.1:{args.port} ({describe(existing)}). "
+            "Opening the running instance.",
             flush=True,
         )
         if not args.no_browser:
             webbrowser.open(f"http://127.0.0.1:{args.port}")
         return 0
+    if existing:
+        verdict = compatibility(existing)
+        reason = {
+            "legacy": "it predates the build identity fields, so it is an older release",
+            "different-build": "it runs a different build than this checkout",
+        }.get(verdict, "it could not be identified")
+        running = active_jobs(args.port)
+        print(
+            f"{PRODUCT}: port {args.port} is served by a different instance ? {reason}.\n"
+            f"  running : {describe(existing)}\n"
+            f"  expected: build {local_identity()['build'] or 'this checkout'}",
+            flush=True,
+        )
+        if running is None:
+            print("  jobs    : could not be read from the running instance", flush=True)
+        elif running:
+            names = ", ".join(f"{job.get('name')} ({job.get('status')})" for job in running[:5])
+            print(f"  jobs    : {len(running)} still active ? {names}", flush=True)
+        else:
+            print("  jobs    : none queued or running", flush=True)
+        if not args.takeover:
+            print(
+                "Nothing was stopped. To switch to this checkout safely, close that instance and\n"
+                "run the startup file again, or repeat the command with --takeover, which stops only\n"
+                "the Abaqus QOL API and worker for this data directory after checking for active jobs.",
+                flush=True,
+            )
+            return 3
+        if running:
+            raise SystemExit(
+                f"{PRODUCT}: refusing to stop the running instance while {len(running)} job(s) are "
+                "active. Wait for them to finish, then run again with --takeover."
+            )
+        stopped = stop_instance(args.port)
+        print(f"  stopped : {stopped or 'nothing (already gone)'}", flush=True)
+        if not port_available(args.port):
+            raise SystemExit(
+                f"{PRODUCT}: port {args.port} is still busy after stopping the old instance."
+            )
     if not port_available(args.port):
         raise SystemExit(
             f"{PRODUCT}: port {args.port} is used by another application.\n"

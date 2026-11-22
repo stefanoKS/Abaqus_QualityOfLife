@@ -23,11 +23,13 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
   // The deck cannot be prepared before a fixed-node selection exists.
+  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   await expect(prepare).toBeDisabled()
   await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await expect(prepare).toBeEnabled()
   await prepare.click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', {

@@ -93,6 +93,7 @@ test('material cards are editable, validated, versioned and written to the deck'
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
   await expect(page.getByTestId('deck-status')).toHaveCount(0)
+  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', {
     timeout: 60000,

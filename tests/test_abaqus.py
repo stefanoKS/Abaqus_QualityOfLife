@@ -168,7 +168,11 @@ def test_solver_evidence_and_license_diagnostics(tmp_path):
 
 def test_missing_launcher_and_cpu_validation(tmp_path, monkeypatch):
     monkeypatch.delenv(launcher.ENV_LAUNCHER, raising=False)
-    with pytest.raises(ValueError, match="not configured"):
+    monkeypatch.delenv(launcher.ENV_LAUNCHER_ALIAS, raising=False)
+    # Discovery would find the installation on this host; test the missing case.
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: None)
+    monkeypatch.setattr(launcher, "DISCOVERY_DIRS", ())
+    with pytest.raises(ValueError, match="No Abaqus launcher found"):
         launcher.configured_launcher()
     with pytest.raises(ValueError, match="CPU"):
         launcher.start_solver(None, tmp_path, "1 & echo foo", None)

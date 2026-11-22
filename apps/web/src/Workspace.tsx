@@ -312,6 +312,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
         .map((c) => c.name),
     [p.components],
   )
+  const panelEdges = useMemo(() => {
+    const panel = p.components.find((component) => component.role === 'moving_panel')
+    return panel ? p.edges.filter((edge) => edge.component === panel.id) : []
+  }, [p.components, p.edges])
   const bodyNames = useMemo(
     () => p.components.filter((c) => c.role === 'vehicle_body').map((c) => c.name),
     [p.components],
@@ -952,6 +956,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       ]}
                     />
                   )}
+                  <small data-testid="fixture-count">{shownFixture.length}</small>
                   <small>{t('mounting.newFixtureOnly')}</small>
                 </>
               )}
@@ -1112,6 +1117,27 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       ))}
                     </select>
                   </label>
+                  {panelEdges.length > 0 ? (
+                    <>
+                      <NumberInput
+                        label={t('mesh.panelSize')}
+                        unit="mm"
+                        min={0.01}
+                        max={10000}
+                        value={p.mesh.local[panelEdges[0].id] ?? p.mesh.size}
+                        onChange={(v) =>
+                          edit((n) => {
+                            for (const item of panelEdges) n.mesh.local[item.id] = v
+                          })
+                        }
+                      />
+                      <small>{t('mesh.panelSizeHint')}</small>
+                      <small>{t('mesh.panelSizeEffect')}</small>
+                    </>
+                  ) : (
+                    <small>{t('mesh.panelSizeMissing')}</small>
+                  )}
+                  {bodyNames.length > 0 && <small>{t('mesh.bodyPreviewOnly')}</small>}
                   {edge && (
                     <NumberInput
                       label={t('mesh.edgeSize')}
@@ -1312,9 +1338,33 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {(stage === STAGE.mesh || stage === STAGE.review) && !dimension && compatibleMesh && !dirty && (
+              {stage === STAGE.review && !dimension && !compatibleMesh && (
+                <>
+                  <h3>{t('mesh.meshSection')}</h3>
+                  <p>{t('hint.meshRequired')}</p>
+                  <button className="wide" onClick={() => changeStage(STAGE.mesh)}>
+                    <Grid2X2 />
+                    {t('review.goToMesh')}
+                  </button>
+                </>
+              )}
+              {stage === STAGE.review &&
+                !dimension &&
+                compatibleMesh &&
+                (dirty || !fixtureReviewed) &&
+                !locked && (
+                  <>
+                    <h3>{t('mesh.fixtureSection')}</h3>
+                    <p>{dirty ? t('status.unsaved') : t('review.fixtureNeedsReview')}</p>
+                    <button className="wide" onClick={() => changeStage(dirty ? STAGE.mesh : STAGE.mounting)}>
+                      {dirty ? t('review.goToMesh') : t('review.goToMounting')}
+                    </button>
+                  </>
+                )}
+              {stage === STAGE.review && !dimension && compatibleMesh && !dirty && (
                 <>
                   <h3>{t('mesh.deckSection')}</h3>
+                  <p>{t('review.prepareHint')}</p>
                   <button
                     className="primary wide"
                     disabled={busy || !fixtureReviewed || !motionValid || fixturePending}

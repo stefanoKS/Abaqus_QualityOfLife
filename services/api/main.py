@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import subprocess
 import shutil
 import time
 from contextlib import asynccontextmanager
@@ -36,6 +37,52 @@ from .contracts import (
 
 MAX_DRAWING = 8 * 1024 * 1024
 STARTED = time.time()
+
+API_VERSION = 2
+CAPABILITIES_VERSION = 2
+
+
+def _fingerprint():
+    """Digest of the running Python sources and the built frontend asset names."""
+    from hashlib import sha256
+
+    root = Path(__file__).resolve().parents[2]
+    entries = []
+    for folder in ("services", "packages", "integrations"):
+        for path in sorted((root / folder).rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            stat = path.stat()
+            entries.append(f"{path.relative_to(root).as_posix()}:{stat.st_size}:{stat.st_mtime_ns}")
+    frontend = ""
+    index = root / "apps" / "web" / "dist" / "index.html"
+    if index.is_file():
+        entries.append(f"dist/index.html:{index.stat().st_size}")
+        for asset in sorted((root / "apps" / "web" / "dist" / "assets").glob("index-*.js")):
+            frontend = asset.name
+            entries.append(f"assets/{asset.name}:{asset.stat().st_size}")
+    return sha256("\n".join(entries).encode("utf-8")).hexdigest()[:16], frontend
+
+
+def _git_head():
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return completed.stdout.strip() if completed.returncode == 0 else ""
+
+
+BUILD, FRONTEND = _fingerprint()
+GIT = _git_head()
+
+
 
 
 def revision_payload(row):
@@ -90,30 +137,51 @@ async def invalid(_, exc):
 
 @app.get("/api/health")
 def health():
-    """Identifiable readiness probe used by the launcher and instance reuse."""
+    """Identifiable readiness probe used by the launcher and instance reuse.
+
+    ``build`` fingerprints the Python sources that are actually running and the
+    built frontend asset, so an uncommitted build is distinguishable from a
+    released one and a stale process can never be mistaken for the current code.
+    """
     return {
         "product": "Abaqus QOL",
         "status": "ready",
         "version": app.version,
         "pid": os.getpid(),
         "started": STARTED,
+        "api": API_VERSION,
+        "capabilities": CAPABILITIES_VERSION,
+        "build": BUILD,
+        "git": GIT,
+        "frontend": FRONTEND,
     }
 
 
 @app.get("/api/capabilities")
 def capabilities():
+    """What the running services can actually do, with the reason when they cannot."""
     from integrations import dwg
-    from integrations.abaqus.launcher import configured_launcher
+    from integrations.abaqus import launcher
 
     result = {}
-    for name, fn in [("abaqus", configured_launcher), ("dwg", dwg.helper)]:
-        try:
-            fn()
-            result[name] = "Configured"
-        except (ValueError, OSError) as exc:
-            result[name] = str(exc)
-    result["dwgReader"] = "ACadSharp 3.8.35 (native, MIT)"
+    try:
+        found = launcher.resolve_launcher()
+        result["abaqus"] = "Configured"
+        result["abaqusPath"] = found["path"]
+        result["abaqusSource"] = found["source"]
+        result["abaqusDetail"] = found["detail"]
+    except (ValueError, OSError) as exc:
+        result["abaqus"] = str(exc)
+        result["abaqusPath"] = ""
+        result["abaqusSource"] = "unavailable"
+        result["abaqusDetail"] = str(exc)
+    reader = dwg.status()
+    result["dwg"] = "Configured" if reader["ready"] else reader["message"]
+    result["dwgReader"] = reader["label"]
+    result["dwgHelper"] = reader["helper"]
+    result["dwgMissing"] = reader["missing"]
     result["odaRequired"] = False
+    result["schemaVersion"] = CAPABILITIES_VERSION
     return result
 
 
