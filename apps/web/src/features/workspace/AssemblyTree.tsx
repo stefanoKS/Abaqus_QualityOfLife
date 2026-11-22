@@ -1,7 +1,9 @@
-import { Box, ChevronDown, ChevronRight, Eye, EyeOff, Layers3, ScanLine } from 'lucide-react'
+import { useState } from 'react'
+import { Box, Check, ChevronDown, ChevronRight, Eye, EyeOff, Layers3, Pencil, ScanLine, X } from 'lucide-react'
 import type { Project } from '../../api'
 import { useTranslate } from '../../i18n'
 import type { SelectionMode } from '../../viewportModel'
+import { componentLabel } from './componentLabel'
 
 export function AssemblyTree({
   project,
@@ -12,6 +14,7 @@ export function AssemblyTree({
   onExpand,
   onVisibility,
   onPick,
+  onRename,
 }: {
   project: Project
   currentComponent?: string
@@ -21,37 +24,106 @@ export function AssemblyTree({
   onExpand: (componentId: string) => void
   onVisibility: (componentId: string) => void
   onPick: (kind: SelectionMode, id: string, component: string) => void
+  onRename: (componentId: string, alias: string) => void
 }) {
   const t = useTranslate()
+  const [editing, setEditing] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+
+  function start(component: Project['components'][number]) {
+    setEditing(component.id)
+    setDraft(component.alias ?? '')
+  }
+  function cancel() {
+    setEditing(null)
+    setDraft('')
+  }
+  function save(componentId: string) {
+    const alias = draft.trim()
+    if (!alias) return
+    onRename(componentId, alias)
+    cancel()
+  }
+
   return (
     <div className="tree">
       {project.components.map((component) => {
         const faces = project.faces.filter((f) => f.component === component.id)
         const edges = project.edges.filter((e) => e.component === component.id)
         const open = expanded.includes(component.id)
+        const label = componentLabel(component)
         return (
           <div key={component.id}>
             <div className={'tree-row ' + (currentComponent === component.id ? 'current' : '')}>
               <button
                 type="button"
                 aria-expanded={open}
-                aria-label={t('workspace.expand', { name: component.name })}
+                aria-label={t('workspace.expand', { name: label })}
                 onClick={() => onExpand(component.id)}
               >
                 {open ? <ChevronDown /> : <ChevronRight />}
               </button>
-              <button
-                type="button"
-                className="tree-item"
-                onClick={() => onPick('component', component.id, component.id)}
-              >
-                <Box />
-                {component.name}
-              </button>
+              {editing === component.id ? (
+                <span className="tree-rename">
+                  <input
+                    autoFocus
+                    value={draft}
+                    maxLength={160}
+                    aria-label={t('workspace.renameLabel', { name: label })}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        save(component.id)
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault()
+                        cancel()
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    aria-label={t('workspace.renameSave', { name: label })}
+                    title={t('workspace.renameSave', { name: label })}
+                    disabled={!draft.trim()}
+                    onClick={() => save(component.id)}
+                  >
+                    <Check />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t('workspace.renameCancel', { name: label })}
+                    title={t('workspace.renameCancel', { name: label })}
+                    onClick={cancel}
+                  >
+                    <X />
+                  </button>
+                </span>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="tree-item"
+                    onClick={() => onPick('component', component.id, component.id)}
+                  >
+                    <Box />
+                    {label}
+                  </button>
+                  <button
+                    type="button"
+                    className="tree-rename-open"
+                    aria-label={t('workspace.rename', { name: label })}
+                    title={t('workspace.rename', { name: label })}
+                    onClick={() => start(component)}
+                  >
+                    <Pencil />
+                  </button>
+                </>
+              )}
               <button
                 type="button"
                 aria-pressed={hidden.includes(component.id)}
-                aria-label={t('workspace.toggleVisibility', { name: component.name })}
+                aria-label={t('workspace.toggleVisibility', { name: label })}
                 onClick={() => onVisibility(component.id)}
               >
                 {hidden.includes(component.id) ? <EyeOff /> : <Eye />}

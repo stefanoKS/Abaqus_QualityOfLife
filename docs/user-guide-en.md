@@ -80,10 +80,34 @@ first model (leave the example checkbox clear) → Create project. The model ope
 drawing. Confirm millimetres, choose the DXF or DWG, and wait for the new revision. The viewport shows
 the returned geometry, and that revision's original drawing stays downloadable.
 
+**Archive or delete a model/project.** The dashboard has **Show archived** and an Archive/Restore
+action on every model and project. Archived models are hidden by default and open read-only; their
+revisions, runs and downloads remain available. Permanent deletion is offered only for an archived
+item: it shows the dependent revision and job counts, asks for confirmation, and then requires typing
+the exact name. Deletion is refused while work is queued, running or unresolved. Shared drawings used
+by a duplicate and the material library are not removed.
+
 **Reopen another model or an earlier revision.** Dashboard → open the model card for its saved head, or
 **Revisions** → choose an earlier revision. Reload, Back/Forward, the logo and the Workspace button
 resolve the same way. An invalid link names the missing revision and offers **Back to Projects** rather
 than opening a different model. The Workspace button restores the last model you explicitly opened.
+
+**Read live run progress.** Diagnostics starts with a status card: phase, solver and extraction
+states, the current step and increment, simulated step time, last update and a progress bar. Progress
+is the fraction of the configured simulated time reported by the solver — not wall-clock time, and no
+completion time is estimated. For two-step runs, Body seating and Closing are listed with the active
+step highlighted. 100% appears only after both the solver and result extraction succeed; while
+extraction is running or failed the bar stays below 100% and says why. A stale worker heartbeat and a
+license wait are shown explicitly.
+
+**Run a two-step body-seating analysis.** In Motion, choose **Body seating, then door closing** and
+assign exactly one moving body and one moving door in Components. Set the body offset, signed travel
+and seating duration, then the door travel and duration. Step 1 moves the body and holds the door;
+step 2 holds the body at its seated position and closes the door, carrying the seal and contact state
+forward. The mesh includes both rigid profiles as R2D2 elements. Results offer a curve-step selector
+so the body and door travel/force curves are read separately. This template is generated and
+integration-tested but has **not** been validated with a licensed solve yet; treat it as unqualified
+until that evidence exists.
 
 **Change travel and rerun with the same mounting.** Open the model → Motion → change the signed travel
 → Save revision. The mesh stays compatible; Review / Run prepares a new deck with the same reviewed
@@ -95,10 +119,19 @@ mesh. When a reviewed fixture exists, the app states how many fixed nodes are af
 reviewed nodes, so Mounting must be reviewed before a deck can be prepared. Even identical node
 labels or mesh bytes require that fresh review.
 
-**Correct an invalid number.** A number you type stays visible even when it is invalid. The field
-explains the problem, and **Save revision**, **Generate mesh**, **Prepare input deck** and submit stay
+**Correct an invalid number.** A number you type stays visible even when it is invalid. A **cleared
+required field is invalid**, never “unchanged”: it cannot save the previous value. The field explains
+the problem, and **Save revision**, **Generate mesh**, **Prepare input deck** and submit stay
 disabled; leaving the step is refused with the same explanation. Correct the value, or press
 **Escape** to restore the saved value deliberately. Nothing is saved behind your back.
+
+**Pan, zoom and rename components.** Drag with the middle mouse button (or Shift + left) to pan the
+viewport; the page does not scroll while you pan, and the wheel still zooms. In the assembly tree,
+choose the pencil next to a component to give it a display name: Enter saves, Escape cancels, and the
+name persists when you save the revision. The original drawing name and all geometry/FE identities
+stay unchanged, so a rename does not force a remesh. Component rows in the mesh review show the
+display name, role, inclusion, element type and count; an intentionally excluded rigid body is marked
+“Excluded from analysis”, not “no elements”.
 
 **Paste laboratory data.** In a hyperfoam card, **Paste table data** parses the clipboard into a review.
 Three columns are expected (stress, axial nominal strain, lateral nominal strain), values are kept in
@@ -129,9 +162,26 @@ reopening a model never remeshes; it restores the reviewed mesh and highlighted 
 replays the mesh and fixed nodes archived by its own deck, and the app explains when that archived mesh
 cannot be verified instead of drawing labels on a newer mesh.
 
-## 3. Editing materials
+## 3. Materials
 
-**Materials → Material cards** lists the existing cards.
+Open the top-level **Materials** tab to manage the shared, versioned library. The workspace
+**Materials** stage only assigns a material to a region and shows the assigned version.
+
+On the **Materials** page you can search, create, duplicate, rename, edit, archive and restore
+materials. Every card edit appends a version; the previous versions stay readable and can be loaded
+or selected for comparison. **Version history** shows when each version was created and which saved
+model revisions pin it. Experimental stress–strain and lateral–axial charts plot the measured points
+of selected versions only (no fit or extrapolation).
+
+**Import model-local cards** creates new library entries from a model revision. Cards are never
+merged by name, so two distinct cards with the same name remain separate.
+
+In the workspace, choose a region and either pick an existing model-local card or **Assign from the
+material library**. The summary shows the pinned library version. If the library has a newer version,
+**Adopt vN** copies the new values into the model; geometry and mesh are reused, and a new revision
+and deck are required.
+
+**Material cards** lists the existing cards.
 
 - **New card** creates an empty linear elastic card.
 - **Duplicate** copies the selected card.

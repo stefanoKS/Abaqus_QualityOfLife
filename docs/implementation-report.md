@@ -663,3 +663,185 @@ not mistaken for a clean separation: future builds must run from the isolated ro
 | Software release candidate for the stated local workflow | **PASS** | None for the automated scope; double-click browser opening was verified as a unit path, not observed. |
 | Supervised internal engineering pilot | **BLOCKED** | Needs a supervised run by a representative engineer on the target Windows host, including 125%/150% scaling and the six-task sheet; current solver evidence is door-only. |
 | Production use for engineering decisions | **BLOCKED** | Needs a trusted reference or measured curve with matching geometry, material, fixture, contact, thickness and motion, plus tolerances agreed before comparison, contact onset/force comparisons, mesh and duration sensitivity, and disposition of divergence/negative-eigenvalue warnings. No such reference exists here. |
+
+## A6. Phase 0 — release safety repairs, 2026-11-22
+
+Baseline `e9ca2c45`. The independent review had reopened Gates 1 and 4 and found a silent Gate 3
+input error. All five findings are repaired; the live 8765 instance, its data directory and all
+artifacts were untouched, and no solver was started.
+
+1. **Atomic data-root ownership** (`services/ownership.py`). Ownership is two OS locks held for a
+   process lifetime (`owner.lock` by the launcher/API, `worker.lock` by the worker), so two cold
+   starts cannot both win and a crash releases the lock in the kernel. `instance.json` is diagnostic
+   metadata only. A supervisor crash that leaves a worker behind keeps `worker.lock`; a new launcher
+   refuses to start beside it, while an API-only start may attach to the live worker (the supported
+   independent workflow). A canonical `st_dev:st_ino` identity distinguishes directories.
+   Tests: barrier-synchronized two-process race (exactly one owner), crash release, stale record,
+   re-entry, independent directories, orphan-worker refusal. Live smoke reproduced the refusal for a
+   second launcher, a second worker and a second API on one data directory.
+2. **Takeover safety** (`services/activity.py`, `GET /api/jobs`). All five durable modes are listed
+   with `active` / `uncertain` / `terminal`; the endpoint sets `X-Abaqus-QOL-Jobs: all-modes-v1`.
+   The launcher fails closed when that header is absent, rechecks activity immediately before
+   stopping, and terminates only processes matched by module, data directory and start time. Every
+   solver/extraction phase, cancellation, stale heartbeat, unknown worker and unconfirmed
+   termination classifies as unsafe. A reconciled idle instance can be taken over.
+3. **Atomic fixture update** (`store.set_fixture_checked`). Job eligibility, mesh digest, expected
+   hash and the upsert run in one `BEGIN IMMEDIATE` transaction. A synchronized two-writer HTTP test
+   yields exactly one 200 and one 409; the stored set and the generated `WSFIX` equal the winner, and
+   the losing hash cannot prepare a deck.
+4. **Blank numeric fields** (`NumberInput`, `draftGuard`, `Workspace`). Blank is now invalid and is
+   registered synchronously, with an action-level guard for Save, mesh, deck, submission, fixture
+   save and stage navigation. Escape restores the committed value. Real Edge tests cover travel,
+   duration, offset, mesh size and section thickness, including a forced click on a disabled Save.
+5. **Verified release publication** (`publish-release.mjs`, `services/release.py`). The publisher
+   stages the whole tree, verifies referenced files, hashes the complete file manifest, publishes by
+   rename, re-verifies and writes the pointer last. Interrupted publications are quarantined and
+   repaired; missing inputs fail non-zero without changing the manifest; release A is byte-identical
+   after publishing B. The resolver verifies every listed file and the tree digest.
+
+**Phase 0 verification.** `pytest -q` → 158 passed, 1 skipped; `test:i18n` → 501 keys;
+`typecheck` → pass; isolated build → release `679da84a7cc6` (4 files); isolated Playwright → 43
+passed. The POSIX lock branch is implemented but was not exercised on this Windows host. Phases 1–5
+remain; this is not a release sign-off.
+
+## A7. Phase 1 — UI and data-presentation repairs, 2026-11-22
+
+1. **Encoding.** Real mojibake (`Â·`, `â€”`) was removed from Dashboard and main; MeshReview’s literal
+   `?` separators and the `0 ? 5` range hint were replaced by structured text/`·`/`–`. A source check
+   (`apps/web/scripts/check-encoding.mjs`) rejects known mojibake sequences and runs in CI.
+2. **Middle-button panning.** The viewport cancels the middle-button pointer default and `auxclick`,
+   uses `overscroll-behavior: contain`, and leaves wheel zoom intact. The renderer exposes a camera
+   fingerprint; the Edge test proves the camera moves while `window.scrollY` stays 0.
+3. **Mesh identity.** Digest and “mesh identity” rows were removed from ordinary Mounting, Mesh,
+   Review and archived-setup panels. Digests, compatibility checks, stale-deck rejection and fixture
+   identity remain in the contracts and diagnostics.
+4. **Components in mesh.** The review now renders structured rows (name, role, Included/Excluded/
+   Not-meshed, element type(s), count, explanation) and an included-element total that must equal the
+   mesh total. A reviewed rigid body is shown as intentionally excluded, not as a failed 0-element
+   mesh. Mixed CPS3/CPS4R and R2D2 are shown from the measured mesh.
+5. **Editable names.** `Component.alias` is an optional display name; the authoritative drawing name
+   and all CAD/FE IDs stay unchanged. The assembly tree supports inline rename (Enter/Escape/Save/
+   Cancel), the alias persists through revisions, is excluded from mesh identity (no remesh), and new
+   result metadata records `closing.panel_name` while keeping `closing.panel` stable.
+
+Verification: pytest 161 passed / 1 skipped, i18n 519 keys, encoding check pass, typecheck pass,
+isolated release `91b90ed6d34c`, Playwright 47 passed. No solver executed; live 8765 untouched.
+
+## A8. Phase 2 — global material library, 2026-11-22
+
+The material definitions moved out of the per-model editor into a shared, versioned library while
+each model revision keeps an immutable snapshot.
+
+- **Schema:** additive `material_library` and `material_versions` tables; versions are insert-only.
+  `Material` gained optional `library_id`/`library_version`; cards without them stay valid
+  model-local cards.
+- **API:** list/search/create/get/update/duplicate/archive/restore plus explicit
+  `POST /api/materials/import` (never merges by name, idempotent for already-pinned cards).
+- **Library page:** search, add, duplicate, rename, card editing, version history with load/compare,
+  archive/restore, usage by saved revisions, model-local import, and measured-only comparison charts
+  (stress–axial strain; lateral–axial) with units, legend, source note and no fabricated fit.
+- **Workspace:** assignment-only Materials stage with the assigned snapshot, library pin, newer-version
+  notice and explicit adoption. Test-data editing and graphs moved to the library page.
+- **Versioning:** name-only edits do not create a version; card edits do. Adoption creates a new model
+  revision, pins the exact version, keeps `mesh_compat` unchanged, requires a new deck, and leaves
+  historical revisions and completed runs byte-unchanged (verified by artifact hashes).
+
+Verification: pytest 168 passed / 1 skipped; i18n 567 keys; encoding check pass; typecheck pass;
+isolated release `7ff922276866`; Playwright 49 passed. No solver executed; live 8765 untouched.
+
+## A9. Phase 3 — archive and safe permanent deletion, 2026-11-22
+
+Models and project groups gained reversible archive tombstones (`archived` columns). Default lists
+hide archived rows; `include_archived=true` shows them. Archived targets are read-only at the API
+(setup, import, mesh, deck, submit and new models are rejected with 409) while revisions, runs and
+artifacts stay readable and downloadable. The workspace shows an archived read-only banner.
+
+Permanent deletion is offered only for archived targets, shows dependent revision/job counts, requires
+an exact-name confirmation, and is refused while any job is active or unresolved. A `deletions`
+journal records the artifact set; database rows are removed in one transaction, then job directories
+and unreferenced drawings are deleted. Shared drawings (duplicated models) and material library rows
+are never removed. `recover_deletions()` runs at startup: an uncommitted journal is discarded without
+deleting files; a committed journal finishes idempotent cleanup, and filesystem failures leave
+`cleanup: pending` for the next start.
+
+Verification: pytest 176 passed / 1 skipped; i18n 585 keys; encoding check pass; typecheck pass;
+isolated release `0f28d5648c35`; Playwright 53 passed. No solver executed; 8765 was not running and
+was not touched.
+
+## A10. Phase 4 — two-step body seating / door closing, 2026-11-22
+
+**Gate 4A PASS (license-free). Gate 4B BLOCKED (no licensed solve).**
+
+- **Model:** `analysis.mode` defaults to `door_only`; `body_then_door` adds `motion.body`
+  (offset, signed travel, duration). Two-step validation requires exactly one moving door, exactly one
+  moving body, non-zero body travel and a seal region. Legacy revisions keep door-only behaviour.
+- **Mesh:** body profile edges become R2D2 elements in two-step mode; door-only keeps the body
+  excluded. The mesh-compatibility digest adds the mode only for two-step, so historical door-only
+  digests remain valid.
+- **Deck:** `write_two_step_inp` creates WS/PANEL/BODY parts and instances, both reference points and
+  rigid bodies, two contact-participating rigid surfaces, an explicit `Body seating` step followed by
+  `Closing`, the door held during step 1 and the body held during step 2, WSFIX throughout, propagated
+  boundary conditions (no `op=NEW`), and U/RF history for both RPs in both steps.
+- **Results:** metadata records ordered steps, both references, body placement/clearance/travel;
+  extraction selects the reference that owns each step and projects along its direction; two-step
+  history CSV has a `role` column; the results page has a curve-step selector and body axis labels.
+  Manufactured playback refuses two-step rather than inventing body contact evidence.
+
+Verification: `tests/test_two_step.py` 8 passed; `apps/web/tests/two-step.spec.ts` 1 passed; full
+pytest 184 passed / 1 skipped; i18n 605 keys; isolated release `ce9798f0a74f`; Playwright 54 passed.
+No solver was executed and no licensed artifact was modified.
+
+**Gate 4B remains blocked** on an authorized two-step licensed run verifying: body moves while the door
+is held, door moves while the body is held, seal deformation/contact carry over, forces/displacements
+have correct units/signs, and no unexpected rigid-body motion or overconstraint. Syntax-level INP tests
+are not physical validation.
+
+## A11. Phase 5 — real-time run diagnostics, 2026-11-22
+
+Diagnostics now leads with a status card: phase and status badge, solver and extraction separately,
+current step/increment, simulated step time, last update, and a progress bar. Progress is computed
+from solver-reported simulated time and the configured durations of the job's own revision — a
+simulated-time fraction, never a wall-clock estimate, with no completion time.
+
+- Queued → 0%; a known active step → fraction capped below 100%; unknown step, license wait or
+  missing step time → indeterminate.
+- Solver succeeded but extraction queued/running/failed → 99% with an explicit “not 100%” notice;
+  100% only when solver and extraction both succeeded.
+- Two-step jobs list Body seating and Closing with pending/active/complete states; legacy runs show
+  Closing only.
+- License wait, stale heartbeat (30 s, re-evaluated every 5 s), awaiting extraction, extraction
+  failure and the diagnostic source log are distinct, labelled states. Logs stay below the summary.
+
+Verification: `apps/web/tests/progress.spec.ts` 4 passed using mocked job/revision responses (not
+solver evidence); full pytest 184 passed / 1 skipped (backend unchanged); i18n 619 keys; typecheck
+pass; isolated release `5cac5e2a1e92`; Playwright 58 passed. No solver was executed.
+
+## A12. Final regression and release decision — Phases 0–5, 2026-11-22
+
+Final isolated matrix after the last edits (isolated root, release `5cac5e2a1e92`):
+
+| Check | Result |
+|---|---|
+| `python scripts/schema.py` | exit 0; generated contract identical to checkout (`4D376FBB…`) |
+| `python -m pytest -q` | **184 passed, 1 skipped** |
+| `npm run test:i18n` | **619 keys** in both dictionaries |
+| `npm run test:encoding` | pass, 39 source files |
+| `npm run typecheck` | pass |
+| `npm run build` | release `5cac5e2a1e92`, entry `index-BcID6OYd.js`, API 3, 4 files |
+| `npm run test:browser` | **58 passed** |
+
+Phase status: 0 PASS, 1 PASS, 2 PASS, 3 PASS, 4A PASS, 4B BLOCKED, 5 PASS. Gate 6
+(worker/backup) is partially covered by the earlier restore drill and existing worker tests; no new
+fault-injection run was made. Gate 7 remains automated-pass / human NOT RUN at 125–150% scaling.
+
+Release decisions:
+
+- **Software release candidate for the stated local single-host workflow: PASS** on the automated
+  scope.
+- **Supervised internal engineering pilot: BLOCKED** — needs supervised operator tasks and a licensed
+  two-step run.
+- **Production engineering decisions: BLOCKED** — no trusted reference curve, agreed tolerance or
+  reviewer; no physical correlation exists.
+
+No solver was executed in Phases 0–5 and no licensed artifact was modified. The live 8765 instance was
+not running at the final checkpoints and was never touched.

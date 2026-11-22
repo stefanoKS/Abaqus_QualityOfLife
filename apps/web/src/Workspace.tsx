@@ -11,6 +11,7 @@ import {
   Copy,
   FileInput,
   FileText,
+  FlaskConical,
   Grid2X2,
   Layers3,
   LoaderCircle,
@@ -23,15 +24,27 @@ import {
 } from 'lucide-react'
 import Viewport from './Viewport'
 import type { Display, ViewMesh, Picked, SelectionMode } from './viewportModel'
-import { Plot } from './Plot'
-import { artifact, err, go, replaceRoute, request, type FixtureInfo, type Job, type Project, type Revision } from './api'
+import {
+  artifact,
+  err,
+  go,
+  replaceRoute,
+  request,
+  type FixtureInfo,
+  type Job,
+  type LibraryDetail,
+  type LibrarySummary,
+  type Project,
+  type Revision,
+} from './api'
 import { useI18n, labelFrom } from './i18n'
 import type { TranslationKey } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 import { Facts } from './shared/components/Facts'
 import { NumberInput } from './shared/components/NumberInput'
-import { useAnyInvalidField } from './shared/components/draftGuard'
+import { hasInvalidField, useAnyInvalidField } from './shared/components/draftGuard'
 import { AssemblyTree } from './features/workspace/AssemblyTree'
+import { componentLabel } from './features/workspace/componentLabel'
 import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
 import { orderedStates } from './features/workspace/workflowStates'
 import { findingKey, type Readiness } from './features/workspace/readiness'
@@ -42,11 +55,7 @@ import {
   stageId,
   stageMode,
 } from './features/workspace/stages'
-import {
-  MaterialEditor,
-  freshCard,
-  materialIssues,
-} from './features/materials/MaterialEditor'
+import { freshCard, materialIssues } from './features/materials/MaterialEditor'
 import { meshQuality, type MeshFile } from './features/mesh/meshQuality'
 import { MeshReview } from './features/mesh/MeshReview'
 
@@ -120,7 +129,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
   })
   const [unitConfirmed, confirmUnit] = useState(false),
     [expanded, expand] = useState<string[]>([])
-  const [activeMaterial, setActiveMaterial] = useState<string | null>(p.materials[0]?.id ?? null)
+  const [library, setLibrary] = useState<LibrarySummary[]>([])
   const [placement, setPlacement] = useState<{ initial_vertical_mesh_clearance_mm: number } | null>(
     null,
   )
@@ -170,7 +179,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
           replaceRoute('workspace/' + next.id)
           setRev(next)
           setP(next.setup)
-          setActiveMaterial(next.setup.materials[0]?.id ?? null)
+      
           select(null)
           hide([])
           setMeshFile(null)
@@ -371,6 +380,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
     return () => ac.abort()
   }, [rev.id, generation])
   useEffect(() => {
+    const ac = new AbortController()
+    request<LibrarySummary[]>('/api/materials', 'GET', undefined, ac.signal)
+      .then(setLibrary)
+      .catch(() => {
+        if (!ac.signal.aborted) setLibrary([])
+      })
+    return () => ac.abort()
+  }, [generation])
+  useEffect(() => {
     if (!dirty) return
     const guard = (e: BeforeUnloadEvent) => {
       e.preventDefault()
@@ -379,8 +397,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
+  const archivedModel = rev.archived || rev.group_archived
   function edit(fn: (next: Project) => void) {
-    if (locked) return
+    if (locked || archivedModel) return
     setP((old) => {
       const n = structuredClone(old)
       fn(n)
@@ -397,6 +416,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
     (c) => c.id === (pick?.component ?? face?.component ?? edge?.component ?? pick?.id),
   )
   const mat = p.materials.find((m) => m.id === face?.material)
+  const assignedLibrary = mat?.library_id
+    ? library.find((entry) => entry.id === mat.library_id)
+    : undefined
+  const libraryNewer = Boolean(
+    assignedLibrary &&
+      mat?.library_version &&
+      assignedLibrary.current_version > mat.library_version,
+  )
   const mount = p.selections.find((s) => s.id === p.mounting.selection)
   const colors = useMemo(
     () =>
@@ -430,19 +457,25 @@ export default function Workspace({ initial, locked, notify }: Props) {
       }),
     [p, meshJob, compatibleMesh, fixture, deck, deckReady, related, dirty],
   )
+  const twoStep = p.analysis.mode === 'body_then_door'
   const participantNames = useMemo(
     () =>
       p.components
-        .filter((c) => c.role === 'seal' || c.role === 'moving_panel')
-        .map((c) => c.name),
-    [p.components],
+        .filter(
+          (c) =>
+            c.role === 'seal' ||
+            c.role === 'moving_panel' ||
+            (p.analysis.mode === 'body_then_door' && c.role === 'vehicle_body'),
+        )
+        .map(componentLabel),
+    [p.components, p.analysis.mode],
   )
   const panelEdges = useMemo(() => {
     const panel = p.components.find((component) => component.role === 'moving_panel')
     return panel ? p.edges.filter((edge) => edge.component === panel.id) : []
   }, [p.components, p.edges])
   const bodyNames = useMemo(
-    () => p.components.filter((c) => c.role === 'vehicle_body').map((c) => c.name),
+    () => p.components.filter((c) => c.role === 'vehicle_body').map(componentLabel),
     [p.components],
   )
   function target(next: SelectionMode) {
@@ -461,10 +494,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
       select({ kind: next, id: e.id, entity: e.id, component: e.component })
     } else select(null)
   }
+  function assertNumericDrafts() {
+    // Synchronous source of truth, not a possibly stale render value.
+    if (hasInvalidField()) throw new Error(t('validation.invalidDraft'))
+  }
   function changeStage(i: number) {
     // An invalid numeric draft is not silently committed or discarded by leaving
     // the step: keep it visible and make the engineer correct it or press Escape.
-    if (invalidField) {
+    if (invalidField || hasInvalidField()) {
       notify(t('validation.invalidDraft'))
       return
     }
@@ -475,6 +512,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     target(stageMode(id))
   }
   async function save() {
+    assertNumericDrafts()
     if (!dirty) return rev
     const saved = await request<Revision>('/api/projects/' + rev.project, 'PUT', {
       base: rev.id,
@@ -500,6 +538,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     }
   }
   async function generate() {
+    assertNumericDrafts()
     const r = await save()
     await request<Job>('/api/meshes', 'POST', {
       revision: r.id,
@@ -512,6 +551,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     message('')
   }
   async function prepareDeck() {
+    assertNumericDrafts()
     if (!compatibleMesh || !fixtureReviewed || pendingDeck) return
     const job = await request<Job>('/api/decks', 'POST', {
       revision: rev.id,
@@ -526,6 +566,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     message(t('mesh.preparingDeck'))
   }
   async function saveFixture(labels: string[]) {
+    assertNumericDrafts()
     if (!compatibleMesh) return
     await request<Job>('/api/meshes/' + compatibleMesh.id + '/fixture', 'PUT', {
       labels,
@@ -562,6 +603,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     })
   }
   async function submit() {
+    assertNumericDrafts()
     if (!deckReady || !deck) return
     const r = await request<Job>('/api/runs', 'POST', {
       name: runName,
@@ -594,16 +636,64 @@ export default function Workspace({ initial, locked, notify }: Props) {
     setShowMesh(false)
     select(null)
   }
-  function updateMaterial(id: string, patch: Partial<Project['materials'][number]>) {
-    edit((n) => {
-      const card = n.materials.find((m) => m.id === id)
-      if (card) Object.assign(card, patch)
+  async function assignLibrary(libraryId: string) {
+    if (!face) return
+    const detail = await request<LibraryDetail>('/api/materials/' + libraryId)
+    execute(async () => {
+      edit((n) => {
+        let card = n.materials.find(
+          (item) =>
+            item.library_id === detail.id &&
+            item.library_version === detail.current_version,
+        )
+        if (!card) {
+          card = {
+            id: freshCard(n.materials, detail.name).id,
+            name: detail.name,
+            version: 1,
+            model: detail.card.model,
+            color: detail.card.color,
+            density: detail.card.density,
+            young: detail.card.young ?? null,
+            poisson: detail.card.poisson ?? null,
+            test_data: (detail.card.test_data ?? []).map(
+              (row) => [row[0], row[1], row[2]] as [number, number, number],
+            ),
+            library_id: detail.id,
+            library_version: detail.current_version,
+          }
+          n.materials.push(card)
+        }
+        n.faces.find((item) => item.id === face.id)!.material = card.id
+      })
+    })
+  }
+
+  async function adoptLibrary(cardId: string, libraryId: string) {
+    const detail = await request<LibraryDetail>('/api/materials/' + libraryId)
+    execute(async () => {
+      edit((n) => {
+        const card = n.materials.find((item) => item.id === cardId)
+        if (!card) return
+        card.model = detail.card.model
+        card.color = detail.card.color
+        card.density = detail.card.density
+        card.young = detail.card.young ?? null
+        card.poisson = detail.card.poisson ?? null
+        card.test_data = (detail.card.test_data ?? []).map(
+          (row) => [row[0], row[1], row[2]] as [number, number, number],
+        )
+        card.library_id = detail.id
+        card.library_version = detail.current_version
+      })
     })
   }
   const selectionName = pick?.instance
     ? pick.id
     : pick?.kind === 'component'
-      ? component?.name
+      ? component
+        ? componentLabel(component)
+        : undefined
       : (edge?.name ?? face?.name ?? pick?.id)
   const dimension = p.dimension === '3D'
   const blockedReason = invalidField
@@ -665,8 +755,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
           ) : (
             <>
               <button
-                disabled={!dirty || busy || !!blockedReason}
-                title={blockedReason || undefined}
+                disabled={!dirty || busy || !!blockedReason || archivedModel}
+                title={archivedModel ? t('workspace.archivedReadOnly') : blockedReason || undefined}
                 onClick={() => execute(save)}
               >
                 <Save />
@@ -680,6 +770,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
           )}
         </div>
       </div>
+      {archivedModel && !locked && (
+        <p className="notice blocked-banner" data-testid="archived-banner">
+          {t('workspace.archivedReadOnly')}
+        </p>
+      )}
       {blockedReason && (
         <p className="error-text blocked-banner" role="alert">
           {t('materials.err.finite')} — {blockedReason}
@@ -732,6 +827,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
               setStage(STAGE[kind === 'face' ? 'materials' : kind === 'edge' ? 'mesh' : 'components'])
               select({ kind, id, entity: id, component: componentId })
             }}
+            onRename={(id, alias) =>
+              edit((next) => {
+                const target = next.components.find((item) => item.id === id)
+                if (target) target.alias = alias
+              })
+            }
           />
         </aside>
         <section className="canvas-card card">
@@ -1025,81 +1126,97 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       </label>
                       {mat && (
                         <>
+                          <h3>{t('materials.assigned')}</h3>
                           <Facts
                             rows={[
-                              [t('materials.cardVersion'), mat.version],
+                              [t('materials.name'), mat.name],
                               [
                                 t('materials.model'),
                                 mat.model === 'hyperfoam_test'
                                   ? t('materials.modelHyperfoam')
                                   : t('materials.modelLinear'),
                               ],
+                              [t('materials.cardVersion'), 'v' + mat.version],
                               [t('materials.density'), mat.density.toExponential(2)],
+                              ...(mat.model === 'hyperfoam_test'
+                                ? [
+                                    [
+                                      t('materials.samples'),
+                                      String(mat.test_data.length),
+                                    ] as [string, string],
+                                  ]
+                                : [
+                                    [t('materials.young'), String(mat.young ?? '—')] as [
+                                      string,
+                                      string,
+                                    ],
+                                  ]),
+                              [
+                                t('materials.libraryVersion'),
+                                mat.library_id
+                                  ? t('materials.pinnedVersion', {
+                                      version: mat.library_version ?? '—',
+                                    })
+                                  : t('materials.localCard'),
+                              ],
                             ]}
                           />
-                          <Plot
-                            x={
-                              mat.model === 'hyperfoam_test'
-                                ? mat.test_data.map((d) => d[1])
-                                : [0, 0.01]
-                            }
-                            y={
-                              mat.model === 'hyperfoam_test'
-                                ? mat.test_data.map((d) => d[0])
-                                : [0, (mat.young ?? 0) * 0.01]
-                            }
-                            xlabel={t('materials.nominalStrain')}
-                            ylabel={t('materials.stress')}
-                          />
+                          {libraryNewer && assignedLibrary && (
+                            <div className="notice" data-testid="library-newer">
+                              <p>
+                                {t('materials.newLibraryVersion', {
+                                  name: assignedLibrary.name,
+                                  version: assignedLibrary.current_version,
+                                })}
+                              </p>
+                              <button
+                                type="button"
+                                disabled={!!locked || busy}
+                                onClick={() =>
+                                  void adoptLibrary(mat.id, mat.library_id!).catch((error) =>
+                                    notify(err(error)),
+                                  )
+                                }
+                              >
+                                {t('materials.adoptVersion', {
+                                  version: assignedLibrary.current_version,
+                                })}
+                              </button>
+                            </div>
+                          )}
                         </>
                       )}
-                      <h3>{t('materials.list')}</h3>
-                      <MaterialEditor
-                        materials={p.materials}
-                        faces={p.faces}
-                        selected={activeMaterial}
-                        onSelect={setActiveMaterial}
-                        onAdd={() => {
-                          const card = freshCard(p.materials, t('materials.defaultName'))
-                          edit((n) => {
-                            n.materials.push(card)
-                          })
-                          return card
-                        }}
-                        onDuplicate={(id) => {
-                          const source = p.materials.find((m) => m.id === id)
-                          if (!source) return
-                          const copy: Project['materials'][number] = {
-                            ...structuredClone(source),
-                            id: freshCard(p.materials, source.name).id,
-                            name: source.name + ' · copy',
-                            version: 1,
-                          }
-                          edit((n) => {
-                            n.materials.push(copy)
-                          })
-                          setActiveMaterial(copy.id)
-                        }}
-                        onDelete={(id) => {
-                          edit((n) => {
-                            n.materials = n.materials.filter((m) => m.id !== id)
-                          })
-                          setActiveMaterial(p.materials.find((m) => m.id !== id)?.id ?? null)
-                        }}
-                        onUpdate={updateMaterial}
-                        disabled={!!locked || busy}
-                        onRevealRegion={(faceId) => {
-                          const target = p.faces.find((f) => f.id === faceId)
-                          if (!target) return
-                          setMode('face')
-                          select({
-                            kind: 'face',
-                            id: target.id,
-                            entity: target.id,
-                            component: target.component,
-                          })
-                        }}
-                      />
+                      <label>
+                        {t('materials.assignFromLibrary')}
+                        <select
+                          value=""
+                          disabled={!!locked || busy || !mat || !library.length}
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              void assignLibrary(e.target.value).catch((error) =>
+                                notify(err(error)),
+                              )
+                            }
+                          }}
+                        >
+                          <option value="">{t('materials.chooseLibraryMaterial')}</option>
+                          {library
+                            .filter((entry) => !entry.archived)
+                            .map((entry) => (
+                              <option key={entry.id} value={entry.id}>
+                                {entry.name} · v{entry.current_version}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="wide"
+                        onClick={() => go('materials')}
+                      >
+                        <FlaskConical />
+                        {t('materials.openLibrary')}
+                      </button>
                     </>
                   )}
                 </>
@@ -1117,7 +1234,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   {compatibleMesh && (
                     <Facts
                       rows={[
-                        [t('mounting.meshIdentity'), compatibleMesh.mesh_digest!.slice(0, 12)],
                         [
                           t('mounting.selection'),
                           pendingFixture
@@ -1155,7 +1271,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     }
                   />
                   <small>{t('contact.allSurfaces')}</small>
-                  {bodyNames.length > 0 && (
+                  {!twoStep && bodyNames.length > 0 && (
                     <p className="notice" data-testid="body-excluded">
                       {t('body.excluded')}
                     </p>
@@ -1175,6 +1291,63 @@ export default function Workspace({ initial, locked, notify }: Props) {
               {stage === STAGE.motion && !dimension && (
                 <>
                   <h2>{t('motion.title')}</h2>
+                  <label>
+                    {t('motion.mode')}
+                    <select
+                      value={p.analysis.mode}
+                      onChange={(e) =>
+                        edit((n) => {
+                          n.analysis.mode = e.target.value as typeof n.analysis.mode
+                        })
+                      }
+                    >
+                      <option value="door_only">{t('motion.modeDoorOnly')}</option>
+                      <option value="body_then_door">{t('motion.modeBodyThenDoor')}</option>
+                    </select>
+                  </label>
+                  {twoStep && (
+                    <>
+                      <h3>{t('motion.step1Body')}</h3>
+                      {!bodyNames.length && (
+                        <p className="notice" data-testid="motion-needs-body">
+                          {t('motion.needsBody')}
+                        </p>
+                      )}
+                      <NumberInput
+                        label={t('motion.bodyOffset')}
+                        unit="mm"
+                        value={p.motion.body.offset}
+                        onChange={(v) =>
+                          edit((n) => {
+                            n.motion.body.offset = v
+                          })
+                        }
+                      />
+                      <NumberInput
+                        label={t('motion.bodyTravel')}
+                        unit="mm"
+                        rangeHint={t('motion.bodyTravelHint')}
+                        value={p.motion.body.travel}
+                        onChange={(v) =>
+                          edit((n) => {
+                            n.motion.body.travel = v
+                          })
+                        }
+                      />
+                      <NumberInput
+                        label={t('motion.bodyDuration')}
+                        unit="s"
+                        min={1e-9}
+                        value={p.motion.body.duration}
+                        onChange={(v) =>
+                          edit((n) => {
+                            n.motion.body.duration = v
+                          })
+                        }
+                      />
+                      <h3>{t('motion.step2Door')}</h3>
+                    </>
+                  )}
                   <NumberInput
                     label={t('motion.offset')}
                     unit="mm"
@@ -1308,7 +1481,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   ) : (
                     <small>{t('mesh.panelSizeMissing')}</small>
                   )}
-                  {bodyNames.length > 0 && <small>{t('mesh.bodyPreviewOnly')}</small>}
+                  {!twoStep && bodyNames.length > 0 && (
+              <small>{t('mesh.bodyPreviewOnly')}</small>
+            )}
                   {edge && (
                     <NumberInput
                       label={t('mesh.edgeSize')}
@@ -1340,10 +1515,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       [
                         t('review.mounting'),
                         fixture
-                          ? t('review.fixtureSummary', {
-                              count: fixture.count,
-                              digest: compatibleMesh?.mesh_digest?.slice(0, 12) ?? '',
-                            })
+                          ? t('review.fixtureSummary', { count: fixture.count })
                           : t('hint.fixtureRequired'),
                       ],
                       [
@@ -1351,10 +1523,24 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         t('review.contactSummary', { friction: p.contact.friction }),
                       ],
                       [t('review.panels'), participantNames.join(', ') || t('contact.none')],
-                      [t('review.stepSequence'), t('review.stepDoorOnly')],
+                      [
+                        t('review.stepSequence'),
+                        twoStep ? t('review.stepBodyThenDoor') : t('review.stepDoorOnly'),
+                      ],
+                      ...(twoStep
+                        ? [
+                            [
+                              t('review.bodyTravel'),
+                              t('review.bodyMotionSummary', {
+                                travel: p.motion.body.travel,
+                                duration: p.motion.body.duration,
+                              }),
+                            ] as [string, string],
+                          ]
+                        : []),
                     ]}
                   />
-                  {bodyNames.length > 0 && (
+                  {!twoStep && bodyNames.length > 0 && (
                     <p className="notice" data-testid="body-excluded">
                       {t('body.excluded')}
                     </p>
@@ -1431,11 +1617,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         {compatibleMesh ? t('mesh.meshReady') : t('mesh.meshStale')}
                       </strong>
                       {meshJob.diagnostic && <p className="error-text">{meshJob.diagnostic}</p>}
-                      {compatibleMesh && meshJob.mesh_digest && (
-                        <small>
-                          {t('mesh.meshDigest')} {meshJob.mesh_digest.slice(0, 12)}
-                        </small>
-                      )}
                     </div>
                   )}
                   {quality && meshFile && compatibleMesh && !dirty && (
@@ -1452,7 +1633,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <h3>{t('review.meshIdentity')}</h3>
                   <Facts
                     rows={[
-                      [t('mesh.meshDigest'), compatibleMesh.mesh_digest?.slice(0, 12) ?? '—'],
                       [t('review.meshNodes'), quality?.nodes ?? '—'],
                       [t('review.meshElements'), quality?.elements ?? '—'],
                       [
@@ -1480,10 +1660,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <h3>{t('review.archivedMesh')}</h3>
                   {archived.mesh ? (
                     <Facts
-                      rows={[
-                        [t('mesh.meshDigest'), archived.mesh.mesh_digest?.slice(0, 12) ?? '—'],
-                        [t('review.fixedNodes'), archivedFixture?.length ?? 0],
-                      ]}
+                      rows={[[t('review.fixedNodes'), archivedFixture?.length ?? 0]]}
                     />
                   ) : (
                     <p className="error-text" data-testid="archive-mesh-error">

@@ -1,6 +1,7 @@
 import { AlertTriangle, CheckCircle2, Info } from 'lucide-react'
 import type { Project } from '../../api'
 import { useI18n } from '../../i18n'
+import type { TranslationKey } from '../../i18n'
 import type { MeshQuality } from './meshQuality'
 
 export function MeshReview({
@@ -19,6 +20,12 @@ export function MeshReview({
       t('mesh.qualityWarning') + ' — max/min edge ratio ' + quality.worstEdgeRatio.toFixed(2),
     )
   const beyond = clearance === null ? null : Math.max(0, -project.motion.travel - clearance)
+  // Every element belongs to exactly one component; included rows must add up to
+  // the mesh total, so an excluded or missing component cannot hide elements.
+  const includedTotal = quality.components.reduce(
+    (sum, row) => sum + (row.included ? row.count : 0),
+    0,
+  )
   return (
     <div className="quality-summary">
       <h3>
@@ -75,24 +82,66 @@ export function MeshReview({
         )}
       </dl>
       <h3>{t('mesh.components')}</h3>
-      <dl data-testid="mesh-components">
-        {quality.components.map((row) => (
-          <div key={row.id} data-component={row.id} data-included={row.included}>
-            <dt>{row.name}</dt>
-            <dd>
-              {row.role === 'moving_panel'
-                ? t('mesh.role.door')
-                : row.role === 'vehicle_body'
-                  ? t('mesh.role.body')
-                  : t('mesh.role.seal')}{' '}
-              ?{' '}
-              {row.elementType ? row.elementType : t('mesh.noElements')} ?{' '}
-              {row.count.toLocaleString()} {t('mesh.elementsUnit')}
-              {row.included ? '' : ' ? ' + t('mesh.excludedFromAnalysis')}
-            </dd>
-          </div>
-        ))}
-      </dl>
+      <div className="mesh-components" data-testid="mesh-components">
+        {quality.components.map((row) => {
+          const excluded = row.role === 'vehicle_body' && !row.included
+          const status = excluded ? 'excluded' : row.count > 0 ? 'included' : 'notMeshed'
+          const role =
+            row.role === 'moving_panel'
+              ? t('mesh.role.door')
+              : row.role === 'vehicle_body'
+                ? t('mesh.role.body')
+                : row.role === 'seal'
+                  ? t('mesh.role.seal')
+                  : t('mesh.role.unassigned')
+          return (
+            <section
+              key={row.id}
+              className="mesh-component"
+              data-component={row.id}
+              data-included={row.included}
+              data-status={status}
+            >
+              <header>
+                <strong>{row.name}</strong>
+                <span className={'badge ' + (status === 'included' ? 'good' : '')}>
+                  {t(('mesh.component.' + status) as TranslationKey)}
+                </span>
+              </header>
+              <dl>
+                <div>
+                  <dt>{t('mesh.component.role')}</dt>
+                  <dd>{role}</dd>
+                </div>
+                <div>
+                  <dt>{t('mesh.component.type')}</dt>
+                  <dd>{row.elementType || t('mesh.notApplicable')}</dd>
+                </div>
+                <div>
+                  <dt>{t('mesh.component.count')}</dt>
+                  <dd>{row.count.toLocaleString()}</dd>
+                </div>
+              </dl>
+              <small>
+                {t(('mesh.component.' + status + 'Detail') as TranslationKey, {
+                  count: row.count,
+                })}
+              </small>
+            </section>
+          )
+        })}
+        <p className="mesh-included-total" data-testid="included-total">
+          {t('mesh.includedTotal', {
+            included: includedTotal.toLocaleString(),
+            total: quality.elements.toLocaleString(),
+          })}
+        </p>
+        {includedTotal !== quality.elements && (
+          <p className="error-text" role="alert">
+            {t('mesh.includedMismatch')}
+          </p>
+        )}
+      </div>
       {quality.regions.length > 0 && (
         <>
           <h3>{t('mesh.regions')}</h3>

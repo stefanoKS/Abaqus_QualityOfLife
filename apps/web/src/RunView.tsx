@@ -11,11 +11,12 @@ import {
   ScanLine,
   Terminal,
 } from 'lucide-react'
-import { artifact, elapsed, err, go, request, type Job } from './api'
+import { artifact, elapsed, err, go, request, type Job, type Revision } from './api'
 import { Badge, JobActions } from './Dashboard'
 import Viewport from './Viewport'
 import type { Picked, ResultFrame, ResultInstance } from './viewportModel'
 import { Plot } from './Plot'
+import { ProgressSummary } from './features/run/ProgressSummary'
 import { labelFrom, useI18n } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 
@@ -33,6 +34,8 @@ interface HistoryRow {
 
 interface Closing {
   panel?: string
+  /** User-facing component name/alias captured when the run was extracted. */
+  panel_name?: string
   instance?: string
   direction?: number[]
   distance_mm?: number
@@ -52,6 +55,8 @@ interface Index {
   averaging?: string
   force_normalization?: 'total' | 'per_mm'
   closing?: Closing | null
+  body?: Closing | null
+  steps?: { name: string; role: string; instance?: string; direction?: number[] }[]
   history_components?: string[]
 }
 
@@ -82,6 +87,11 @@ function displayedCurve(history: HistoryRow[], reverseX: boolean, reverseY: bool
     x: history.map((row) => (reverseX ? -row.displacement : row.displacement)),
     y: history.map((row) => (reverseY ? -row.force : row.force)),
   }
+}
+
+function sourceLog(job: Job) {
+  const preferred = /extract/i.test(job.phase) ? 'extract.log' : 'solver.log'
+  return job.manifest.includes(preferred) ? preferred : 'worker.log'
 }
 
 function csvCell(value: unknown) {
@@ -145,6 +155,8 @@ export function RunView({
   const [displayMeta, setDisplayMeta] = useState<DisplayMeta | null>(null)
   const frameCache = useRef(new Map<string, Frame>())
   const [component, setComponent] = useState<Component>('magnitude')
+  const [setup, setSetup] = useState<Revision['setup'] | null>(null)
+  const [now, setNow] = useState(() => Date.now() / 1000)
   const [logs, setLogs] = useState(''),
     [logFile, setLogFile] = useState('worker.log')
   // Display-only sign controls; the artifacts on disk keep their signed values.
@@ -168,6 +180,23 @@ export function RunView({
       clearInterval(timer)
     }
   }, [id, tick, notify, active])
+  // Configured step durations come from the exact revision the job ran, so a
+  // later edit cannot change this run's progress denominator.
+  useEffect(() => {
+    if (!job) return
+    const ac = new AbortController()
+    request<Revision>('/api/revisions/' + job.revision, 'GET', undefined, ac.signal)
+      .then((revision) => setSetup(revision.setup))
+      .catch(() => {
+        if (!ac.signal.aborted) setSetup(null)
+      })
+    return () => ac.abort()
+  }, [job?.revision])
+  // Re-evaluate the stale-heartbeat warning without re-fetching the job.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now() / 1000), 5000)
+    return () => clearInterval(timer)
+  }, [])
   useEffect(() => {
     if (!resultView || job?.status !== 'Completed') return
     const ac = new AbortController()
@@ -277,45 +306,68 @@ export function RunView({
       ac.abort()
     }
   }, [resultView, id, hasLog, logFile, notify])
-  const closingStep = index?.closing?.steps?.[0]?.name ?? null
+  // Two-step runs open on the door-closing step, not the body-seating step.
+  const closingStep =
+    index?.closing?.steps?.find((step) => step.role === 'door')?.name ??
+    index?.closing?.steps?.[0]?.name ??
+    null
   // Open on the door-closing step by default in both modes.
   useEffect(() => {
     if (!index) return
     const first = index.frames.findIndex((frame) => !closingStep || frame.step === closingStep)
     setN(Math.max(0, first))
   }, [index, closingStep])
+  const [curveStep, setCurveStep] = useState<string | null>(null)
+  const stepOptions = index?.steps?.length
+    ? index.steps
+    : (index?.closing?.steps ?? [])
+  useEffect(() => {
+    if (!index) return
+    const options = index.steps?.length ? index.steps : (index.closing?.steps ?? [])
+    const preferred = options.find((step) => step.role === 'door') ?? options[options.length - 1]
+    setCurveStep(preferred?.name ?? null)
+  }, [index])
+  const stepRole = stepOptions.find((step) => step.name === curveStep)?.role
+  const historyRows = useMemo(
+    () => (curveStep ? (index?.history ?? []).filter((row) => row.step === curveStep) : (index?.history ?? [])),
+    [index, curveStep],
+  )
   const curve = useMemo(
-    () => displayedCurve(index?.history ?? [], reverseX, reverseY),
-    [index, reverseX, reverseY],
+    () => displayedCurve(historyRows, reverseX, reverseY),
+    [historyRows, reverseX, reverseY],
   )
   // The frame identity that is actually on screen, not the one being requested.
   const shownFrame = displayedFrame ?? n
   const shownEntry = index?.frames[shownFrame]
   const frameStep = shownEntry?.step
   const activeSample =
-    index && shownEntry ? nearestIndex(index.history, shownEntry.time, frameStep) : undefined
+    index && shownEntry ? nearestIndex(historyRows, shownEntry.time, frameStep) : undefined
   // A fixed per-quantity scale from the run-wide metadata. ``null`` means this
   // quantity has no measurement and must be shown as unavailable, never as zero.
   const resultRange = displayMeta ? (displayMeta.ranges[component] ?? null) : undefined
   const rangeUnavailable = resultRange === null
   const plotPick = useCallback(
     (i: number) => {
-      if (index) {
+      if (index && historyRows[i]) {
         playing(false)
-        setN(nearestIndex(index.frames, index.history[i].time, index.history[i].step))
+        setN(nearestIndex(index.frames, historyRows[i].time, historyRows[i].step))
       }
     },
-    [index],
+    [index, historyRows],
   )
   function exportCurve() {
     if (!index) return
-    const direction = index.closing?.direction ?? [0, -1]
+    const direction =
+      index.steps?.find((step) => step.name === curveStep)?.direction ??
+      index.closing?.direction ??
+      [0, -1]
+    const subject = stepRole === 'body' ? index.body : index.closing
     const provenance = index.mode === 'DEMO' ? 'DEMO synthetic' : 'ABAQUS solver'
     const header = [
-      ['# Abaqus QOL displayed door response'],
-      ['# panel', index.closing?.panel ?? 'panel'],
-      ['# instance', index.closing?.instance ?? 'PANEL-1'],
-      ['# closing_step', closingStep ?? 'all steps'],
+      ['# Abaqus QOL displayed ' + (stepRole === 'body' ? 'body' : 'door') + ' response'],
+      ['# panel', subject?.panel_name ?? subject?.panel ?? 'panel'],
+      ['# instance', subject?.instance ?? 'PANEL-1'],
+      ['# closing_step', curveStep ?? closingStep ?? 'all steps'],
       ['# direction', direction.join(' ')],
       ['# length_unit', 'mm'],
       ['# force_unit', index.force_unit],
@@ -339,7 +391,7 @@ export function RunView({
         'provenance',
       ].join(','),
     )
-    index.history.forEach((row, i) => {
+    historyRows.forEach((row, i) => {
       header.push(
         [
           curve.x[i],
@@ -357,7 +409,10 @@ export function RunView({
           .join(','),
       )
     })
-    download('door-response-' + id.slice(0, 8) + '.csv', header.join('\r\n') + '\r\n')
+    download(
+      (stepRole === 'body' ? 'body-response-' : 'door-response-') + id.slice(0, 8) + '.csv',
+      header.join('\r\n') + '\r\n',
+    )
   }
   if (!job) return <main className="page">{t('run.opening')}</main>
   const disabled = index?.unavailable ?? []
@@ -413,6 +468,7 @@ export function RunView({
         <Clock />
         {elapsed(job)}
       </div>
+      <ProgressSummary job={job} setup={setup} now={now} />
       {resultView && index ? (
         <div className="result-grid">
           <section className="card">
@@ -526,16 +582,40 @@ export function RunView({
             <div className="property-body">
               <h2>{t('run.forceDisplacement')}</h2>
               <p>{index.closing ? t('run.plotHelp') : t('run.plotHelpLegacy')}</p>
-              {index.history.length ? (
+              {stepOptions.length > 1 && (
+                <label>
+                  {t('run.curveStep')}
+                  <select
+                    aria-label={t('run.curveStep')}
+                    value={curveStep ?? ''}
+                    onChange={(e) => setCurveStep(e.target.value || null)}
+                  >
+                    {stepOptions.map((step) => (
+                      <option key={step.name} value={step.name}>
+                        {step.name} · {t(step.role === 'body' ? 'run.roleBody' : 'run.roleDoor')}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+              {historyRows.length ? (
                 <>
                   <Plot
                     x={curve.x}
                     y={curve.y}
-                    xlabel={index.closing ? t('run.doorTravel') : t('run.panelU2')}
+                    xlabel={
+                      stepRole === 'body'
+                        ? t('run.bodyTravel')
+                        : index.closing
+                          ? t('run.doorTravel')
+                          : t('run.panelU2')
+                    }
                     ylabel={
-                      index.closing
-                        ? t('run.doorReaction', { unit: index.force_unit })
-                        : t('run.panelRF2', { unit: index.force_unit })
+                      stepRole === 'body'
+                        ? t('run.bodyReaction', { unit: index.force_unit })
+                        : index.closing
+                          ? t('run.doorReaction', { unit: index.force_unit })
+                          : t('run.panelRF2', { unit: index.force_unit })
                     }
                     active={activeSample}
                     onPick={plotPick}
@@ -612,7 +692,17 @@ export function RunView({
             </div>
             <div className="property-body">
               <h2>{labelFrom(t, 'phase', job.phase)}</h2>
-              {job.diagnostic && <p className="error-text">{job.diagnostic}</p>}
+              {job.diagnostic && (
+                <>
+                  <p className="error-text">{job.diagnostic}</p>
+                  <button
+                    type="button"
+                    onClick={() => setLogFile(sourceLog(job))}
+                  >
+                    {t('diag.openSourceLog')}
+                  </button>
+                </>
+              )}
               <dl>
                 {(
                   [

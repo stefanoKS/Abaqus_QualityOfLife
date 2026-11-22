@@ -54,6 +54,10 @@ jobs:
         working-directory: apps/web
         run: npm run test:i18n
 
+      - name: Source encoding quality
+        working-directory: apps/web
+        run: npm run test:encoding
+
       - name: TypeScript typecheck
         working-directory: apps/web
         run: npm run typecheck

@@ -72,7 +72,21 @@ def _fields(frame, requested, dimension):
 
 
 def _history(step, metadata, start_time):
-    ref = metadata["panel_reference"]
+    """History from the reference point that owns this step.
+
+    Legacy metadata has only ``panel_reference``/``closing``; two-step metadata
+    names a body reference in step 1 and the door reference in step 2.
+    """
+    motion = next(
+        (entry for entry in metadata.get("steps", []) if entry.get("name") == step.name),
+        None,
+    )
+    ref = (
+        {"instance": motion["instance"], "label": motion["reference_label"]}
+        if motion and "reference_label" in motion
+        else metadata["panel_reference"]
+    )
+    motion = motion or metadata.get("closing")
     target = "Node {}.{}".format(ref["instance"], ref["label"]).upper()
     for name in step.historyRegions.keys():
         if name.upper() != target:
@@ -82,7 +96,9 @@ def _history(step, metadata, start_time):
             key: outputs[key].data for key in ("U1", "U2", "RF1", "RF2") if key in outputs
         }
         if "U2" in series and "RF2" in series:
-            return align_histories(series, metadata, start_time, step=step.name)
+            return align_histories(
+                series, metadata, start_time, step=step.name, motion=motion
+            )
     return []
 
 

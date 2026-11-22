@@ -398,13 +398,24 @@ def main():
     parser.add_argument("--stop-file", type=Path)
     args = parser.parse_args()
     store.initialize()
+    # Hold the worker role for the whole process lifetime. If a supervisor crash
+    # leaves this worker behind, the OS lock keeps a replacement pair out until
+    # it exits, instead of letting two workers claim one queue.
+    try:
+        store.claim_worker_root(os.getpid())
+    except store.Conflict as error:
+        print(f"Abaqus QOL worker: {error}", flush=True)
+        raise SystemExit(2) from None
     owner = f"{socket.gethostname()}:{os.getpid()}:{store.new_id()}"
-    while not (args.stop_file and args.stop_file.exists()):
-        claimed = once(owner)
-        if args.once:
-            return
-        if not claimed:
-            time.sleep(0.35)
+    try:
+        while not (args.stop_file and args.stop_file.exists()):
+            claimed = once(owner)
+            if args.once:
+                return
+            if not claimed:
+                time.sleep(0.35)
+    finally:
+        store.release_worker_root(os.getpid())
 
 
 if __name__ == "__main__":

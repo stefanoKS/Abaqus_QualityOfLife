@@ -29,9 +29,14 @@ opens the browser only after readiness. A lock whose process is still alive is j
 ### Matched browser releases
 
 `npm --prefix apps/web run build` runs Vite and then `apps/web/scripts/publish-release.mjs`. The
-publisher copies the built tree into `apps/web/releases/<content-id>/` and writes
-`apps/web/dist/release.json` (`id`, `entry`, `css`, `api`). The id is a SHA-256 of the entry assets, so
-an uncommitted build gets its own identity; a Git commit alone cannot name a build.
+publisher copies the whole built tree into a staging directory, verifies every file the entry
+document references, hashes the **complete** file manifest and publishes
+`apps/web/releases/<content-id>/` by rename. `apps/web/dist/release.json` is written last and lists
+`id`, `entry`, `css`, `api`, the `tree` digest and every file with size and SHA-256. The id is the
+manifest hash, so an uncommitted build gets its own identity and a Git commit alone cannot name a
+build. An interrupted prior publication is quarantined and repaired; a complete release is never
+rewritten. `services/release.py` verifies the manifest at startup and the launcher refuses a release
+whose listed files are missing or altered.
 
 `services/release.py` resolves the manifest **once at import**. `services/api/main.py` mounts only that
 release directory and reports it in `/api/health`. Because `vite build` empties `dist/`, releases live
@@ -50,11 +55,21 @@ write from a mismatched pair with 409 while an unidentified script keeps the ori
 
 ### Data-directory ownership
 
-`<data>/instance.json` records the owning PID, port, release and data digest. The launcher claims it
-before starting the worker and the API lifespan re-claims it re-entrantly; a second process on the same
-data directory is refused before it can claim any job. The record is removed on clean shutdown and
-taken over only when the recorded process is gone. A different port with a separate `SEAL_DATA`
-therefore stays independent, while two ports on one data directory cannot both run a worker.
+Ownership is decided by two OS locks held for a process lifetime, not by a JSON record:
+
+- `<data>/owner.lock` — held by the launcher/API process. Acquired non-blocking at startup and
+  released by the kernel on exit, including a crash.
+- `<data>/worker.lock` — held by the worker process for its lifetime.
+
+The launcher acquires the owner lock and holds it until `worker.wait()` returns; the API lifespan adds
+an in-process reference for the independent API-only workflow. Two cold starts on different ports
+therefore cannot both win, and a stale PID is never treated as an owner. A supervisor crash can leave
+a worker behind; its `worker.lock` makes a new launcher fail closed, while an API-only start may
+attach to that worker. The worker checks the lock itself, so it refuses a second worker as well.
+
+`<data>/instance.json` remains the diagnostic record (owner PID, port, release, worker PID, start
+times, canonical data identity). It is written after the lock is held and is never the synchronization
+mechanism.
 
 ## Browser modules
 
@@ -65,6 +80,7 @@ therefore stays independent, while two ports on one data directory cannot both r
 | `src/theme/tokens.css` | Design tokens (colour, type, spacing), contrast-verified pairs, `.sr-only` |
 | `src/style.css` | Application styles consuming the tokens |
 | `src/Dashboard.tsx` | Project groups, named models, revision browsing, run table, filters, job actions |
+| `src/MaterialsPage.tsx` | Global material library: list/search, versioned card editor, history, archive, usage, import and comparison charts |
 | `src/Workspace.tsx` | Owns draft setup state and orchestrates the workflow stages |
 | `src/RunView.tsx` | Diagnostics and results: frame playback, component selector, projected door response, sign controls, displayed-curve export, logs |
 | `src/Viewport.tsx` | VTK host, pointer/keyboard interaction, legend, view tools, rectangular node selection |
@@ -153,6 +169,85 @@ single-sourced and testable.
 - Label validation rejects unknown labels, rigid-panel nodes, another instance and malformed strings;
   duplicates are collapsed and the output is deterministically ordered. An empty selection is valid at
   the mesh stage and rejected at the deck stage.
+
+### Component display names
+
+`Component.name` is the authoritative label produced by the drawing reader or the example builder.
+`Component.alias` is an optional user-facing display name edited from the assembly tree; every display
+site uses `alias || name`. Aliases are excluded from `mesh_inputs`, so renaming never changes the
+mesh-compatibility digest, remeshes or rewrites CAD/FE identity. Revision history stores the alias it
+was saved with, and new result metadata records `closing.panel_name` alongside the stable
+`closing.panel` component ID.
+
+## Global material library
+
+`material_library` holds the identity, editable name and archive state; `material_versions` holds
+immutable constitutive definitions (model, colour, density, elastic constants, uniaxial test data,
+creation time and note). Editing a card appends a version; a name-only edit does not. Versions are
+never updated or deleted.
+
+A model material is still a full snapshot inside the revision JSON. When assigned from the library it
+also records `library_id` and `library_version`. Adoption copies the selected version's values and
+updates the pin in a new revision; the server's comparison of material cards is unchanged. Library
+edits therefore never alter a saved revision, a prepared deck or a completed run. `POST
+/api/materials/import` creates explicit library entries from a model revision and never merges cards
+by name; re-importing a revision whose cards already carry pins is a no-op.
+
+The **Materials** page owns card creation, experimental-data editing, version history, archive/restore
+and the measured-only comparison charts. The workspace Materials stage only assigns a material to a
+region, shows the assigned snapshot/pin, and offers adoption when a newer library version exists.
+
+## Live run diagnostics
+
+The worker persists `solver`, `extraction`, `phase`, `step`, `increment`, `step_time` and a heartbeat
+every two seconds. `RunView` shows these at the top of the run page. Progress is computed only from
+solver-reported simulated time and the configured durations of the job's own revision
+(`motion.body.duration` + `motion.duration` for two-step, `motion.duration` for legacy). It is a
+simulated-time fraction, never a wall-clock estimate, and no completion time is derived.
+
+The bar is determinate only when a known step and step time exist: queued is 0%, an active step is
+capped below 100%, and solver success with extraction still running/failed shows 99% with an explicit
+“not 100%” message. Solver and extraction succeed → 100%. Unknown step, license wait or missing step
+time → indeterminate. A heartbeat older than 30 s during active work shows a stale warning; the
+warning is re-evaluated on a five-second clock while the job poll keeps the existing active/idle
+cadence. License wait, awaiting extraction, extraction failure and the diagnostic's source log are
+separate, labelled states.
+
+## Two-step body seating and door closing (Gate 4A)
+
+`analysis.mode` selects the template. `door_only` is the default and preserves the legacy single-step
+deck exactly. `body_then_door` requires exactly one `moving_panel` and one `vehicle_body`, a non-zero
+`motion.body.travel`, a body duration and a seal region.
+
+The mesher includes the body profile as R2D2 elements in this mode; in door-only mode the reviewed
+body remains excluded. The mesh-compatibility digest adds `analysis_mode` only for the two-step mode,
+so historical door-only meshes keep their previous digest and stay reusable.
+
+`deck.write_two_step_inp` emits WS, PANEL and BODY parts/instances with separate reference points and
+rigid-body constraints. Step 1 (`Body seating`) moves `BODY_RP` and holds the door; step 2 (`Closing`)
+restates the body at its attained position and moves `PANEL_RP`. Boundary conditions propagate through
+Abaqus' normal mechanism (no `op=NEW`), so seal deformation and contact state carry into step 2. Both
+reference points request U1/U2/RF1/RF2 history in both steps.
+
+Result metadata lists the ordered steps and the reference that owns each. `results.py` records body
+placement, clearance and travel; `extract_odb.py` reads the matching reference per step; projected
+history rows carry their role. The results page selects the curve step and labels body travel/reaction
+separately. This is code and syntax-level verification only; physical plausibility is Gate 4B.
+
+## Archive and permanent deletion
+
+`projects.archived` and `groups.archived` are reversible tombstones. Default list endpoints hide
+archived rows; `include_archived=true` returns them, and revision/run/artifact reads never depend on
+the flag, so historical evidence stays reachable. Archived targets are read-only: the API rejects
+setup saves, imports, mesh/deck/submission and new models in an archived group with HTTP 409.
+
+Permanent deletion is explicit and only for archived targets. The store checks `activity` for every
+job of the target and refuses while any job is active or unresolved. It then writes a `deletions`
+journal row, removes the database rows in one transaction, marks the journal `committed`, and deletes
+job directories plus drawings that no remaining revision references. Library materials are never
+deleted. At startup `recover_deletions()` discards a pending journal whose rows still exist (the
+transaction never committed) and otherwise finishes idempotent file cleanup; a filesystem failure
+leaves the journal for the next start.
 
 ## Project grouping
 

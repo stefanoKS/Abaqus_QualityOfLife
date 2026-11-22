@@ -86,13 +86,16 @@ export function meshQuality(mesh: MeshFile, project: Project): MeshQuality {
     if (!component) continue
     segmentsByComponent.set(component, (segmentsByComponent.get(component) ?? 0) + Math.max(0, list.length - 1))
   }
+  const twoStep = project.analysis.mode === 'body_then_door'
   const components = project.components.map((component) => {
     const row = perComponent.get(component.id)
-    const excluded = String(component.role) === 'vehicle_body'
+    // Door-only reviews the body profile but does not analyse it. In the
+    // two-panel template the body is a meshed, participating rigid profile.
+    const excluded = String(component.role) === 'vehicle_body' && !twoStep
     const types = row ? [...row.types] : []
     return {
       id: component.id,
-      name: component.name,
+      name: component.alias?.trim() || component.name,
       role: String(component.role),
       included: Boolean(row) && !excluded,
       elementType: types.join(' + '),

@@ -117,6 +117,10 @@ export function Viewport(props: ViewportProps) {
         'pointerdown',
         (e) => {
           if (drag || e.button > 2) return
+          // Middle-button drag pans. Cancelling pointerdown suppresses the
+          // compatibility mousedown that starts browser auto-scroll, so the page
+          // must not scroll while the camera moves.
+          if (e.button === 1) e.preventDefault()
           el.focus({ preventScroll: true })
           el.setPointerCapture(e.pointerId)
           const [lx, ly] = local(e)
@@ -206,6 +210,7 @@ export function Viewport(props: ViewportProps) {
           } else if (!drag.moved && drag.button === 0) {
             latest.current.onSelect(view!.pick(latest.current.mode, lx, ly))
           }
+          el.dataset.camera = view!.cameraSignature()
           drag = null
           setGrabbing(false)
           if (el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId)
@@ -221,12 +226,22 @@ export function Viewport(props: ViewportProps) {
         { signal },
       )
       el.addEventListener('contextmenu', (e) => e.preventDefault(), { signal })
+      // Middle-click often produces auxclick after pointerup; suppressing it
+      // keeps browser auto-scroll and new-tab gestures out of the viewport.
+      el.addEventListener(
+        'auxclick',
+        (e) => {
+          if (e.button === 1) e.preventDefault()
+        },
+        { signal },
+      )
       el.addEventListener(
         'wheel',
         (e) => {
           e.preventDefault()
           const delta = e.deltaMode === 1 ? 16 * e.deltaY : e.deltaY
           view!.zoom(Math.exp(Math.max(-1, Math.min(1, delta * 0.0015))))
+          el.dataset.camera = view!.cameraSignature()
           setHover(null)
         },
         { signal, passive: false },
@@ -260,6 +275,7 @@ export function Viewport(props: ViewportProps) {
     try {
       controller.current.setScene(scene, props.dimension, lastFit.current !== fitKey)
       lastFit.current = fitKey
+      if (host.current) host.current.dataset.camera = controller.current.cameraSignature()
       hover.current = null
       setHoverLabel('')
       setError('')

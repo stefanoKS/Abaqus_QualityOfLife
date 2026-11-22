@@ -28,7 +28,7 @@ def _sample(series, times, t):
 COMPONENTS = ("U1", "U2", "RF1", "RF2")
 
 
-def align_histories(series, metadata, start_time=0, step=None):
+def align_histories(series, metadata, start_time=0, step=None, motion=None):
     """Align every component on the two closing histories' common time domain.
 
     ``series`` maps ``U1``/``U2``/``RF1``/``RF2`` to ``{time: value}``. Rows keep
@@ -46,7 +46,7 @@ def align_histories(series, metadata, start_time=0, step=None):
     if upper < lower:
         return []
     divisor = metadata["thickness"] if metadata["force_normalization"] == "per_mm" else 1.0
-    closing = metadata.get("closing") or {}
+    closing = motion or metadata.get("closing") or {}
     direction = closing.get("direction") or [0.0, -1.0]
     dx, dy = float(direction[0]), float(direction[1])
     # Only the components the direction actually uses must exist; an X-only
@@ -87,6 +87,7 @@ def align_histories(series, metadata, start_time=0, step=None):
             {
                 "time": start_time + t,
                 "step": step,
+                "role": closing.get("role"),
                 "displacement": travel,
                 "force": total / divisor,
                 "total_force_N": total,
@@ -113,6 +114,8 @@ def result_header(metadata, mode, instances):
         "force_normalization": metadata["force_normalization"],
         "force_unit": "N/mm" if per_length else "N",
         "closing": metadata.get("closing"),
+        "steps": metadata.get("steps"),
+        "body": metadata.get("body"),
         "fixture": metadata.get("fixture"),
         "history_components": list(COMPONENTS),
         "history_description": (
@@ -196,42 +199,45 @@ def finish(directory, result):
     directory = Path(directory)
     path = directory / "history.csv"
     tmp = directory / "history.csv.tmp"
+    multi_step = len(result.get("steps") or []) > 1
+    header = [
+        "execution",
+        "step",
+        "time_s",
+        "panel_U1_mm",
+        "panel_U2_mm",
+        "panel_RF1_N",
+        "panel_RF2_N",
+        "panel_total_RF2_N",
+        "closing_displacement_mm",
+        "closing_force_" + result["force_unit"],
+        "closing_total_force_N",
+    ]
+    if multi_step:
+        header.append("role")
     with tmp.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(
-            [
-                "execution",
-                "step",
-                "time_s",
-                "panel_U1_mm",
-                "panel_U2_mm",
-                "panel_RF1_N",
-                "panel_RF2_N",
-                "panel_total_RF2_N",
-                "closing_displacement_mm",
-                "closing_force_" + result["force_unit"],
-                "closing_total_force_N",
-            ]
-        )
+        writer.writerow(header)
         for row in result["history"]:
             signed = row.get("rf2", 0.0)
-            writer.writerow(
-                [
-                    result["notice"],
-                    row.get("step") or "",
-                    row["time"],
-                    row.get("u1", 0.0),
-                    row.get("u2", row["displacement"]),
-                    row.get("rf1", 0.0),
-                    signed,
-                    # Signed global RF2 and its projection are distinct: the old
-                    # writer put the projected total in this column.
-                    signed,
-                    row["displacement"],
-                    row["force"],
-                    row["total_force_N"],
-                ]
-            )
+            values = [
+                result["notice"],
+                row.get("step") or "",
+                row["time"],
+                row.get("u1", 0.0),
+                row.get("u2", row["displacement"]),
+                row.get("rf1", 0.0),
+                signed,
+                # Signed global RF2 and its projection are distinct: the old
+                # writer put the projected total in this column.
+                signed,
+                row["displacement"],
+                row["force"],
+                row["total_force_N"],
+            ]
+            if multi_step:
+                values.append(row.get("role") or "")
+            writer.writerow(values)
     os.replace(tmp, path)
     # A single bounded pass over the stored frames records the run-wide camera
     # bounds and colour ranges before the index is published.

@@ -48,6 +48,116 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/materials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Materials
+         * @description Global material library, with immutable version history per material.
+         */
+        get: operations["materials_api_materials_get"];
+        put?: never;
+        /** Create Material */
+        post: operations["create_material_api_materials_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/materials/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Materials
+         * @description Explicitly import selected model-local cards; never merge by name.
+         */
+        post: operations["import_materials_api_materials_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/materials/{mid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Material */
+        get: operations["material_api_materials__mid__get"];
+        /** Update Material */
+        put: operations["update_material_api_materials__mid__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/materials/{mid}/duplicate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Duplicate Material */
+        post: operations["duplicate_material_api_materials__mid__duplicate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/materials/{mid}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Material */
+        post: operations["archive_material_api_materials__mid__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/materials/{mid}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Material */
+        post: operations["restore_material_api_materials__mid__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/groups": {
         parameters: {
             query?: never;
@@ -66,6 +176,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/groups/{gid}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Group */
+        post: operations["archive_group_api_groups__gid__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{gid}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Group */
+        post: operations["restore_group_api_groups__gid__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{gid}/deletion-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Group Deletion Info */
+        get: operations["group_deletion_info_api_groups__gid__deletion_info_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/groups/{gid}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete Group */
+        post: operations["delete_group_api_groups__gid__delete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects": {
         parameters: {
             query?: never;
@@ -78,6 +256,74 @@ export interface paths {
         put?: never;
         /** Create */
         post: operations["create_api_projects_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Archive Model */
+        post: operations["archive_model_api_projects__pid__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Model */
+        post: operations["restore_model_api_projects__pid__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/deletion-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Model Deletion Info */
+        get: operations["model_deletion_info_api_projects__pid__deletion_info_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Delete Model */
+        post: operations["delete_model_api_projects__pid__delete_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -134,7 +380,8 @@ export interface paths {
          *
          *     Deliberately omits manifests, fixture node lists and logs: the startup check
          *     only needs to know whether anything is still owned, and dashboard lists use
-         *     the paginated detail endpoints on demand.
+         *     the paginated detail endpoints on demand. The coverage header is explicit so
+         *     an older API's empty list can never be mistaken for "nothing is running".
          */
         get: operations["job_list_api_jobs_get"];
         put?: never;
@@ -520,6 +767,12 @@ export interface components {
         /** Analysis */
         "Analysis-Input": {
             /**
+             * Mode
+             * @default door_only
+             * @enum {string}
+             */
+            mode: "door_only" | "body_then_door";
+            /**
              * Template
              * @default implicit_dynamic_closing
              * @constant
@@ -542,6 +795,12 @@ export interface components {
         /** Analysis */
         "Analysis-Output": {
             /**
+             * Mode
+             * @default door_only
+             * @enum {string}
+             */
+            mode: "door_only" | "body_then_door";
+            /**
              * Template
              * @default implicit_dynamic_closing
              * @constant
@@ -560,6 +819,48 @@ export interface components {
             force_normalization: "total" | "per_mm";
             /** Outputs */
             outputs: ("U" | "RF" | "S" | "LE" | "CSTRESS")[];
+        };
+        /**
+         * BodyMotion
+         * @description Step-1 motion of the moving body in the two-panel template.
+         */
+        "BodyMotion-Input": {
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
+             * Travel
+             * @default 0
+             */
+            travel: number;
+            /**
+             * Duration
+             * @default 1
+             */
+            duration: number;
+        };
+        /**
+         * BodyMotion
+         * @description Step-1 motion of the moving body in the two-panel template.
+         */
+        "BodyMotion-Output": {
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+            /**
+             * Travel
+             * @default 0
+             */
+            travel: number;
+            /**
+             * Duration
+             * @default 1
+             */
+            duration: number;
         };
         /** Body_drawing_api_projects__pid__drawing_post */
         Body_drawing_api_projects__pid__drawing_post: {
@@ -590,11 +891,33 @@ export interface components {
             token: string;
         };
         /** Component */
-        Component: {
+        "Component-Input": {
             /** Id */
             id: string;
             /** Name */
             name: string;
+            /**
+             * Alias
+             * @default
+             */
+            alias: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "seal" | "moving_panel" | "vehicle_body" | "unassigned";
+        };
+        /** Component */
+        "Component-Output": {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Alias
+             * @default
+             */
+            alias: string;
             /**
              * Role
              * @enum {string}
@@ -663,6 +986,84 @@ export interface components {
             mesh: string;
             /** Fixture Hash */
             fixture_hash?: string | null;
+        };
+        /** DeleteConfirm */
+        DeleteConfirm: {
+            /**
+             * Confirm
+             * @default
+             */
+            confirm: string;
+        };
+        /** DeletionInfo */
+        DeletionInfo: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "model" | "group";
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Archived */
+            archived: boolean;
+            /**
+             * Revisions
+             * @default 0
+             */
+            revisions: number;
+            /**
+             * Jobs
+             * @default 0
+             */
+            jobs: number;
+            /**
+             * Models
+             * @default 0
+             */
+            models: number;
+            /**
+             * Unarchived Models
+             * @default 0
+             */
+            unarchived_models: number;
+            /** Active Jobs */
+            active_jobs?: string[];
+            /** Deletable */
+            deletable: boolean;
+            /** Group */
+            group?: string | null;
+            /** Group Name */
+            group_name?: string | null;
+            /**
+             * Group Archived
+             * @default false
+             */
+            group_archived: boolean;
+        };
+        /** DeletionResult */
+        DeletionResult: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /**
+             * Removed Jobs
+             * @default 0
+             */
+            removed_jobs: number;
+            /**
+             * Removed Models
+             * @default 0
+             */
+            removed_models: number;
+            /**
+             * Cleanup
+             * @default done
+             * @enum {string}
+             */
+            cleanup: "done" | "pending";
         };
         /** DuplicateModel */
         DuplicateModel: {
@@ -834,6 +1235,11 @@ export interface components {
             name: string;
             /** Created */
             created: number;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
         };
         /** GroupCreated */
         GroupCreated: {
@@ -848,6 +1254,11 @@ export interface components {
             name: string;
             /** Created */
             created: number;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
             /** Models */
             models: components["schemas"]["Summary"][];
         };
@@ -932,6 +1343,102 @@ export interface components {
             /** Input Hash */
             input_hash: string | null;
         };
+        /** LibraryCreate */
+        LibraryCreate: {
+            /** Name */
+            name: string;
+            card: components["schemas"]["MaterialCard"];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** LibraryDetail */
+        LibraryDetail: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Archived */
+            archived: boolean;
+            /** Created */
+            created: number;
+            /** Updated */
+            updated: number;
+            /** Current Version */
+            current_version: number;
+            /** Version Count */
+            version_count: number;
+            /** Usage Count */
+            usage_count: number;
+            card: components["schemas"]["MaterialCard"];
+            /** Versions */
+            versions: components["schemas"]["LibraryVersion"][];
+            /** Usage */
+            usage: components["schemas"]["LibraryUsageRow"][];
+        };
+        /** LibraryDuplicate */
+        LibraryDuplicate: {
+            /** Name */
+            name?: string | null;
+        };
+        /** LibrarySummary */
+        LibrarySummary: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Archived */
+            archived: boolean;
+            /** Created */
+            created: number;
+            /** Updated */
+            updated: number;
+            /** Current Version */
+            current_version: number;
+            /** Version Count */
+            version_count: number;
+            /** Usage Count */
+            usage_count: number;
+            card: components["schemas"]["MaterialCard"];
+        };
+        /** LibraryUpdate */
+        LibraryUpdate: {
+            /** Name */
+            name?: string | null;
+            card?: components["schemas"]["MaterialCard"] | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+        };
+        /** LibraryUsageRow */
+        LibraryUsageRow: {
+            /** Revision */
+            revision: string;
+            /** Project */
+            project: string;
+            /** Number */
+            number: number;
+            /** Model Name */
+            model_name: string;
+            /** Material Id */
+            material_id: string;
+            /** Pinned Version */
+            pinned_version?: number | null;
+        };
+        /** LibraryVersion */
+        LibraryVersion: {
+            /** Version */
+            version: number;
+            card: components["schemas"]["MaterialCard"];
+            /** Created */
+            created: number;
+            /** Note */
+            note: string;
+        };
         /** Material */
         "Material-Input": {
             /** Id */
@@ -962,6 +1469,10 @@ export interface components {
                 number,
                 number
             ][];
+            /** Library Id */
+            library_id?: string | null;
+            /** Library Version */
+            library_version?: number | null;
         };
         /** Material */
         "Material-Output": {
@@ -993,6 +1504,56 @@ export interface components {
                 number,
                 number
             ][];
+            /** Library Id */
+            library_id: string | null;
+            /** Library Version */
+            library_version: number | null;
+        };
+        /**
+         * MaterialCard
+         * @description A validated constitutive card independent of any model.
+         */
+        MaterialCard: {
+            /**
+             * Model
+             * @enum {string}
+             */
+            model: "linear_elastic" | "hyperfoam_test";
+            /** Color */
+            color: string;
+            /** Density */
+            density: number;
+            /** Young */
+            young?: number | null;
+            /** Poisson */
+            poisson?: number | null;
+            /** Test Data */
+            test_data?: [
+                number,
+                number,
+                number
+            ][];
+        };
+        /** MaterialImportRequest */
+        MaterialImportRequest: {
+            /**
+             * Revision
+             * Format: uuid
+             */
+            revision: string;
+            /** Material Ids */
+            material_ids?: string[];
+        };
+        /** MaterialImportResult */
+        MaterialImportResult: {
+            /** Material Id */
+            material_id: string;
+            /** Library Id */
+            library_id: string;
+            /** Version */
+            version: number;
+            /** Existing */
+            existing: boolean;
         };
         /** MeshSpec */
         "MeshSpec-Input": {
@@ -1051,6 +1612,7 @@ export interface components {
              * @default 1.3
              */
             duration: number;
+            body?: components["schemas"]["BodyMotion-Input"];
         };
         /** Motion */
         "Motion-Output": {
@@ -1075,6 +1637,7 @@ export interface components {
              * @default 1.3
              */
             duration: number;
+            body: components["schemas"]["BodyMotion-Output"];
         };
         /** Mounting */
         "Mounting-Input": {
@@ -1273,7 +1836,7 @@ export interface components {
             /** Faces */
             faces?: components["schemas"]["Face-Input"][];
             /** Components */
-            components?: components["schemas"]["Component"][];
+            components?: components["schemas"]["Component-Input"][];
             /** Materials */
             materials?: components["schemas"]["Material-Input"][];
             /** Selections */
@@ -1322,7 +1885,7 @@ export interface components {
             /** Faces */
             faces: components["schemas"]["Face-Output"][];
             /** Components */
-            components: components["schemas"]["Component"][];
+            components: components["schemas"]["Component-Output"][];
             /** Materials */
             materials: components["schemas"]["Material-Output"][];
             /** Selections */
@@ -1353,6 +1916,16 @@ export interface components {
             group_name?: string | null;
             /** Mesh Compat */
             mesh_compat?: string | null;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
+            /**
+             * Group Archived
+             * @default false
+             */
+            group_archived: boolean;
             setup: components["schemas"]["Project-Output"];
         };
         /** RevisionSummary */
@@ -1609,6 +2182,16 @@ export interface components {
              * @default 1
              */
             revisions: number;
+            /**
+             * Archived
+             * @default false
+             */
+            archived: boolean;
+            /**
+             * Group Archived
+             * @default false
+             */
+            group_archived: boolean;
         };
         /** ValidationError */
         ValidationError: {
@@ -1679,9 +2262,272 @@ export interface operations {
             };
         };
     };
-    groups_api_groups_get: {
+    materials_api_materials_get: {
+        parameters: {
+            query?: {
+                query?: string;
+                include_archived?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibrarySummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_material_api_materials_post: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_materials_api_materials_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MaterialImportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialImportResult"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    material_api_materials__mid__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_material_api_materials__mid__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LibraryUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    duplicate_material_api_materials__mid__duplicate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["LibraryDuplicate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_material_api_materials__mid__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_material_api_materials__mid__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LibraryDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    groups_api_groups_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1695,6 +2541,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["GroupSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1732,9 +2587,139 @@ export interface operations {
             };
         };
     };
-    projects_api_projects_get: {
+    archive_group_api_groups__gid__archive_post: {
         parameters: {
             query?: never;
+            header?: never;
+            path: {
+                gid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_group_api_groups__gid__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GroupSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    group_deletion_info_api_groups__gid__deletion_info_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_group_api_groups__gid__delete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                gid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeleteConfirm"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    projects_api_projects_get: {
+        parameters: {
+            query?: {
+                include_archived?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1748,6 +2733,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Summary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -1772,6 +2766,134 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    archive_model_api_projects__pid__archive_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Summary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    restore_model_api_projects__pid__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Summary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    model_deletion_info_api_projects__pid__deletion_info_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionInfo"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_model_api_projects__pid__delete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["DeleteConfirm"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeletionResult"];
                 };
             };
             /** @description Validation Error */

@@ -23,6 +23,19 @@ function parse(raw: string): number | null {
 }
 
 /**
+ * A required numeric field. Blank is invalid, not "unchanged": a cleared field
+ * must never let Save quietly persist the previous value.
+ */
+function invalidValue(raw: string, min?: number, max?: number) {
+  if (raw.trim() === '') return true
+  const parsed = parse(raw)
+  if (parsed === null) return true
+  if (min !== undefined && parsed < min) return true
+  if (max !== undefined && parsed > max) return true
+  return false
+}
+
+/**
  * Draft-then-commit numeric field.
  *
  * Editing is local so a partially typed value never reaches the saved setup, and
@@ -49,32 +62,36 @@ export function NumberInput({
     setDraft(String(value))
   }, [value])
 
-  const parsed = parse(draft)
-  const outsideRange =
-    parsed !== null &&
-    ((min !== undefined && parsed < min) || (max !== undefined && parsed > max))
-  const invalid = (draft.trim() !== '' && parsed === null) || outsideRange
-  const message = invalid ? t('materials.err.finite') : ''
+  const invalid = invalidValue(draft, min, max)
+  const message = !invalid
+    ? ''
+    : draft.trim() === ''
+      ? t('validation.required')
+      : t('materials.err.finite')
 
   // An invalid draft stays visible and blocks the write actions until it is
-  // corrected or explicitly abandoned with Escape.
+  // corrected or explicitly abandoned with Escape. Registration happens in the
+  // change handler as well, so a blur followed immediately by a Save click
+  // cannot race a render.
   useEffect(() => {
-    setFieldInvalid(id, invalid)
+    setFieldInvalid(id, invalidValue(draft, min, max))
     return () => setFieldInvalid(id, false)
-  }, [id, invalid])
+  }, [id, draft, min, max])
   const describedBy = [rangeHint ? id + '-hint' : '', message && touched ? id + '-error' : '']
     .filter(Boolean)
     .join(' ')
 
   function commit(raw: string) {
     setTouched(true)
-    const next = parse(raw)
-    if (next === null || (min !== undefined && next < min) || (max !== undefined && next > max)) {
+    if (invalidValue(raw, min, max)) {
       // Keep the invalid text on screen so the engineer can see and correct it;
       // never revert to the saved value while Save could then appear to succeed.
+      setFieldInvalid(id, true)
       return
     }
-    if (next !== value) onChange(next)
+    setFieldInvalid(id, false)
+    const next = parse(raw)
+    if (next !== null && next !== value) onChange(next)
   }
 
   return (
@@ -92,7 +109,13 @@ export function NumberInput({
           value={draft}
           aria-invalid={invalid || undefined}
           aria-describedby={describedBy || undefined}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            const raw = e.target.value
+            setDraft(raw)
+            // Synchronous registration: a click on Save in the same task must
+            // already see the invalid state.
+            setFieldInvalid(id, invalidValue(raw, min, max))
+          }}
           onBlur={(e) => commit(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -100,6 +123,7 @@ export function NumberInput({
               commit(e.currentTarget.value)
             } else if (e.key === 'Escape') {
               setDraft(String(value))
+              setFieldInvalid(id, false)
               setTouched(false)
             }
           }}

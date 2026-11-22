@@ -86,9 +86,10 @@ test('a lost create response is retried with the same request identity', async (
   await expect(page).toHaveURL(/#workspace\//)
   await expect(page.locator('.crumb-model')).toContainText('Door A')
 
+  // Scope to this action's group: other tests share the disposable server data.
   const groups = await (await request.get('/api/groups')).json()
-  expect(groups).toHaveLength(1)
-  expect(groups[0].name).toBe('Atomic project')
-  expect(groups[0].models).toHaveLength(1)
-  expect(groups[0].models[0].name).toBe('Door A')
+  const mine = groups.filter((group: { name: string }) => group.name === 'Atomic project')
+  expect(mine).toHaveLength(1)
+  expect(mine[0].models).toHaveLength(1)
+  expect(mine[0].models[0].name).toBe('Door A')
 })

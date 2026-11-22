@@ -111,6 +111,8 @@ def evaluate(rid):
         findings.append(finding("components.no_moving_panel", "components", BLOCKER))
     if "seal" not in panel_roles:
         findings.append(finding("components.no_seal", "components", BLOCKER))
+    if setup.analysis.mode == "body_then_door" and "vehicle_body" not in panel_roles:
+        findings.append(finding("components.no_moving_body", "components", BLOCKER))
 
     regions = [f for f in setup.faces if not f.cavity]
     unassigned_regions = [f.id for f in regions if not f.material]
@@ -169,6 +171,8 @@ def evaluate(rid):
 
     if setup.motion.travel >= 0:
         findings.append(finding("motion.travel_not_closing", "motion", BLOCKER))
+    if setup.analysis.mode == "body_then_door" and setup.motion.body.travel == 0:
+        findings.append(finding("motion.body_travel_missing", "motion", BLOCKER))
 
     deck = next((j for j in deck_jobs if j["status"] == "Completed"), None)
     if deck is None:

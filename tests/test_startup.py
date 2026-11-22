@@ -6,6 +6,7 @@ compatibility check works on recorded health payloads.
 
 import importlib.util
 import json
+import multiprocessing
 import os
 import subprocess
 import sys
@@ -16,7 +17,21 @@ import pytest
 
 from integrations.abaqus import launcher
 from integrations import dwg
-from services import store
+from services import ownership, store
+
+
+def _claim_in_child(root, barrier, queue, hold):
+    os.environ["SEAL_DATA"] = str(root)
+    os.environ.pop("ABAQUS_QOL_DATA", None)
+    from services import store as child_store
+
+    barrier.wait(timeout=30)
+    try:
+        child_store.claim_data_root(os.getpid(), 0)
+        queue.put(("ok", os.getpid()))
+        time.sleep(hold)
+    except Exception as error:  # noqa: BLE001 - reported to the parent
+        queue.put(("conflict", str(error)))
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("serve", ROOT / "scripts" / "serve.py")
@@ -300,17 +315,51 @@ def test_a_crashed_launch_lock_is_taken_over(monkeypatch, tmp_path):
 
 def test_one_data_root_has_one_owner(monkeypatch, tmp_path):
     monkeypatch.setenv("SEAL_DATA", str(tmp_path))
-    monkeypatch.setattr(store, "pid_alive", lambda pid: int(pid) == 1001)
-    store.claim_data_root(1001, 8765)
+    store.claim_data_root(os.getpid(), 8765)
     with pytest.raises(store.Conflict) as refused:
-        store.claim_data_root(2002, 8766)
+        store.claim_data_root(os.getpid() + 1, 8766)
     assert "already owned" in str(refused.value)
     assert "Nothing was stopped" in str(refused.value)
-    # The same process may re-enter (API lifespan after the launcher claim).
-    assert store.claim_data_root(1001, 8765)["port"] == 8765
-    store.release_data_root(1001)
-    assert store.claim_data_root(2002, 8766)["pid"] == 2002
-    store.release_data_root(2002)
+    # The same process may re-enter (launcher claim, then API lifespan).
+    assert store.claim_data_root(os.getpid(), 8765)["port"] == 8765
+    store.release_data_root(os.getpid())
+    # Still held by the launcher reference; a different PID must stay refused.
+    with pytest.raises(store.Conflict):
+        store.claim_data_root(os.getpid() + 1, 8766)
+    store.release_data_root(os.getpid())
+    assert store.claim_data_root(os.getpid() + 1, 8766)["pid"] == os.getpid() + 1
+    store.release_data_root(os.getpid() + 1)
+
+
+def test_worker_keeps_an_orphaned_directory_busy(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    store.claim_data_root(os.getpid(), 8765)
+    store.claim_worker_root(os.getpid())
+    store.release_data_root(os.getpid())  # launcher crashed, worker survives
+
+    # An API may attach to the surviving worker (the supported independent
+    # workflow), but the launcher must not start a second worker beside it.
+    record = store.claim_data_root(os.getpid(), 8766)
+    assert record["worker_pid"] == os.getpid()
+    assert ownership.worker_lock_free(str(tmp_path)) is False
+    with pytest.raises(store.Conflict) as refused:
+        store.claim_worker_root(os.getpid() + 1)
+    assert "worker" in str(refused.value).lower()
+
+    store.release_data_root(os.getpid())
+    store.release_worker_root(os.getpid())
+    assert ownership.worker_lock_free(str(tmp_path)) is True
+
+
+def test_stale_metadata_does_not_block_a_new_owner(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    (tmp_path / "instance.json").write_text(
+        json.dumps({"pid": 999999, "worker_pid": 999998, "port": 8765}), encoding="utf-8"
+    )
+    record = store.claim_data_root(os.getpid(), 8899)
+    assert record["pid"] == os.getpid()
+    assert record["worker_pid"] is None
+    store.release_data_root(os.getpid())
 
 
 def test_zero_activity_is_reported_as_known_idle(monkeypatch):
@@ -319,6 +368,7 @@ def test_zero_activity_is_reported_as_known_idle(monkeypatch):
     class Response:
         def __init__(self, payload):
             self.payload = payload
+            self.headers = {"X-Abaqus-QOL-Jobs": "all-modes-v1"}
 
         def read(self):
             return json.dumps(self.payload).encode("utf-8")
@@ -350,3 +400,110 @@ def test_takeover_refuses_when_job_state_cannot_be_read(monkeypatch):
         serve.main(["--port", "8765", "--no-browser", "--takeover"])
     assert "job state could not be established" in str(exit_info.value)
     assert stopped == []
+
+def test_two_cold_starts_race_and_exactly_one_owns(tmp_path):
+    """Two separate processes synchronized immediately before the claim."""
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(2)
+    queue = context.Queue()
+    processes = [
+        context.Process(target=_claim_in_child, args=(tmp_path, barrier, queue, 1.0))
+        for _ in range(2)
+    ]
+    for process in processes:
+        process.start()
+    outcomes = [queue.get(timeout=60) for _ in processes]
+    for process in processes:
+        process.join(timeout=30)
+    assert sorted(kind for kind, _ in outcomes) == ["conflict", "ok"], outcomes
+    conflict = next(text for kind, text in outcomes if kind == "conflict")
+    assert "already owned" in conflict
+    assert "Nothing was stopped" in conflict
+
+
+def test_a_crashed_owner_releases_the_directory(monkeypatch, tmp_path):
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(1)
+    queue = context.Queue()
+    child = context.Process(target=_claim_in_child, args=(tmp_path, barrier, queue, 60))
+    child.start()
+    kind, _ = queue.get(timeout=60)
+    assert kind == "ok"
+    child.terminate()
+    child.join(timeout=30)
+    # The kernel released the lock with the process; no PID record lookup saves us.
+    record = store.claim_data_root(os.getpid(), 8899)
+    assert record["pid"] == os.getpid()
+    store.release_data_root(os.getpid())
+
+
+def test_independent_data_directories_are_independent(tmp_path):
+    first = ownership.acquire(tmp_path / "one", ownership.OWNER, 1001, 8801)
+    second = ownership.acquire(tmp_path / "two", ownership.OWNER, 1002, 8802)
+    assert first["data"] != second["data"]
+    ownership.release(tmp_path / "one", ownership.OWNER, 1001)
+    ownership.release(tmp_path / "two", ownership.OWNER, 1002)
+
+def _takeover_identity(monkeypatch):
+    legacy = {"product": "Abaqus QOL", "pid": 10468}
+    monkeypatch.setattr(serve, "health", lambda port, timeout=1.0: legacy)
+    monkeypatch.setattr(serve, "ensure_dependencies", lambda: None)
+    monkeypatch.setattr(serve, "ensure_web", lambda rebuild=False: None)
+    monkeypatch.setattr(serve, "local_identity", lambda: {"build": "abc123", "frontend": "x.js"})
+
+
+def test_takeover_rechecks_activity_immediately_before_stopping(monkeypatch):
+    _takeover_identity(monkeypatch)
+    calls = {"count": 0}
+
+    def activity(port):
+        calls["count"] += 1
+        return [] if calls["count"] == 1 else [{"id": "late", "mode": "MESH"}]
+
+    monkeypatch.setattr(serve, "active_jobs", activity)
+    stopped = []
+    monkeypatch.setattr(serve, "stop_instance", lambda port: stopped.append(port) or [])
+    with pytest.raises(SystemExit) as exit_info:
+        serve.main(["--port", "8765", "--no-browser", "--takeover"])
+    assert "became active" in str(exit_info.value)
+    assert stopped == []
+    assert calls["count"] == 2
+
+
+def test_takeover_refuses_when_recheck_is_unreadable(monkeypatch):
+    _takeover_identity(monkeypatch)
+    calls = {"count": 0}
+
+    def activity(port):
+        calls["count"] += 1
+        return None if calls["count"] > 1 else []
+
+    monkeypatch.setattr(serve, "active_jobs", activity)
+    stopped = []
+    monkeypatch.setattr(serve, "stop_instance", lambda port: stopped.append(port) or [])
+    with pytest.raises(SystemExit) as exit_info:
+        serve.main(["--port", "8765", "--no-browser", "--takeover"])
+    assert "re-established" in str(exit_info.value)
+    assert stopped == []
+
+
+def test_reconciled_idle_instance_can_be_taken_over(monkeypatch):
+    _takeover_identity(monkeypatch)
+    calls = {"count": 0}
+
+    def activity(port):
+        calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(serve, "active_jobs", activity)
+    stopped = []
+    monkeypatch.setattr(serve, "stop_instance", lambda port: stopped.append(port) or [10468])
+    monkeypatch.setattr(serve, "port_available", lambda port: True)
+    monkeypatch.setattr(serve, "acquire_lock", lambda port: True)
+    started = []
+    monkeypatch.setattr(serve, "serve", lambda port, browser=True: started.append((port, browser)))
+    assert serve.main(["--port", "8765", "--no-browser", "--takeover"]) == 0
+    assert stopped == [8765]
+    assert started == [(8765, False)]
+    assert calls["count"] == 2

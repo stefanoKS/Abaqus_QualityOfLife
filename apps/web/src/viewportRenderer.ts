@@ -311,6 +311,15 @@ export class ViewportRenderer {
     }
     this.draw()
   }
+  /** Stable camera fingerprint for interaction tests and diagnostics. */
+  cameraSignature() {
+    const cam = this.renderer.getActiveCamera()
+    const position = cam.getPosition()
+    const focal = cam.getFocalPoint()
+    return [...position, ...focal, cam.getParallelScale()]
+      .map((value) => Number(value).toFixed(5))
+      .join(',')
+  }
   zoom(factor: number) {
     const cam = this.renderer.getActiveCamera()
     const b = this.bounds,

@@ -4,14 +4,20 @@ import ctypes
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from services import activity, ownership
+
 STALE_SECONDS = 30
 TERMINAL = {"Completed", "Failed", "Cancelled"}
+# Every durable job kind, for the startup activity view. Dashboard run lists keep
+# their narrower DEMO/ABAQUS default.
+ALL_MODES = ("DEMO", "ABAQUS", "MESH", "DECK", "IMPORT")
 
 # The product is now "Abaqus QOL", but the on-disk directory keeps its previous
 # name so every existing installation opens its projects without a migration
@@ -89,6 +95,19 @@ def initialize():
         CREATE INDEX IF NOT EXISTS job_queue ON jobs(solver, extraction, created);
         CREATE TABLE IF NOT EXISTS groups(
           id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS deletions(
+          token TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL,
+          payload TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
+          updated REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS material_library(
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+          created REAL NOT NULL, updated REAL NOT NULL, current_version INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS material_versions(
+          library_id TEXT NOT NULL REFERENCES material_library(id),
+          version INTEGER NOT NULL, model TEXT NOT NULL, color TEXT NOT NULL,
+          density REAL NOT NULL, young REAL, poisson REAL, test_data TEXT NOT NULL,
+          created REAL NOT NULL, note TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(library_id, version));
         CREATE TABLE IF NOT EXISTS creations(
           token TEXT PRIMARY KEY, group_id TEXT NOT NULL, project_id TEXT NOT NULL,
           revision_id TEXT NOT NULL, created REAL NOT NULL);
@@ -108,6 +127,12 @@ def initialize():
         if orphan:
             group_id = legacy_group(db)
             db.execute("UPDATE projects SET group_id=? WHERE group_id IS NULL", (group_id,))
+        # Archive/tombstone lifecycle is additive; old installations open unchanged.
+        if "archived" not in columns:
+            db.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        group_columns = {row["name"] for row in db.execute("PRAGMA table_info(groups)")}
+        if "archived" not in group_columns:
+            db.execute("ALTER TABLE groups ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
         # Mesh-first workflow: a mesh job records its immutable artifact digest and
         # the digest of the inputs that decide reuse; a deck job records the mesh
         # it consumed and the fixture revision it was prepared against.
@@ -127,6 +152,10 @@ def initialize():
                 "Submit an ABAQUS analysis for new evidence.",
             ),
         )
+    # Finish any permanent-deletion cleanup interrupted by a crash. If the
+    # deleting transaction never committed, its rows still exist and the
+    # journal is discarded without removing artifacts.
+    recover_deletions()
 
 
 LEGACY_GROUP_NAME = "Imported projects"
@@ -139,7 +168,7 @@ def legacy_group(db):
         return row["id"]
     group_id = new_id()
     db.execute(
-        "INSERT INTO groups VALUES (?,?,?)", (group_id, LEGACY_GROUP_NAME, time.time())
+        "INSERT INTO groups(id,name,created) VALUES (?,?,?)", (group_id, LEGACY_GROUP_NAME, time.time())
     )
     return group_id
 
@@ -161,14 +190,18 @@ def job_dir(jid):
 def revision(rid):
     with connection() as db:
         row = db.execute(
-            """SELECT r.*, p.group_id AS "group", g.name AS group_name
+            """SELECT r.*, p.group_id AS "group", g.name AS group_name,
+               p.archived AS archived, g.archived AS group_archived
                FROM revisions r JOIN projects p ON p.id=r.project
                LEFT JOIN groups g ON g.id=p.group_id WHERE r.id=?""",
             (str(rid),),
         ).fetchone()
     if row is None:
         raise KeyError("Revision not found")
-    return {**dict(row), "setup": json.loads(row["setup"])}
+    result = {**dict(row), "setup": json.loads(row["setup"])}
+    result["archived"] = bool(result.get("archived"))
+    result["group_archived"] = bool(result.get("group_archived"))
+    return result
 
 
 def append_revision(db, setup, project=None, base=None, source_id=None, group=None):
@@ -203,11 +236,19 @@ def save(setup, project=None, base=None, source_id=None, seed=False, group=None)
     return revision(rid)
 
 
-def groups():
+def groups(include_archived=False):
     with connection() as db:
-        rows = [dict(r) for r in db.execute("SELECT * FROM groups ORDER BY created, name")]
-    models = projects()
+        rows = [
+            dict(r)
+            for r in db.execute(
+                "SELECT id,name,created,archived FROM groups"
+                + ("" if include_archived else " WHERE archived=0")
+                + " ORDER BY created, name"
+            )
+        ]
+    models = projects(include_archived=include_archived)
     for row in rows:
+        row["archived"] = bool(row["archived"])
         row["models"] = [m for m in models if m["group"] == row["id"]]
     return rows
 
@@ -215,7 +256,7 @@ def groups():
 def create_group(name):
     group_id = new_id()
     with connection(True) as db:
-        db.execute("INSERT INTO groups VALUES (?,?,?)", (group_id, name, time.time()))
+        db.execute("INSERT INTO groups(id,name,created) VALUES (?,?,?)", (group_id, name, time.time()))
     return {"id": group_id, "name": name, "created": time.time(), "models": []}
 
 
@@ -234,7 +275,7 @@ def create_group_with_model(group_name, setup, token):
             return revision(existing["revision_id"])
         group_id = new_id()
         db.execute(
-            "INSERT INTO groups VALUES (?,?,?)", (group_id, group_name, time.time())
+            "INSERT INTO groups(id,name,created) VALUES (?,?,?)", (group_id, group_name, time.time())
         )
         rid = append_revision(db, setup, group=group_id)
         project = db.execute("SELECT project FROM revisions WHERE id=?", (rid,)).fetchone()[0]
@@ -255,11 +296,11 @@ def creation_of(token):
 
 
 def data_identity():
-    """Stable digest of the resolved data directory, for ownership checks."""
-    return hashlib.sha256(str(root()).casefold().encode("utf-8")).hexdigest()[:16]
+    """Stable identity of the resolved data directory, including its inode."""
+    return ownership.canonical_identity(root())
 
 
-INSTANCE_RECORD = "instance.json"
+INSTANCE_RECORD = ownership.INSTANCE_RECORD
 
 
 def instance_path():
@@ -267,10 +308,7 @@ def instance_path():
 
 
 def read_instance():
-    try:
-        return json.loads(instance_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
+    return ownership.read_instance(root())
 
 
 def pid_alive(pid):
@@ -293,37 +331,33 @@ def pid_alive(pid):
 
 
 def claim_data_root(pid, port, release_id=""):
-    """Refuse a second API/worker pair on the same data directory.
+    """Atomically claim the API/launcher role for this data directory.
 
-    The record is written before the worker starts. A record whose process is
-    gone is stale and may be replaced; a live owner is never taken over, because
-    two workers on one queue and one artifact tree can interleave writes.
+    The claim is an OS lock, held until :func:`release_data_root` drops the last
+    in-process reference (normally after the worker has finished). Two cold
+    starts on different ports cannot both win, and a crash releases the lock
+    through the kernel rather than through a PID record.
     """
-    current = read_instance()
-    if current and current.get("pid") and int(current["pid"]) != int(pid):
-        if pid_alive(current["pid"]):
-            raise Conflict(
-                "The data directory "
-                f"{root()} is already owned by Abaqus QOL PID {current['pid']} on port "
-                f"{current.get('port')}. Use one port for this data directory, or set a "
-                "separate SEAL_DATA for an independent test instance. Nothing was stopped."
-            )
-    record = {
-        "pid": int(pid),
-        "port": int(port),
-        "release": release_id,
-        "started": time.time(),
-        "data": data_identity(),
-    }
-    instance_path().write_text(encoded(record), encoding="utf-8")
-    return record
+    try:
+        return ownership.acquire(root(), ownership.OWNER, pid, port, release_id)
+    except ownership.OwnershipConflict as error:
+        raise Conflict(str(error)) from error
 
 
 def release_data_root(pid):
-    """Remove the ownership record only when this process still owns it."""
-    current = read_instance()
-    if current and int(current.get("pid", 0)) == int(pid):
-        instance_path().unlink(missing_ok=True)
+    ownership.release(root(), ownership.OWNER, pid)
+
+
+def claim_worker_root(pid):
+    """Claim the worker role, so an orphaned worker keeps the directory busy."""
+    try:
+        return ownership.acquire(root(), ownership.WORKER, pid)
+    except ownership.OwnershipConflict as error:
+        raise Conflict(str(error)) from error
+
+
+def release_worker_root(pid):
+    ownership.release(root(), ownership.WORKER, pid)
 
 
 def group_exists(group):
@@ -334,28 +368,191 @@ def group_exists(group):
 def group_of(project):
     with connection() as db:
         row = db.execute(
-            "SELECT p.group_id AS id, g.name FROM projects p "
+            "SELECT p.group_id AS id, g.name, g.archived FROM projects p "
             "LEFT JOIN groups g ON g.id=p.group_id WHERE p.id=?",
             (str(project),),
         ).fetchone()
     if row is None:
         raise KeyError("Project not found")
-    return dict(row)
+    return {**dict(row), "archived": bool(row["archived"])}
 
 
-def projects():
+def project_archived(pid):
+    with connection() as db:
+        row = db.execute(
+            "SELECT archived FROM projects WHERE id=?", (str(pid),)
+        ).fetchone()
+    if row is None:
+        raise KeyError("Project not found")
+    return bool(row["archived"])
+
+
+def group_archived(gid):
+    with connection() as db:
+        row = db.execute(
+            "SELECT archived FROM groups WHERE id=?", (str(gid),)
+        ).fetchone()
+    if row is None:
+        raise KeyError("Project group not found")
+    return bool(row["archived"])
+
+
+def project_locked(pid):
+    """True when the model or its project group is archived (read-only)."""
+    with connection() as db:
+        row = db.execute(
+            "SELECT p.archived, g.archived AS group_archived FROM projects p "
+            "LEFT JOIN groups g ON g.id=p.group_id WHERE p.id=?",
+            (str(pid),),
+        ).fetchone()
+    if row is None:
+        raise KeyError("Project not found")
+    return bool(row["archived"] or row["group_archived"])
+
+
+def set_project_archived(pid, archived):
+    with connection(True) as db:
+        cursor = db.execute(
+            "UPDATE projects SET archived=? WHERE id=?",
+            (1 if archived else 0, str(pid)),
+        )
+        if not cursor.rowcount:
+            raise KeyError("Project not found")
+    return next(row for row in projects(include_archived=True) if row["id"] == str(pid))
+
+
+def set_group_archived(gid, archived):
+    with connection(True) as db:
+        cursor = db.execute(
+            "UPDATE groups SET archived=? WHERE id=?",
+            (1 if archived else 0, str(gid)),
+        )
+        if not cursor.rowcount:
+            raise KeyError("Project group not found")
+    return next(row for row in groups(include_archived=True) if row["id"] == str(gid))
+
+
+def _jobs_for(project_ids):
+    placeholders = ",".join("?" * len(project_ids))
     with connection() as db:
         return [
+            dict(row)
+            for row in db.execute(
+                JOB_SELECT + f" WHERE r.project IN ({placeholders})",
+                tuple(project_ids),
+            )
+        ]
+
+
+def _unsafe_jobs(project_ids):
+    unsafe = []
+    for row in _jobs_for(project_ids):
+        public_row = public(row)
+        if activity.classify(public_row) != activity.TERMINAL:
+            unsafe.append(public_row)
+    return unsafe
+
+
+def project_deletion_info(pid):
+    with connection() as db:
+        row = db.execute(
+            "SELECT p.id, p.group_id, p.archived, g.name AS group_name, g.archived AS group_archived, "
+            "json_extract(r.setup,'$.name') AS name FROM projects p "
+            "JOIN revisions r ON p.head=r.id LEFT JOIN groups g ON g.id=p.group_id WHERE p.id=?",
+            (str(pid),),
+        ).fetchone()
+        if row is None:
+            raise KeyError("Project not found")
+        revisions = db.execute(
+            "SELECT COUNT(*) FROM revisions WHERE project=?", (str(pid),)
+        ).fetchone()[0]
+        jobs = db.execute("SELECT COUNT(*) FROM jobs j JOIN revisions r ON r.id=j.revision WHERE r.project=?", (str(pid),)).fetchone()[0]
+    unsafe = _unsafe_jobs([str(pid)])
+    return {
+        "kind": "model",
+        "id": str(pid),
+        "name": row["name"],
+        "group": row["group_id"],
+        "group_name": row["group_name"],
+        "archived": bool(row["archived"]),
+        "group_archived": bool(row["group_archived"]),
+        "revisions": revisions,
+        "jobs": jobs,
+        "active_jobs": [job["name"] for job in unsafe],
+        "deletable": bool(row["archived"]) and not unsafe,
+    }
+
+
+def group_deletion_info(gid):
+    with connection() as db:
+        group = db.execute(
+            "SELECT * FROM groups WHERE id=?", (str(gid),)
+        ).fetchone()
+        if group is None:
+            raise KeyError("Project group not found")
+        ids = [
+            row["id"]
+            for row in db.execute("SELECT id FROM projects WHERE group_id=?", (str(gid),))
+        ]
+        revisions = (
+            db.execute(
+                "SELECT COUNT(*) FROM revisions r JOIN projects p ON p.id=r.project "
+                "WHERE p.group_id=?",
+                (str(gid),),
+            ).fetchone()[0]
+            if ids
+            else 0
+        )
+        placeholders = ",".join("?" * len(ids)) if ids else "''"
+        jobs = (
+            db.execute(
+                f"SELECT COUNT(*) FROM jobs j JOIN revisions r ON r.id=j.revision WHERE r.project IN ({placeholders})", tuple(ids)
+            ).fetchone()[0]
+            if ids
+            else 0
+        )
+        models = db.execute(
+            "SELECT COUNT(*) FROM projects WHERE group_id=? AND archived=0", (str(gid),)
+        ).fetchone()[0]
+    unsafe = _unsafe_jobs(ids) if ids else []
+    return {
+        "kind": "group",
+        "id": str(gid),
+        "name": group["name"],
+        "archived": bool(group["archived"]),
+        "models": len(ids),
+        "unarchived_models": models,
+        "revisions": revisions,
+        "jobs": jobs,
+        "active_jobs": [job["name"] for job in unsafe],
+        "deletable": bool(group["archived"]) and models == 0 and not unsafe,
+    }
+
+
+def projects(include_archived=False):
+    with connection() as db:
+        rows = [
             dict(r)
             for r in db.execute("""
             SELECT project AS id, r.id AS revision, r.number AS number, r.created AS created,
                    json_extract(setup,'$.name') AS name,
                    json_extract(setup,'$.dimension') AS dimension,
                    p.group_id AS "group", g.name AS group_name,
+                   p.archived AS archived, g.archived AS group_archived,
                    (SELECT COUNT(*) FROM revisions WHERE project=p.id) AS revisions
             FROM projects p JOIN revisions r ON p.head=r.id
             LEFT JOIN groups g ON g.id=p.group_id ORDER BY r.created DESC""")
         ]
+    result = []
+    for row in rows:
+        row["archived"] = bool(row["archived"])
+        row["group_archived"] = bool(row["group_archived"])
+        if row["archived"] and not include_archived:
+            continue
+        if row["group_archived"] and not include_archived:
+            continue
+        result.append(row)
+    return result
 
 
 def revision_history(project):
@@ -456,12 +653,52 @@ def fixture(jid):
 
 
 def set_fixture(jid, mesh_digest, labels_hash, labels):
+    """Unconditional write, kept for internal migrations and tests."""
     with connection(True) as db:
         db.execute(
             "INSERT INTO fixtures VALUES (?,?,?,?,?) ON CONFLICT(job) DO UPDATE SET "
             "mesh_digest=excluded.mesh_digest, labels_hash=excluded.labels_hash, "
             "labels=excluded.labels, updated=excluded.updated",
             (str(jid), mesh_digest, labels_hash, encoded(labels), time.time()),
+        )
+    return job(jid)
+
+
+def set_fixture_checked(jid, mesh_digest, labels_hash, labels, expected_hash=None):
+    """Compare-and-set one reviewed fixture inside one serialized transaction.
+
+    The expected hash, job eligibility, mesh identity and the update are checked
+    with the write lock held (``BEGIN IMMEDIATE``), so two tabs that read the
+    same reviewed hash cannot both win. ``expected_hash=None`` is the documented
+    legacy unconditional write used by pre-concurrency clients.
+    """
+    with connection(True) as db:
+        row = db.execute("SELECT * FROM jobs WHERE id=?", (str(jid),)).fetchone()
+        if (
+            row is None
+            or row["mode"] != "MESH"
+            or status(row) != "Completed"
+            or not row["mesh_digest"]
+        ):
+            raise Conflict("Generate the mesh before reviewing its fixed nodes.")
+        if mesh_digest and row["mesh_digest"] != mesh_digest:
+            raise Conflict(
+                "The mesh identity changed while the fixed nodes were edited. "
+                "Reopen Mounting and review the current mesh."
+            )
+        current = db.execute("SELECT * FROM fixtures WHERE job=?", (str(jid),)).fetchone()
+        current_hash = current["labels_hash"] if current else ""
+        if expected_hash is not None and expected_hash != current_hash:
+            count = len(json.loads(current["labels"])) if current else 0
+            raise Conflict(
+                "The fixed nodes were changed by another tab or session. Reopen Mounting "
+                f"to see the current selection ({count} nodes), then save again."
+            )
+        db.execute(
+            "INSERT INTO fixtures VALUES (?,?,?,?,?) ON CONFLICT(job) DO UPDATE SET "
+            "mesh_digest=excluded.mesh_digest, labels_hash=excluded.labels_hash, "
+            "labels=excluded.labels, updated=excluded.updated",
+            (str(jid), row["mesh_digest"], labels_hash, encoded(labels), time.time()),
         )
     return job(jid)
 
@@ -734,6 +971,228 @@ def retry(jid):
         if not changed.rowcount:
             raise Conflict("Only unsuccessful extraction after a successful solve can be retried.")
     return job(jid)
+
+
+def deletion_journal_dir():
+    path = root() / "deletions"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _write_journal(token, kind, target, payload, status):
+    now = time.time()
+    with connection(True) as db:
+        db.execute(
+            "INSERT INTO deletions VALUES (?,?,?,?,?,?,?) ON CONFLICT(token) DO UPDATE SET "
+            "payload=excluded.payload,status=excluded.status,updated=excluded.updated",
+            (token, kind, str(target), encoded(payload), status, now, now),
+        )
+
+
+def _safe_remove_job(job_id):
+    try:
+        path = job_dir(job_id)
+    except ValueError:
+        return
+    shutil.rmtree(path, ignore_errors=False) if path.exists() else None
+
+
+def _safe_remove_drawing(source_id):
+    if not source_id:
+        return
+    try:
+        path = root() / "drawings" / str(UUID(str(source_id)))
+    except ValueError:
+        return
+    if path.parent != root() / "drawings":
+        return
+    if path.exists():
+        shutil.rmtree(path)
+
+
+def _cleanup_journal(token, payload):
+    """Remove artifacts after the database rows are gone; idempotent.
+
+    A drawing directory is shared by duplicated models, so it is removed only
+    when no remaining revision references the source id.
+    """
+    for job_id in payload.get("jobs", []):
+        try:
+            with connection() as db:
+                if db.execute("SELECT 1 FROM jobs WHERE id=?", (str(job_id),)).fetchone():
+                    continue
+            _safe_remove_job(job_id)
+        except (OSError, ValueError):
+            return False
+    for source_id in payload.get("sources", []):
+        try:
+            with connection() as db:
+                if db.execute(
+                    "SELECT 1 FROM revisions WHERE source_id=? LIMIT 1", (str(source_id),)
+                ).fetchone():
+                    continue
+            _safe_remove_drawing(source_id)
+        except (OSError, ValueError):
+            return False
+    with connection(True) as db:
+        db.execute("DELETE FROM deletions WHERE token=?", (token,))
+    return True
+
+
+def recover_deletions():
+    """Finish (or safely abandon) an interrupted permanent-deletion cleanup.
+
+    If the transaction never committed, the rows still exist and the journal is
+    discarded without deleting anything. If it committed, orphan artifacts are
+    removed. Filesystem errors leave the journal for the next startup.
+    """
+    with connection() as db:
+        rows = [dict(row) for row in db.execute("SELECT * FROM deletions")]
+    complete = True
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except ValueError:
+            payload = {}
+        with connection() as db:
+            if row["kind"] == "group":
+                exists = db.execute(
+                    "SELECT 1 FROM groups WHERE id=?", (row["target"],)
+                ).fetchone()
+            else:
+                exists = db.execute(
+                    "SELECT 1 FROM projects WHERE id=?", (row["target"],)
+                ).fetchone()
+        if exists and row["status"] == "pending":
+            # The database transaction did not commit; keep its rows and files.
+            with connection(True) as db:
+                db.execute("DELETE FROM deletions WHERE token=?", (row["token"],))
+            continue
+        if not _cleanup_journal(row["token"], payload):
+            complete = False
+    return complete
+
+
+def purge_project(pid, confirm=None):
+    info = project_deletion_info(pid)
+    if not info["archived"]:
+        raise Conflict("Archive the model before permanently deleting it.")
+    if info["active_jobs"]:
+        raise Conflict(
+            "The model still has active or unresolved work: "
+            + ", ".join(info["active_jobs"])
+            + ". Wait for it to finish before deleting."
+        )
+    if confirm is not None and confirm.strip() != info["name"]:
+        raise Conflict("Type the exact model name to confirm permanent deletion.")
+    with connection() as db:
+        job_ids = [
+            row["id"] for row in db.execute("SELECT j.id FROM jobs j JOIN revisions r ON r.id=j.revision WHERE r.project=?", (str(pid),))
+        ]
+        sources = [
+            row["source_id"]
+            for row in db.execute(
+                "SELECT DISTINCT source_id FROM revisions WHERE project=? AND source_id IS NOT NULL",
+                (str(pid),),
+            )
+        ]
+    token = new_id()
+    payload = {"kind": "model", "id": str(pid), "jobs": job_ids, "sources": sources}
+    _write_journal(token, "model", pid, payload, "pending")
+    with connection(True) as db:
+        placeholders = ",".join("?" * len(job_ids)) if job_ids else "''"
+        db.execute(f"DELETE FROM fixtures WHERE job IN ({placeholders})", tuple(job_ids))
+        db.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(job_ids))
+        db.execute("DELETE FROM revisions WHERE project=?", (str(pid),))
+        db.execute("DELETE FROM projects WHERE id=?", (str(pid),))
+    _write_journal(token, "model", pid, payload, "committed")
+    cleaned = recover_deletions()
+    return {
+        "id": str(pid),
+        "name": info["name"],
+        "removed_jobs": len(job_ids),
+        "cleanup": "done" if cleaned else "pending",
+    }
+
+
+def purge_group(gid, confirm=None):
+    info = group_deletion_info(gid)
+    if not info["archived"]:
+        raise Conflict("Archive the project before permanently deleting it.")
+    if info["unarchived_models"]:
+        raise Conflict(
+            f"{info['unarchived_models']} model(s) are not archived. Archive every model first."
+        )
+    if info["active_jobs"]:
+        raise Conflict(
+            "The project still has active or unresolved work: "
+            + ", ".join(info["active_jobs"])
+            + ". Wait for it to finish before deleting."
+        )
+    if confirm is not None and confirm.strip() != info["name"]:
+        raise Conflict("Type the exact project name to confirm permanent deletion.")
+    with connection() as db:
+        projects_ = [
+            row["id"] for row in db.execute("SELECT id FROM projects WHERE group_id=?", (str(gid),))
+        ]
+        placeholders = ",".join("?" * len(projects_)) if projects_ else "''"
+        job_ids = (
+            [
+                row["id"]
+                for row in db.execute(
+                    f"SELECT j.id FROM jobs j JOIN revisions r ON r.id=j.revision WHERE r.project IN ({placeholders})", tuple(projects_)
+                )
+            ]
+            if projects_
+            else []
+        )
+        sources = (
+            [
+                row["source_id"]
+                for row in db.execute(
+                    f"SELECT DISTINCT source_id FROM revisions WHERE project IN ({placeholders}) "
+                    "AND source_id IS NOT NULL",
+                    tuple(projects_),
+                )
+            ]
+            if projects_
+            else []
+        )
+    token = new_id()
+    payload = {
+        "kind": "group",
+        "id": str(gid),
+        "projects": projects_,
+        "jobs": job_ids,
+        "sources": sources,
+    }
+    _write_journal(token, "group", gid, payload, "pending")
+    with connection(True) as db:
+        placeholders_jobs = ",".join("?" * len(job_ids)) if job_ids else "''"
+        db.execute(
+            f"DELETE FROM fixtures WHERE job IN ({placeholders_jobs})", tuple(job_ids)
+        )
+        db.execute(f"DELETE FROM jobs WHERE id IN ({placeholders_jobs})", tuple(job_ids))
+        if projects_:
+            placeholders_projects = ",".join("?" * len(projects_))
+            db.execute(
+                f"DELETE FROM revisions WHERE project IN ({placeholders_projects})",
+                tuple(projects_),
+            )
+            db.execute(
+                f"DELETE FROM projects WHERE id IN ({placeholders_projects})",
+                tuple(projects_),
+            )
+        db.execute("DELETE FROM groups WHERE id=?", (str(gid),))
+    _write_journal(token, "group", gid, payload, "committed")
+    cleaned = recover_deletions()
+    return {
+        "id": str(gid),
+        "name": info["name"],
+        "removed_models": len(projects_),
+        "removed_jobs": len(job_ids),
+        "cleanup": "done" if cleaned else "pending",
+    }
 
 
 def digest(path):

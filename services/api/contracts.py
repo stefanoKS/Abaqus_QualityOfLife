@@ -26,6 +26,88 @@ class NewGroup(Contract):
     name: Name
 
 
+class MaterialCard(Contract):
+    """A validated constitutive card independent of any model."""
+
+    model: Literal["linear_elastic", "hyperfoam_test"]
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    density: float = Field(gt=0, le=1e9)
+    young: float | None = Field(default=None, gt=0, le=1e9)
+    poisson: float | None = Field(default=None, gt=-1, lt=0.5)
+    test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
+
+    def checked(self, name="Library material"):
+        from packages.engineering.model import Material
+
+        return Material(
+            id="library",
+            name=name,
+            version=1,
+            **self.model_dump(),
+        )
+
+
+class LibraryCreate(Contract):
+    name: Name
+    card: MaterialCard
+    note: str = Field(default="", max_length=200)
+
+
+class LibraryUpdate(Contract):
+    name: Name | None = None
+    card: MaterialCard | None = None
+    note: str = Field(default="", max_length=200)
+
+
+class LibraryDuplicate(Contract):
+    name: Name | None = None
+
+
+class MaterialImportRequest(Contract):
+    revision: UUID
+    material_ids: list[str] = Field(default_factory=list, max_length=256)
+
+
+class MaterialImportResult(Contract):
+    material_id: str
+    library_id: str
+    version: int
+    existing: bool
+
+
+class LibraryVersion(Contract):
+    version: int
+    card: MaterialCard
+    created: float
+    note: str
+
+
+class LibraryUsageRow(Contract):
+    revision: str
+    project: str
+    number: int
+    model_name: str
+    material_id: str
+    pinned_version: int | None = None
+
+
+class LibrarySummary(Contract):
+    id: str
+    name: str
+    archived: bool
+    created: float
+    updated: float
+    current_version: int
+    version_count: int
+    usage_count: int
+    card: MaterialCard
+
+
+class LibraryDetail(LibrarySummary):
+    versions: list[LibraryVersion]
+    usage: list[LibraryUsageRow]
+
+
 class NewProjectGroup(Contract):
     """One user action: create a project group and its first model together."""
 
@@ -43,6 +125,7 @@ class Group(Contract):
     id: str
     name: str
     created: float
+    archived: bool = False
 
 
 class Save(Contract):
@@ -59,6 +142,8 @@ class Revision(Contract):
     group: str | None = None
     group_name: str | None = None
     mesh_compat: str | None = None
+    archived: bool = False
+    group_archived: bool = False
     setup: Project
 
 
@@ -77,6 +162,36 @@ class Summary(Contract):
     group: str | None = None
     group_name: str | None = None
     revisions: int = 1
+    archived: bool = False
+    group_archived: bool = False
+
+
+class DeleteConfirm(Contract):
+    confirm: str = Field(default="", max_length=200)
+
+
+class DeletionInfo(Contract):
+    kind: Literal["model", "group"]
+    id: str
+    name: str
+    archived: bool
+    revisions: int = 0
+    jobs: int = 0
+    models: int = 0
+    unarchived_models: int = 0
+    active_jobs: list[str] = Field(default_factory=list)
+    deletable: bool
+    group: str | None = None
+    group_name: str | None = None
+    group_archived: bool = False
+
+
+class DeletionResult(Contract):
+    id: str
+    name: str
+    removed_jobs: int = 0
+    removed_models: int = 0
+    cleanup: Literal["done", "pending"] = "done"
 
 
 class GroupSummary(Group):

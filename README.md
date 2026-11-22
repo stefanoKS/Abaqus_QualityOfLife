@@ -72,9 +72,11 @@ refreshing the browser or opening the workspace never invents geometry.
 1. At **Import**, confirm millimetres and choose a DXF or DWG. The native DWG reader needs no
    separate converter; a missing reader is reported before the file is read. The imported drawing
    becomes a new revision and the workspace shows its group, model, drawing name and revision.
-2. In **材料設定** (Materials), select a region and pick a material card; edit the card's density,
-   elastic constants or hyperfoam test data directly. **移動条件** (Motion) sets the initial Y offset,
-   signed panel travel and duration. **リビジョンを保存** (Save revision) keeps your changes.
+2. In **材料設定** (Materials), select a region and assign a material card or a shared library
+   material. Card definitions, experimental data and version history live on the top-level
+   **材料ライブラリ** (Materials) page; a model keeps the exact version it was assigned, and a newer
+   library version is adopted explicitly. **移動条件** (Motion) sets the initial Y offset, signed
+   panel travel and duration. **リビジョンを保存** (Save revision) keeps your changes.
 3. In **メッシュ** (Mesh), choose a global size or select an edge for local sizing, then generate the
    mesh. Review element counts, edge lengths, per-region counts, initial vertical clearance and the
    concrete INP. **Mounting** owns fixed-node selection, so a reviewed fixture is never edited in
@@ -125,12 +127,19 @@ disabled while a rejection exists, **Cancel** leaves the saved card untouched, a
 are shown on a preview curve before they are committed.
 
 **Correct an invalid number.** Type the value and leave the field; the invalid text stays visible with
-a field-specific message, and Save, Generate mesh, Prepare and Submit stay disabled. Press **Escape**
-to restore the saved value deliberately, or correct the value. Leaving the step with an invalid draft
-is refused so the edit is not silently discarded.
+a field-specific message, and Save, Generate mesh, Prepare and Submit stay disabled. A **cleared
+required field is invalid** — it is never treated as “unchanged” and never saves the previous value.
+Press **Escape** to restore the saved value deliberately, or correct the value. Leaving the step with
+an invalid draft is refused so the edit is not silently discarded.
 
 The dashboard has separate **project** (group) and **model** filters. Each run row shows the model,
 dimension, revision, a short run ID and a timestamp with seconds, so two same-named runs are distinct.
+
+Archive is the reversible way to hide a model or project: **Show archived** reveals it again, and
+archived items stay readable but read-only. **Permanent deletion** is offered only for archived items,
+names the dependent revision/job counts, asks for confirmation and then requires typing the exact
+name. It is refused while work is queued, running or unresolved; shared drawings and library
+materials are preserved.
 
 ## Abaqus only, with identifiable history
 
@@ -224,10 +233,14 @@ workflow and reached contact (edge-based and box-selected fixtures). Run IDs, in
 `WSFIX` membership, reference-point trajectories, contact onset, projected force and tolerances are
 recorded in [docs/engineering-validation.md](docs/engineering-validation.md).
 
+**Implemented but not physically validated:** the two-step **body seating → door closing** mode
+(`analysis.mode = body_then_door`) is generated as a real two-step Abaqus input with separate rigid
+body/door reference points and propagated boundary conditions. It has license-free deck and
+integration tests only; no licensed two-step solve has been run, so no physical or numerical claim is
+made for it.
+
 **Not yet implemented:** drawing-role review before region construction, the material-region
-partition tool, role-aware arbitrary in-plane motion, and per-pair friction overrides. 3D solving,
-body-first/door-second loading and local friction overrides are separate engineering work and are not
-offered. A request for one of those methods is refused before a license is spent: the API names the
+partition tool, role-aware arbitrary in-plane motion, per-pair friction overrides and 3D solving. A request for one of those methods is refused before a license is spent: the API names the
 unsupported method, and the interface does not present it as available. **Not yet verified:** physical
 solution accuracy, contact convergence, mesh convergence and production license behaviour — these need
 a trusted reference curve and an agreed engineering tolerance. Historical DEMO output is not evidence.

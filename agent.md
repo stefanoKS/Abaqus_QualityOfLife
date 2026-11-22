@@ -13,6 +13,117 @@ Fresh verification on the current tree yielded 122 Python tests passed and one o
 
 After these fixes, rerun the affected gates in isolation. Supervised operator acceptance, numerical sensitivity and physical correlation remain outstanding under the engineering validation record.
 
+## Phase 0 — release safety repairs · 2026-11-22 (PASS)
+
+All five review findings are repaired on top of `e9ca2c45`. No live instance, live database, artifact
+or solver process was touched; the live 8765 instance remained up throughout.
+
+| Item | Repair | Evidence |
+|---|---|---|
+| P0-1 data-root ownership | New [ownership.py](services/ownership.py): two lifetime OS locks (`owner.lock`, `worker.lock`) via `msvcrt.locking` / `fcntl.flock`, canonical `st_dev:st_ino` identity, re-entrant per-process refcount. `instance.json` is diagnostic only. The launcher holds the owner lock until `worker.wait()`; the worker holds its own lock. An orphaned worker blocks a new launcher; an API may attach to a live worker (the independent workflow). | Two spawned processes synchronized on a barrier: exactly one wins. Crash releases the lock in the kernel. Stale metadata, independent dirs, re-entry, orphan-worker refusal tested. Live smoke: second launcher on 8899 refused with owner PID; second worker exited 2; second API on 8900 refused; killing the owner left the worker lock, relaunch refused, then started after the orphan exited. |
+| P0-2 takeover safety | [activity.py](services/activity.py) classifies every durable mode as `active`/`uncertain`/`terminal`; `/api/jobs` returns all five modes plus the classification and an `X-Abaqus-QOL-Jobs: all-modes-v1` coverage header. The launcher refuses when the header is absent (an older empty list is not inactivity), rechecks immediately before stopping, and stops only processes positively identified by module + data directory + start time. | Classifier matrix (queued/preparing/license/running/extraction/cancel/unknown/termination-unconfirmed/terminal), `/api/jobs` mode coverage, empty-without-header refusal, recheck-before-stop, idle takeover. Live: queued MESH showed `active`, then `terminal`; `--status`/reuse unaffected. |
+| P0-3 atomic fixture | `store.set_fixture_checked` performs job eligibility, mesh digest, expected-hash comparison and the upsert inside one `BEGIN IMMEDIATE` transaction. | Two synchronized HTTP PUTs with one reviewed hash: one 200 and one 409; stored labels equal the winner; prepared INP `WSFIX` equals the winning nodes; stale hash cannot prepare a deck. |
+| P0-4 blank numeric | Blank is invalid; registration is synchronous in the change handler, with a synchronous action guard in `Workspace` for Save/Generate/Prepare/Submit/Fixture/navigation. Escape restores; localized `validation.required`. | Real Edge test: clear committed −6.1 mm, Save disabled and forced click sends no PUT; Escape restores; new −4.2 saves. Also duration, offset, mesh size and section thickness. |
+| P0-5 release publication | [publish-release.mjs](apps/web/scripts/publish-release.mjs) stages the whole tree, verifies every referenced file, hashes the complete file manifest, publishes by rename, re-verifies, and writes `dist/release.json` last. An incomplete prior release is quarantined and repaired. [release.py](services/release.py) verifies the schema-2 file list and tree digest. | Interrupted publication (only `index.html`) is repaired on retry; a missing source asset fails non-zero without rewriting the manifest; publishing B leaves A byte-identical; the resolver rejects a release with a missing file; the launcher refuses to serve an invalid release. |
+
+**Phase 0 regression (current tree):** `pytest -q` → **158 passed, 1 skipped**; `test:i18n` → **501
+keys**; `typecheck` → pass; isolated build → release `679da84a7cc6` (4 files); isolated Playwright →
+**43 passed** (41 prior + 2 blank-numeric). The POSIX `flock` branch is implemented but was not
+exercised on this Windows host. Phase 1–5 remain.
+
+## Phase 1 — UI and data-presentation repairs · 2026-11-22 (PASS)
+
+| Item | Repair | Evidence |
+|---|---|---|
+| 1.1 corrupted characters | Replaced real mojibake (`Â·`, `â€”`) in Dashboard/main; removed literal `?` separators from MeshReview and the `0 ? 5` range hint; added `scripts/check-encoding.mjs` (`npm run test:encoding`, also in CI). | Encoding check passes 35 source files; Edge test asserts rendered dashboard has no `Â·`/`â€”` and keeps a real `·`. |
+| 1.2 middle-button pan | `pointerdown` cancels middle-button default, `auxclick` is suppressed, viewport uses `overscroll-behavior: contain`; wheel zoom unchanged. The renderer exposes a camera fingerprint for the test. | Edge test: middle drag changes the camera, `window.scrollY` stays 0, wheel still zooms without scrolling. |
+| 1.3 mesh identity hidden | Removed the mesh digest/“mesh identity” rows from Mounting, Mesh, Review and archived-setup UI; contracts, digests, compatibility checks and stale-deck logic unchanged. | Edge test builds a mesh and asserts its digest prefix never appears in the page text. |
+| 1.4 components in mesh | Structured rows with display name, role, Included/Excluded/Not-meshed badge, element type(s), count and an explanation; included totals must equal the mesh total; body profiles read as intentionally excluded, not as a failed 0-element mesh. | Edge test checks seal (CPS) and door (R2D2) rows plus included total; Python test asserts a `vehicle_body` is reported in `excluded`, contributes no elements and does not fail the mesh. |
+| 1.5 editable names | `Component.alias` (optional display name) added; tree inline rename with Enter/Escape/Save/Cancel, validation, persisted through revisions. The authoritative `name` and CAD/FE IDs are untouched; alias is excluded from mesh identity and panel metadata records `panel_name`. | Python: alias persists, `mesh_compat` unchanged, revision history keeps its own alias, result metadata uses the alias while the panel ID is stable. Edge: rename, cancel, save, reload and selection label. |
+
+**Phase 1 regression:** pytest **161 passed, 1 skipped**; i18n **519 keys**; encoding check pass; typecheck
+pass; isolated build release **`91b90ed6d34c`** (entry `index-B8OCW0V9.js`, 4 files); isolated Playwright
+**47 passed** (43 prior + 4 Phase 1). No solver executed; live 8765 untouched.
+
+## Phase 2 — global material library · 2026-11-22 (PASS)
+
+| Area | Delivered |
+|---|---|
+| Data model | Additive SQLite tables `material_library` / `material_versions`; versions are insert-only. A model material snapshot may carry `library_id` + `library_version`; values remain the immutable revision snapshot. No existing revision is rewritten. |
+| API | `GET/POST /api/materials`, `GET/PUT /api/materials/{id}`, `duplicate`, `archive`, `restore`, and `POST /api/materials/import`. Import always creates explicit entries and never merges by name; existing pins are returned unchanged. |
+| Library UI | New top-level **Materials** page: search, type/version/usage display, add, duplicate, rename, edit, version history, load version, archive/restore, model-usage list, and legacy-card import by model. |
+| Comparison | Multi-series measured-only charts for stress vs axial strain and lateral vs axial strain; units, legend, per-version labels, source note and “no fit/extrapolation” limitation. |
+| Workspace | Materials stage is assignment-only: assigned-material summary, library picker, newer-version notice and **Adopt vN**; test-data editing, card creation and graph editing moved to the library page. |
+| Versioning | Library edits append a version; name-only edits do not. Material-only adoption reuses geometry/mesh (`mesh_compat` unchanged), creates a new model revision and requires a new deck; historical revisions and completed runs are byte-unchanged. |
+
+Tests: `tests/test_material_library.py` (7) covers immutable versions, validation, pins/usage, two models sharing,
+adoption + deck value, archive/restore, no name merging, import idempotency, and a completed run remaining unchanged
+after library edit/archive. `apps/web/tests/materials.spec.ts` (5) covers the library UI, comparison, paste, workspace
+assignment/adoption/mesh reuse/deck and Japanese localization.
+
+**Phase 2 regression:** pytest **168 passed, 1 skipped**; i18n **567 keys**; encoding check pass; typecheck pass;
+isolated build release **`7ff922276866`** (entry `index-DWdA_DXy.js`, 4 files); isolated Playwright **49 passed**.
+No solver executed; live 8765 untouched.
+
+## Phase 3 — project/model archive and safe deletion · 2026-11-22 (PASS)
+
+| Area | Delivered |
+|---|---|
+| Lifecycle | Additive `projects.archived` / `groups.archived` tombstones. Default lists hide archived items; `?include_archived=true` shows them. Revision/run/artifact reads still work. |
+| Read-only guard | Archived model or group refuses setup saves, imports, meshing, deck preparation, submission and new models in the group (HTTP 409), while historical evidence stays downloadable. The workspace shows a read-only banner. |
+| API | `archive`/`restore` for models and groups, `deletion-info` (dependent revisions/jobs/active work/deletable) and explicit `delete` with exact-name confirmation. |
+| Permanent deletion | Only for archived targets with no active/uncertain work. One transaction removes fixtures/jobs/revisions/(projects)/group; a journal then removes job directories and drawings that are no longer referenced. Shared drawings (duplicated models) and library materials are preserved. |
+| Recovery | `deletions` journal is replayed at startup: a pending journal whose transaction never committed is discarded without deleting artifacts; a committed journal finishes idempotent file cleanup. Filesystem failures leave `cleanup: pending` and retry next start. |
+| UI | Dashboard “Show archived”, archive/restore actions, permanent-delete actions only on archived items, descriptive confirm with revision/job counts and a typed-name prompt. |
+
+Tests: `tests/test_archive_delete.py` (8) covers model/group archive+restore, read-only guards, duplicate independence,
+active-work refusal, typed confirmation, artifact removal, shared drawing + library survival, interrupted cleanup and
+uncommitted-journal recovery. `apps/web/tests/archive.spec.ts` (4) covers dashboard archive/restore, group lifecycle,
+typed permanent deletion and the archived read-only workspace.
+
+**Phase 3 regression:** pytest **176 passed, 1 skipped**; i18n **585 keys**; encoding check pass; typecheck pass;
+isolated build release **`0f28d5648c35`** (entry `index-CdCPwQht.js`, 4 files); isolated Playwright **53 passed**.
+No solver executed; 8765 was not running at this checkpoint and was not touched.
+
+## Phase 4 — two-step body seating / door closing · 2026-11-22
+
+**Gate 4A (license-free deck and integration): PASS. Gate 4B (licensed evidence): BLOCKED — no licensed
+solve was run or authorized in this pass.**
+
+| Area | Delivered |
+|---|---|
+| Model | `analysis.mode` (`door_only` default, `body_then_door`) and `motion.body` (`offset`, signed `travel`, `duration`). Two-step requires exactly one door, exactly one body, a non-zero body travel and a seal region. Legacy revisions default to `door_only` and keep their exact deck behaviour. |
+| Mesh | In two-step mode the moving body edges are meshed as R2D2 and included; door-only keeps the body reviewed-but-excluded. Mesh identity adds the mode only for two-step, so every historical door-only digest stays valid. |
+| Deck | New `write_two_step_inp`: separate WS/PANEL/BODY parts and instances, two reference points, two rigid-body constraints, two contact-participating rigid surfaces, explicit `Body seating` then `Closing` steps, body held during step 2, door held during step 1, WSFIX throughout, propagated BCs (no `op=NEW`), and U/RF history for both RPs in both steps. |
+| Results | Metadata records ordered steps, both references, body placement/clearance and a body motion block. Extraction picks the reference that owns each step and projects along its direction; two-step history CSV gains a `role` column; the results page has a curve-step selector and body-specific axis labels. Legacy single-step results are unchanged. |
+| UI | Motion stage mode selector and body offset/travel/duration; Review shows the step sequence and body motion; Mesh review includes the body in two-step mode. Manufactured playback refuses two-step rather than fabricating body contact evidence. |
+
+Tests: `tests/test_two_step.py` (8) covers body R2D2 inclusion, exact two-step INP order/BCs/parts/rigid bodies/history,
+metadata references, legacy deck regression, mode-sensitive mesh identity, validation, per-motion projection and the
+manufactured-playback refusal. `apps/web/tests/two-step.spec.ts` covers the mode UI and the missing-body rejection.
+The result step selector is implemented but its two-step browser path needs a licensed result; it is not claimed as
+replay-verified.
+
+**Phase 4 regression:** pytest **184 passed, 1 skipped**; i18n **605 keys**; encoding check pass; typecheck pass;
+isolated build release **`ce9798f0a74f`** (entry `index-m-wVVrsa.js`, 4 files); isolated Playwright **54 passed**.
+No solver executed; no ODB/INP/history evidence modified.
+
+## Phase 5 — real-time run diagnostics · 2026-11-22 (PASS)
+
+| Area | Delivered |
+|---|---|
+| Progress source | `features/run/progress.ts` derives progress from solver-reported `step_time` and the configured step durations of the job's **own revision**. Simulated-time fraction only; no wall-clock percentage and no ETA. |
+| Determinate states | Queued → 0%; active step → fraction of current/total configured time (capped at 99%); solver succeeded + extraction succeeded → 100%. Solver succeeded with extraction queued/running/failed → 99%, explicitly “not 100%”. Unknown step, license wait, missing step time or unknown state → indeterminate. |
+| Multi-step | The panel lists Body seating and Closing with pending/active/complete states; the active step follows the solver-reported step name (case-insensitive). Legacy runs show a single Closing step. |
+| Status surface | Top-of-page card shows phase, status badge, progress bar (`role=progressbar` with `aria-valuenow` only when valid), solver and extraction separately, current increment, simulated step time and last update. |
+| Warnings | License wait, stale heartbeat (30 s threshold, re-evaluated every 5 s), awaiting extraction and extraction failure have distinct notices; the diagnostic offers a link to its source log. Logs and downloads remain below. |
+| Lifecycle | Polling keeps the existing active/idle cadence; the progress clock and revision fetch abort/clean up on navigation. |
+
+Test: `apps/web/tests/progress.spec.ts` (4) uses mocked job/revision responses (clearly not solver evidence) to assert step 1 and step 2 percentages, 99 vs 100, license wait, unknown step, 0% queued, stale heartbeat, failed extraction and the absence of an ETA.
+
+**Phase 5 regression:** pytest **184 passed, 1 skipped** (backend unchanged this phase); i18n **619 keys**; encoding check pass; typecheck pass; isolated build release **`5cac5e2a1e92`** (entry `index-BcID6OYd.js`, 4 files); isolated Playwright **58 passed**.
+No solver executed; diagnostics tests use mocked state, not a live solve.
+
 **Snapshot - 2026-11-22 (release-safety pass).** The local branch is `main`; the checkout was clean at
 `9df297f` (one commit after `d7b6728`), which already contains the repairs the previous audit saw as
 uncommitted. Those commits are preserved. This pass added the release/compatibility, atomic-creation,
@@ -157,11 +268,12 @@ on another machine. The fixture patch changes the force curve, so neither value 
 Use the [repository instructions](AGENTS.md) for normal commands and the [recovery guide](docs/migration-and-recovery.md) before investigating an unknown worker. Preserve the current licensed door-only runs as regression comparisons. Use an isolated data directory for new cases. For each completed slice, record the new API/schema behavior, historical compatibility, browser action exercised, test results, and any licensed run ID in the [implementation report](docs/implementation-report.md) and [validation record](docs/engineering-validation.md).
 
 Last verified on this machine (2026-11-22, isolated root `I:\GithubProjects\Abaqus_QOL_impl`):
-`python -m pytest -q` → **122 passed, 1 skipped**; `test:i18n` → **500 keys** in both dictionaries;
-`typecheck` → pass; `build` → release `ec2cedaa9dfe`, entry `index-CwQ1OlF7.js`, API 3; `playwright
-test` → **41 passed** in the final isolated log. Isolated instances on 8898/8899 exercised release pinning and sequential data-root refusal,
-and a second API on the same data directory was refused with the owner's PID. No new solver process
-was launched and no license was consumed. The retained licensed run
+`python -m pytest -q` → **184 passed, 1 skipped**; `test:i18n` → **619 keys** in both dictionaries;
+`test:encoding` → pass (39 source files); `typecheck` → pass; `build` → release
+**`5cac5e2a1e92`**, entry `index-BcID6OYd.js`, API 3, 4 files; `playwright test` → **58 passed**.
+Generated contract hash matches the checkout (`4D376FBB…`). Earlier isolated instances on 8898/8899
+exercised release pinning and data-root refusal, and a second API on one data directory was refused
+with the owner's PID. No new solver process was launched and no license was consumed. The retained licensed run
 `989fec4a-98fa-4a61-999a-e16ec886ac68` was not modified in this pass; its earlier replay (66 frames,
 final 1.300 s, travel 6.5 mm, signed `RF2` −0.0169664863 N) remains the record. The earlier licensed
 runs `54b7be8c-d260-4a65-adcf-0205263032f3` and `39f696ee-c757-44ba-bb42-9e8f9671bfe6` remain the

@@ -41,7 +41,12 @@ export function workflowStates(input: WorkflowInput): Record<StageId, StepStatus
     p.faces.filter((f) => !f.cavity).length > 0 &&
     p.faces.filter((f) => !f.cavity).every((f) => !!f.material)
   const fixtureReviewed = !!fixture && fixture.count > 0
-  const motionValid = p.motion.travel < 0 && p.motion.duration > 0
+  const twoStep = p.analysis.mode === 'body_then_door'
+  const motionValid =
+    p.motion.travel < 0 &&
+    p.motion.duration > 0 &&
+    (!twoStep ||
+      ((p.motion.body?.travel ?? 0) !== 0 && (p.motion.body?.duration ?? 0) > 0))
   const contactValid =
     Number.isFinite(p.contact.friction) && p.contact.friction >= 0 && p.contact.friction <= 5
   const solved = runs.some((r) => r.status === 'Completed')

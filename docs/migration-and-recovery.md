@@ -28,11 +28,14 @@ Moving to a differently named directory is therefore **explicit and optional**:
 4. Confirm the project list and one historical run still open before deleting the old copy.
 
 Never copy a database while the API or worker is running. Never point two installations at the same
-directory: the launcher and the API now enforce this with `<data>/instance.json`, which records the
-owning PID, port, release and data digest. A second launch on another port with the same data
-directory is refused before it starts a worker, naming the owning process; a separate `SEAL_DATA` is
-required for an independent test instance. The record is removed on clean shutdown and is taken over
-only when the recorded process no longer exists, so a crashed launch does not block the next one.
+directory: the launcher and API hold an OS lock on `<data>/owner.lock` and the worker on
+`<data>/worker.lock`. A second launch on another port with the same data directory is refused before
+it starts a worker, naming the owning process; a separate `SEAL_DATA` is required for an independent
+test instance. The locks disappear with the process, including a crash, so a stale PID is never an
+owner. If a supervisor crash leaves a worker behind, its worker lock makes a new launcher fail closed
+until that worker exits. `<data>/instance.json` records PID, port, release, worker PID and start times
+for diagnostics only. Both lock files are small and may be kept in backups; deleting them while a
+process is running does not release its lock and is not a supported recovery step.
 
 ## Backup
 
@@ -73,6 +76,30 @@ Two additional startup behaviours are idempotent:
 - Result display metadata is derived into `<data>/cache/display/<job-id>-<digest>.json` for results
   that predate the recorded block. This cache is read-only with respect to the run directory; deleting
   it only makes the next request derive it again. It never triggers a solver run.
+
+Component display names are an additive `alias` field inside the existing revision JSON (default
+empty). Old revisions load with an empty alias and keep showing the drawing name; saving a revision
+adds the field. No database table or column changes, and mesh identity ignores the alias.
+
+Two-step analysis is an additive revision-JSON extension: `analysis.mode` (default `door_only`) and
+`motion.body` (offset/travel/duration, default zero). Revisions without them load as door-only and
+compute the same mesh-compatibility digest as before; no table or column changes. Historical
+single-step decks, metadata and results keep their original meaning and are never relabelled as
+two-step.
+
+Archive/deletion adds `archived` columns to `projects` and `groups` (default 0) and a `deletions`
+journal table. Ordinary archive/restore only flips the flag. Permanent deletion removes database rows
+and then artifacts; an interrupted cleanup leaves a journal that the next startup finishes. If the
+database transaction never committed, the journal is discarded and no artifact is removed. Shared
+drawings remain until the last referencing revision is gone; material library rows are never touched.
+
+The global material library adds two tables, `material_library` and `material_versions`, created with
+`CREATE TABLE IF NOT EXISTS`. Versions are insert-only. Model materials may gain optional
+`library_id`/`library_version` fields in the revision JSON; legacy cards without them remain valid
+model-local cards. `POST /api/materials/import` is the only migration path and always creates explicit
+library entries — cards are never merged by name. Importing does not modify the source revision;
+pinning happens when the user saves the updated revision. A previous build ignores the new tables and
+fields, so restoring an older directory copy remains compatible.
 
 Schema version 1 is unchanged by this release; project grouping is additive. The release-safety pass
 adds one table, `creations(token, group_id, project_id, revision_id, created)`, which records an

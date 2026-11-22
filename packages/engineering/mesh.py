@@ -37,16 +37,24 @@ def generate_mesh(project):
     panels = [c for c in project.components if c.role == "moving_panel"]
     if len(panels) != 1:
         raise ValueError("Assign exactly one open rigid profile as the moving panel.")
+    mode = project.analysis.mode
     body = [c.id for c in project.components if c.role == "vehicle_body"]
-    excluded = [
-        {
-            "component": c.id,
-            "name": c.name,
-            "reason": "rigid body profile reviewed but not analysed in this revision",
-        }
-        for c in project.components
-        if c.role == "vehicle_body"
-    ]
+    if mode == "body_then_door":
+        if len(body) != 1:
+            raise ValueError("Body-then-door analysis needs exactly one moving body profile.")
+        if not any(edge.component in body for edge in project.edges):
+            raise ValueError("The moving body needs an open rigid profile before meshing.")
+        excluded = []
+    else:
+        excluded = [
+            {
+                "component": c.id,
+                "name": c.name,
+                "reason": "rigid body profile reviewed but not analysed in this revision",
+            }
+            for c in project.components
+            if c.role == "vehicle_body"
+        ]
     faces_at_edge = defaultdict(list)
     for face in project.material_regions:
         for loop in face.loops:
@@ -205,9 +213,10 @@ def _build(p, faces_at_edge, excluded=()):
             if not face_elements[face.id]:
                 raise ValueError(f"No mesh generated for {face.name}.")
         roles = {c.id: c.role for c in p.components}
+        mode = p.analysis.mode
         for edge in p.edges:
-            if roles[edge.component] == "vehicle_body":
-                continue  # reviewed but not part of the analysed model
+            if roles[edge.component] == "vehicle_body" and mode != "body_then_door":
+                continue  # reviewed but not part of the analysed door-only model
             tags = curves[edge.id]
             collected = set()
             for tag in tags:
@@ -225,12 +234,12 @@ def _build(p, faces_at_edge, excluded=()):
                         f"Disconnected mesh interface at {edge.name}: {len(missing)} of "
                         f"{len(ordered)} boundary nodes are absent from {face_id}."
                     )
-            if roles[edge.component] == "moving_panel":
+            if roles[edge.component] in ("moving_panel", "vehicle_body"):
                 line_ids, conns = [], []
                 for tag in tags:
                     types, groups, connectivity = gmsh.model.mesh.getElements(1, tag)
                     if list(types) != [1]:
-                        raise ValueError(f"Expected linear panel segments on {edge.name}.")
+                        raise ValueError(f"Expected linear rigid segments on {edge.name}.")
                     line_ids.extend(int(eid) for eid in groups[0])
                     conns.extend(connectivity[0].reshape(-1, 2))
                 for eid, row in zip(line_ids, conns):

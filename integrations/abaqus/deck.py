@@ -57,6 +57,11 @@ def panel_order(panel, nodes):
 
 
 def mesh_parts(project, mesh):
+    nodes, ws, panel, _ = _mesh_parts(project, mesh)
+    return nodes, ws, panel
+
+
+def _mesh_parts(project, mesh):
     if project.dimension != "2D" or project.formulation != "plane_stress":
         raise ValueError("Only the 2D plane-stress closing template can generate a solver input.")
     if project.units != "N-mm-s-tonne":
@@ -74,7 +79,7 @@ def mesh_parts(project, mesh):
         raise ValueError(
             "This solver template supports seal regions, one moving panel and an excluded body profile."
         )
-    ws, panel = [], []
+    ws, panel, body = [], [], []
     element_ids = set()
     for e in mesh["elements"]:
         node_ids = e["nodes"]
@@ -91,9 +96,13 @@ def mesh_parts(project, mesh):
             raise ValueError("Unsupported element type, duplicate label, or invalid connectivity.")
         element_ids.add(e["id"])
         if kind == "R2D2":
-            if roles.get(e["component"]) != "moving_panel":
-                raise ValueError("A rigid edge must belong to the moving panel.")
-            panel.append(e)
+            role = roles.get(e["component"])
+            if role == "moving_panel":
+                panel.append(e)
+            elif role == "vehicle_body" and project.analysis.mode == "body_then_door":
+                body.append(e)
+            else:
+                raise ValueError("A rigid edge must belong to an analysed rigid profile.")
         else:
             face = faces.get(e["entity"])
             if (
@@ -113,7 +122,14 @@ def mesh_parts(project, mesh):
             ws.append(e)
     if not ws or not panel:
         raise ValueError("Both a deformable seal mesh and a moving rigid profile are required.")
-    return nodes, ws, panel_order(panel, nodes)
+    if project.analysis.mode == "body_then_door" and not body:
+        raise ValueError("Body-then-door analysis needs a meshed moving body profile.")
+    return (
+        nodes,
+        ws,
+        panel_order(panel, nodes),
+        panel_order(body, nodes) if body else [],
+    )
 
 
 def exterior(ws):
@@ -217,6 +233,8 @@ def fixed_nodes(project, mesh, fixture):
 
 
 def write_inp(project, mesh, fixture=None):
+    if project.analysis.mode == "body_then_door":
+        return write_two_step_inp(project, mesh, fixture)
     nodes, ws, panel = mesh_parts(project, mesh)
     boundary = exterior(ws)
     clearance = vertical_gap(nodes, boundary, panel, project.motion.offset)
@@ -322,8 +340,185 @@ def write_inp(project, mesh, fixture=None):
     return "\n".join(lines + ["*End Step", ""])
 
 
-def output_cards(project):
-    interval = scalar(min(0.02, project.motion.duration / 20))
+def write_two_step_inp(project, mesh, fixture=None):
+    """Body seating followed by door closing in one analysis.
+
+    Step 1 moves the body reference point and holds the door; step 2 holds the
+    body at its attained position and moves the door. Boundary conditions are
+    propagated by Abaqus, so the seal deformation and contact state from step 1
+    are the starting state of step 2. No second analysis or ``op=NEW`` reset is
+    used.
+    """
+    if project.motion.body.travel == 0:
+        raise ValueError("Set a non-zero body travel for body-then-door analysis.")
+    nodes, ws, panel, body = _mesh_parts(project, mesh)
+    boundary = exterior(ws)
+    panel_gap = vertical_gap(nodes, boundary, panel, project.motion.offset)
+    body_gap = vertical_gap(nodes, boundary, body, project.motion.body.offset)
+    seal_nodes = sorted({n for e in ws for n in e["nodes"]})
+    panel_nodes = sorted({n for e in panel for n in e["nodes"]})
+    body_nodes = sorted({n for e in body for n in e["nodes"]})
+    seal_node_set = set(seal_nodes)
+    fixed = set(fixed_nodes(project, mesh, fixture))
+    if not fixed <= seal_node_set:
+        raise ValueError("A fixed node is missing from the seal mesh. Review the fixture.")
+    source = "reviewed mesh nodes" if fixture is not None else "legacy mounting edges"
+
+    component_role = {c.id: c.role for c in project.components}
+    edge_sets = defaultdict(list)
+    for i, edge in enumerate(project.edges, 1):
+        if edge.id in mesh["edge_nodes"]:
+            edge_sets[component_role[edge.component]].extend(
+                set_lines(f"*Nset, nset=EDGE_{i}", mesh["edge_nodes"][edge.id])
+            )
+
+    lines = [
+        "*Heading",
+        "Abaqus QOL 2D plane stress / implicit dynamic body seating then door closing",
+        "** Units: N, mm, s, tonne. RF2 is total reaction for the specified thickness.",
+        f"** Initial door clearance on the assembled mesh: {scalar(panel_gap)} mm.",
+        f"** Initial body clearance on the assembled mesh: {scalar(body_gap)} mm.",
+        f"** Step 1 body travel: {scalar(project.motion.body.travel)} mm over "
+        f"{scalar(project.motion.body.duration)} s; door held.",
+        f"** Step 2 door travel: {scalar(project.motion.travel)} mm over "
+        f"{scalar(project.motion.duration)} s; body held at its seated position.",
+        f"** Fixed weatherstrip nodes: {len(fixed)} from {source}.",
+        "*Part, name=WS",
+        "*Node",
+    ]
+    lines += [f"{n}, {scalar(nodes[n][0])}, {scalar(nodes[n][1])}" for n in seal_nodes]
+    by_face = defaultdict(list)
+    for kind in ("CPS3", "CPS4", "CPS4R"):
+        elements = [e for e in ws if e["type"] == kind]
+        if elements:
+            lines.append(f"*Element, type={kind}")
+            for e in elements:
+                lines.append(", ".join(map(str, [e["id"], *e["nodes"]])))
+                by_face[e["entity"]].append(e["id"])
+    mat_names = {m.id: f"MAT_{i + 1}" for i, m in enumerate(project.materials)}
+    for i, face in enumerate(project.faces, 1):
+        if face.id not in by_face:
+            continue
+        if face.material not in mat_names:
+            raise ValueError("Assign a material to every meshed seal region.")
+        name = f"REGION_{i}"
+        lines += set_lines(f"*Elset, elset={name}", by_face[face.id])
+        lines += [
+            f"*Solid Section, elset={name}, material={mat_names[face.material]}",
+            f"{scalar(project.analysis.thickness)},",
+        ]
+    lines += edge_sets["seal"]
+    lines += ["*Surface, type=ELEMENT, name=SEAL_EXTERIOR"]
+    lines += [f"{eid}, S{side}" for eid, side in boundary.values()]
+
+    def rigid_part(part, elements, element_nodes, surface, extra_sets):
+        lines_local = ["*End Part", f"*Part, name={part}", "*Node"]
+        lines_local += [
+            f"{n}, {scalar(nodes[n][0])}, {scalar(nodes[n][1])}" for n in element_nodes
+        ]
+        reference = max(element_nodes) + 1
+        midpoint = [
+            sum(nodes[n][axis] for n in element_nodes) / len(element_nodes) for axis in (0, 1)
+        ]
+        lines_local += [
+            f"{reference}, {scalar(midpoint[0])}, {scalar(midpoint[1])}",
+            "*Element, type=R2D2, elset=PROFILE",
+        ]
+        lines_local += [
+            ", ".join(map(str, [e["id"], *e["nodes"]])) for e in elements
+        ]
+        lines_local += extra_sets
+        lines_local += [
+            f"*Surface, type=ELEMENT, name={surface}",
+            "PROFILE, SPOS",
+        ]
+        return lines_local, reference
+
+    panel_part, panel_rp = rigid_part(
+        "PANEL", panel, panel_nodes, "PANEL_FACE", edge_sets["moving_panel"]
+    )
+    lines += panel_part
+    body_part, body_rp = rigid_part(
+        "BODY", body, body_nodes, "BODY_FACE", edge_sets["vehicle_body"]
+    )
+    lines += body_part
+    lines += [
+        "*End Part",
+        "*Assembly, name=ASSEMBLY",
+        "*Instance, name=WS-1, part=WS",
+        "*End Instance",
+        "*Instance, name=PANEL-1, part=PANEL",
+        f"0., {scalar(project.motion.offset)}, 0.",
+        "*End Instance",
+        "*Instance, name=BODY-1, part=BODY",
+        f"0., {scalar(project.motion.body.offset)}, 0.",
+        "*End Instance",
+        "*Nset, nset=PANEL_RP, instance=PANEL-1",
+        str(panel_rp),
+        "*Nset, nset=BODY_RP, instance=BODY-1",
+        str(body_rp),
+    ]
+    lines += set_lines("*Nset, nset=WSFIX, instance=WS-1", fixed)
+    lines += [
+        "*Rigid Body, ref node=PANEL_RP, elset=PANEL-1.PROFILE",
+        "*Rigid Body, ref node=BODY_RP, elset=BODY-1.PROFILE",
+        "*End Assembly",
+    ]
+    assigned = {face.material for face in project.faces if face.id in by_face}
+    for material in project.materials:
+        if material.id in assigned:
+            lines += material_cards(material, mat_names[material.id])
+    lines += [
+        "*Surface Interaction, name=SEAL_CONTACT",
+        scalar(project.analysis.thickness),
+        "*Surface Behavior, pressure-overclosure=HARD",
+        "*Friction, slip tolerance=0.005",
+        scalar(project.contact.friction),
+        "*Contact",
+        "*Contact Inclusions, all exterior",
+        "*Contact Property Assignment",
+        ", , SEAL_CONTACT",
+        "*Boundary",
+        "WSFIX, ENCASTRE",
+        "PANEL_RP, 1, 2",
+        "PANEL_RP, 6, 6",
+        "BODY_RP, 1, 2",
+        "BODY_RP, 6, 6",
+        "*Step, name=Body seating, nlgeom=YES, amplitude=RAMP, inc=100000, unsymm=YES",
+        "*Dynamic",
+        f"{scalar(min(0.0001, project.motion.body.duration / 100))}, "
+        f"{scalar(project.motion.body.duration)}, 1e-13",
+        "*Boundary",
+        f"BODY_RP, 2, 2, {scalar(project.motion.body.travel)}",
+        "PANEL_RP, 2, 2, 0.",
+    ]
+    lines += output_cards(
+        project,
+        duration=project.motion.body.duration,
+        references=("BODY_RP", "PANEL_RP"),
+    )
+    lines += [
+        "*End Step",
+        "*Step, name=Closing, nlgeom=YES, amplitude=RAMP, inc=100000, unsymm=YES",
+        "*Dynamic",
+        f"{scalar(min(0.0001, project.motion.duration / 100))}, "
+        f"{scalar(project.motion.duration)}, 1e-13",
+        "*Boundary",
+        # Hold the body at the position reached in step 1; the door ramps closed.
+        f"BODY_RP, 2, 2, {scalar(project.motion.body.travel)}",
+        f"PANEL_RP, 2, 2, {scalar(project.motion.travel)}",
+    ]
+    lines += output_cards(
+        project,
+        duration=project.motion.duration,
+        references=("BODY_RP", "PANEL_RP"),
+    )
+    return "\n".join(lines + ["*End Step", ""])
+
+
+def output_cards(project, duration=None, references=("PANEL_RP",)):
+    duration = project.motion.duration if duration is None else duration
+    interval = scalar(min(0.02, duration / 20))
     outputs = set(project.analysis.outputs)
     lines = [f"*Output, field, time interval={interval}"] if outputs else []
     node_outputs = sorted(outputs.intersection({"U", "RF"}))
@@ -334,11 +529,12 @@ def output_cards(project):
         lines += ["*Element Output", ", ".join(element_outputs)]
     if "CSTRESS" in outputs:
         lines += ["*Contact Output", "CSTRESS"]
-    lines += [
-        f"*Output, history, time interval={interval}",
-        "*Node Output, nset=PANEL_RP",
-        # Signed global components are retained; the chart projects them onto
-        # the configured closing direction without altering this raw history.
-        "U1, U2, RF1, RF2",
-    ]
+    lines.append(f"*Output, history, time interval={interval}")
+    for reference in references:
+        lines += [
+            f"*Node Output, nset={reference}",
+            # Signed global components are retained; the chart projects them onto
+            # the configured motion direction without altering this raw history.
+            "U1, U2, RF1, RF2",
+        ]
     return lines

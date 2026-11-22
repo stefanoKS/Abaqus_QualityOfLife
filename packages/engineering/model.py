@@ -104,7 +104,11 @@ class Solid(Model):
 
 class Component(Model):
     id: Id
+    # ``name`` is the authoritative drawing/import label. ``alias`` is an
+    # optional user-facing display name; it is excluded from mesh identity, so a
+    # rename never forces a remesh and never rewrites the source drawing.
     name: Name
+    alias: str = Field(default="", max_length=160)
     role: Literal["seal", "moving_panel", "vehicle_body", "unassigned"]
 
 
@@ -118,6 +122,10 @@ class Material(Model):
     young: Positive | None = None
     poisson: Annotated[float, Field(gt=-1, lt=0.5)] | None = None
     test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
+    # Optional pin to a global library version. The card values above remain the
+    # immutable snapshot a saved revision and its deck actually use.
+    library_id: Annotated[str, Field(max_length=80)] | None = None
+    library_version: Annotated[int, Field(ge=1)] | None = None
 
     @model_validator(mode="after")
     def check_card(self):
@@ -125,6 +133,8 @@ class Material(Model):
             raise ValueError("Enter Young's modulus and Poisson's ratio for the elastic card.")
         if self.model == "hyperfoam_test" and len(self.test_data) < 3:
             raise ValueError("Supply at least three uniaxial test samples for hyperfoam.")
+        if (self.library_id is None) != (self.library_version is None):
+            raise ValueError("A library pin needs both the material id and its version.")
         return self
 
 
@@ -144,11 +154,23 @@ class Contact(Model):
     friction: Annotated[float, Field(ge=0, le=5)] = 0.3
 
 
+class BodyMotion(Model):
+    """Step-1 motion of the moving body in the two-panel template."""
+
+    offset: Coord = 0
+    # Signed Y travel. Seating normally moves down (negative), but the schema
+    # does not assume the door and body share a sign.
+    travel: Annotated[float, Field(ge=-10000, le=10000)] = 0
+    duration: Positive = 1.0
+
+
 class Motion(Model):
     axis: Literal["Y"] = "Y"
     travel: Annotated[float, Field(ge=-10000, lt=0)] = -5.5
     offset: Coord = 0
     duration: Positive = 1.3
+    # Used only when analysis.mode == "body_then_door".
+    body: BodyMotion = Field(default_factory=BodyMotion)
 
 
 class MeshSpec(Model):
@@ -158,6 +180,9 @@ class MeshSpec(Model):
 
 
 class Analysis(Model):
+    # Legacy door-only is the default so every historical revision keeps its
+    # exact meaning. Two-panel seating must be chosen explicitly.
+    mode: Literal["door_only", "body_then_door"] = "door_only"
     template: Literal["implicit_dynamic_closing"] = "implicit_dynamic_closing"
     thickness: Positive = 1
     force_normalization: Literal["total", "per_mm"] = "total"
@@ -312,4 +337,19 @@ class Project(Model):
             raise ValueError("Geometry changed. Rebuild selections and local mesh controls.")
         if self.mounting.selection not in {s.id for s in self.selections}:
             raise ValueError("Mounting selection no longer exists.")
+        if self.analysis.mode == "body_then_door":
+            roles = [c.role for c in self.components]
+            if roles.count("moving_panel") != 1 or roles.count("vehicle_body") != 1:
+                raise ValueError(
+                    "Body-then-door analysis needs exactly one moving door and one moving body."
+                )
+            if not any(not face.cavity for face in self.faces):
+                raise ValueError("Body-then-door analysis needs at least one seal region.")
+            body = self.motion.body
+            if body.travel == 0:
+                raise ValueError("Set a non-zero body travel for body-then-door analysis.")
+            if body.duration <= 0:
+                raise ValueError("Body seating duration must be positive.")
+            if self.motion.duration <= 0:
+                raise ValueError("Door closing duration must be positive.")
         return self

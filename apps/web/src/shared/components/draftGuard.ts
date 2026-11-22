@@ -35,6 +35,11 @@ export function snapshot() {
   return invalid.size > 0
 }
 
+/** Synchronous check for action handlers; never read React state for safety. */
+export function hasInvalidField() {
+  return invalid.size > 0
+}
+
 export function useAnyInvalidField() {
   return useSyncExternalStore(subscribe, snapshot, snapshot)
 }

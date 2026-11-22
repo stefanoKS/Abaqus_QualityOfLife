@@ -201,71 +201,105 @@ def describe(payload):
     )
 
 
-def active_jobs(port, timeout=2.0):
-    """Jobs the running instance still owns; stopping it would lose work.
+def suspicious_process(job):
+    """True when a terminal-looking job still has a matching live process.
 
-    Uses the lightweight summary endpoint, with a fallback to the full run list
-    for an older instance. ``None`` means activity could not be established, and
-    callers must refuse takeover rather than assume the instance is idle.
+    A recorded solver PID is only trusted together with its process start time,
+    so PID reuse cannot make an idle instance look busy — or a busy one idle.
     """
-    jobs = None
-    for path in ("/api/jobs", "/api/runs"):
-        try:
-            with urllib.request.urlopen(
-                f"http://127.0.0.1:{port}{path}", timeout=timeout
-            ) as response:
-                jobs = json.loads(response.read())
-            break
-        except urllib.error.HTTPError:
-            continue
-        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
-            return None
-    if jobs is None:
+    pid = job.get("pid")
+    if not pid:
+        return False
+    try:
+        import psutil
+
+        process = psutil.Process(int(pid))
+        created = process.create_time()
+        command = " ".join(process.cmdline()).lower()
+    except Exception:
+        return False
+    recorded = job.get("process_started") or job.get("started")
+    if recorded and abs(created - float(recorded)) > 5:
+        return False
+    return "abaqus" in command or "services.worker" in command
+
+
+def active_jobs(port, timeout=2.0):
+    """Unsafe jobs on the running instance; ``None`` when coverage is unknown.
+
+    Only ``/api/jobs`` is authoritative: it reports every durable mode and an
+    ``activity`` classification. An older API that cannot prove that coverage is
+    treated as unreadable (fail closed), never as idle. ``terminal`` count is
+    rechecked against live processes so an unresolved solver still blocks.
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/api/jobs", timeout=timeout
+        ) as response:
+            coverage = response.headers.get("X-Abaqus-QOL-Jobs", "")
+            jobs = json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
         return None
-    return [
-        job
+    if coverage != "all-modes-v1":
+        # An older endpoint may omit IMPORT/MESH/DECK entirely. An empty list
+        # from it is not evidence of inactivity.
+        return None
+    if not isinstance(jobs, list):
+        return None
+    if any(
+        not isinstance(job, dict) or "activity" not in job or "mode" not in job
         for job in jobs
-        if job.get("status") in ("Queued", "Running")
-        or job.get("extraction") in ("Queued", "Running")
-    ]
+    ):
+        return None
+    unsafe = []
+    for job in jobs:
+        if job.get("activity") != "terminal" or suspicious_process(job):
+            unsafe.append(job)
+    return unsafe
 
 
 def stop_instance(port):
-    """Stop only the processes this product started, never an Abaqus solver."""
+    """Stop only processes positively identified as this product's API/worker.
+
+    Never an Abaqus solver, never a process matched only by executable name. If
+    process inspection is unavailable, nothing is stopped (the caller then fails
+    because the port is still busy).
+    """
     payload = health(port) or {}
-    pids = {payload.get("pid")}
     try:
         import psutil
     except ImportError:
-        psutil = None
+        return []
+    pids = {payload.get("pid")}
     data = str(store_root())
-    if psutil is not None:
-        for process in psutil.process_iter(["pid", "cmdline"]):
-            try:
-                command = " ".join(process.info.get("cmdline") or [])
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-            # A worker is ours only when it runs the worker module on this data directory.
-            if "services.worker" in command and data in command:
-                pids.add(process.info["pid"])
+    for process in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            command = " ".join(process.info.get("cmdline") or [])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+        # A worker is ours only when it runs the worker module on this data directory.
+        if "services.worker" in command and data in command:
+            pids.add(process.info["pid"])
     stopped = []
     for pid in pids:
         if not pid:
             continue
         try:
-            process = psutil.Process(pid) if psutil else None
-        except Exception:
-            process = None
-        if process is None:
-            continue
-        # Only the Python processes that serve this product are candidates.
-        try:
+            process = psutil.Process(pid)
+            created = process.create_time()
             command = " ".join(process.cmdline())
         except Exception:
-            command = ""
-        if "services.api" not in command and "services.worker" not in command:
             continue
-        if "abaqus" in command.lower():
+        lower = command.lower()
+        if "abaqus" in lower:
+            continue
+        if "services.api" not in command and "uvicorn" not in lower and "services.worker" not in command:
+            continue
+        if int(pid) == int(payload.get("pid") or 0) and payload.get("started"):
+            # PID reuse must not let us stop an unrelated process.
+            if abs(created - float(payload["started"])) > 5:
+                continue
+        if "services.worker" in command and data not in command:
             continue
         process.terminate()
         stopped.append(pid)
@@ -360,6 +394,15 @@ def serve(port, test_data=None, browser=True):
     os.environ["ABAQUS_QOL_PORT"] = str(port)
     if not (WEB / "dist/index.html").is_file():
         raise SystemExit(f"{PRODUCT}: build the browser first: npm --prefix apps/web run build")
+    from services import release as release_mod
+
+    override = os.environ.get("ABAQUS_QOL_WEB_DIST", "").strip()
+    resolved = release_mod.resolve(WEB, Path(override) if override else None)
+    if not resolved.valid:
+        raise SystemExit(
+            f"{PRODUCT}: browser release {resolved.id} is incomplete "
+            f"({resolved.broken}). Rebuild it with: npm --prefix apps/web run build"
+        )
     if test_data:
         os.environ["SEAL_DATA"] = test_data
         for name in (
@@ -379,18 +422,38 @@ def serve(port, test_data=None, browser=True):
         os.environ.setdefault("ABAQUS_QOL_FAKE_SOLVE_SECONDS", "3")
     # Refuse a second API/worker pair on the same data directory before the
     # worker can claim anything. The record is released by the API lifespan.
-    from services import store
+    from services import ownership, store
 
     try:
         store.claim_data_root(os.getpid(), port)
     except store.Conflict as error:
         raise SystemExit(f"{PRODUCT}: {error}") from None
+    # An API may attach to an existing worker, but a launcher never starts a
+    # second worker beside one. This is the fail-closed check for the orphaned
+    # worker a supervisor crash can leave behind.
+    if not ownership.worker_lock_free(store_root()):
+        store.release_data_root(os.getpid())
+        record = store.read_instance() or {}
+        raise SystemExit(
+            f"{PRODUCT}: a worker (PID {record.get('worker_pid') or 'unknown'}) is still "
+            f"running on data directory {store_root()}. Wait for it to finish or close it "
+            "manually, then start again. Nothing was stopped."
+        )
     import uvicorn
 
     stop = store_root() / ("stop-" + uuid4().hex)
     args = [sys.executable, "-m", "services.worker", "--stop-file", str(stop)]
     flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     worker = subprocess.Popen(args, cwd=ROOT, creationflags=flags)
+    # The worker claims its own OS lock. If it exits immediately (an orphaned
+    # worker or another owner won a race), do not leave an API without a worker.
+    time.sleep(0.4)
+    if worker.poll() is not None:
+        store.release_data_root(os.getpid())
+        raise SystemExit(
+            f"{PRODUCT}: the worker could not take ownership of {store_root()} "
+            f"(exit code {worker.returncode}). Nothing was started."
+        )
     if browser:
         threading.Thread(
             target=open_when_ready, args=(port, "the workbench"), daemon=True
@@ -407,6 +470,9 @@ def serve(port, test_data=None, browser=True):
         print("Waiting for the worker to finish its current operation…", flush=True)
         worker.wait()
         stop.unlink(missing_ok=True)
+        # Ownership is released only after the worker has exited, so a fresh
+        # launch cannot take the directory while a solver child may still run.
+        store.release_data_root(os.getpid())
 
 
 def main(argv=None):
@@ -494,6 +560,19 @@ def main(argv=None):
             raise SystemExit(
                 f"{PRODUCT}: refusing to stop the running instance while {len(running)} job(s) are "
                 "active. Wait for them to finish, then run again with --takeover."
+            )
+        # Recheck immediately before stopping anything: a job may have been
+        # queued between the first read and this point.
+        recheck = active_jobs(args.port)
+        if recheck is None:
+            raise SystemExit(
+                f"{PRODUCT}: refusing to take over port {args.port}: job activity could not "
+                "be re-established immediately before stopping. Nothing was stopped."
+            )
+        if recheck:
+            raise SystemExit(
+                f"{PRODUCT}: refusing to stop the running instance: "
+                f"{len(recheck)} job(s) became active. Wait for them to finish. Nothing was stopped."
             )
         stopped = stop_instance(args.port)
         print(f"  stopped : {stopped or 'nothing (already gone)'}", flush=True)

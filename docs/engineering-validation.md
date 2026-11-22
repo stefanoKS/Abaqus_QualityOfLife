@@ -318,7 +318,8 @@ recorded artifacts; it does not establish physical correlation, contact accuracy
 
 ## Release-safety pass — 2026-11-22
 
-No solver process was launched in this pass and no Abaqus license was consumed. The retained licensed
+No solver process was launched in this pass or in Phases 0, 2 and 3, and no Abaqus license was
+consumed. The retained licensed
 runs (`989fec4a-98fa-4a61-999a-e16ec886ac68`, `54b7be8c-d260-4a65-adcf-0205263032f3`,
 `39f696ee-c757-44ba-bb42-9e8f9671bfe6`) and their ODBs, decks, meshes and history files were not
 modified or re-extracted. The pass changed browser release serving, HTTP request validation, readiness
@@ -337,3 +338,35 @@ copied, the original moved aside and the copy restored. After restart the projec
 fixture hash and downloaded INP were re-read: the INP SHA-256 matched exactly and the `WSFIX` block was
 present. The `instance.json` left by the stopped process was recognised as stale and taken over by the
 new PID. Low-disk and interrupted-write fault injection were **not** repeated in this pass.
+
+### Phase 4 two-step template — 2026-11-22
+
+Status by category, kept separate:
+
+1. **Code implemented:** yes — model mode, body motion, body R2D2 meshing, two-step INP with
+   propagated BCs, two-reference metadata, per-step history projection and a results step selector.
+2. **Automated tests passed:** yes — 8 Python tests (INP structure, step order, BC values, rigid
+   bodies, history requests, metadata, legacy regression, mesh-identity sensitivity, validation,
+   projection) and 1 browser test (mode UI/missing-body rejection).
+3. **Real solver executed:** **NO.**
+4. **Result extraction succeeded:** **NO** for a two-step ODB (the extractor code path exists but has
+   not been run against licensed output).
+5. **Sensitivity/correlation qualified:** **NO.**
+
+**Gate 4B is BLOCKED** pending an authorized Abaqus/Standard 2024 run of the two-step template on a
+trusted geometry, with retained INP/ODB evidence, verification that step 1 moves only the body and
+step 2 only the door, seal deformation/contact carry-over, correct force/displacement signs and units,
+and no rigid-body or overconstraint artefacts. No synthetic playback is accepted for this gate.
+
+### Phase 5 live diagnostics — 2026-11-22
+
+Status by category:
+
+1. **Code implemented:** yes — simulated-time progress card, per-step states, separate solver and
+   extraction status, license-wait, stale-heartbeat, extraction-failure and unknown-step handling,
+   with no ETA.
+2. **Automated tests passed:** yes — 4 browser tests with mocked job/revision state covering both
+   steps, 99 vs 100, queued 0%, license wait, unknown step, stale heartbeat and failed extraction.
+3. **Real solver executed:** no new licensed solve; the existing retained runs were not modified.
+4. **Result extraction succeeded:** unchanged; no extraction was run this phase.
+5. **Sensitivity/correlation qualified:** no.

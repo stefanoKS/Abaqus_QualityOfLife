@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Plus,
   Layers3,
@@ -13,6 +13,9 @@ import {
   ChartNoAxesCombined,
   Square,
   RotateCcw,
+  Archive,
+  ArchiveRestore,
+  Trash2,
 } from 'lucide-react'
 import {
   request,
@@ -20,6 +23,7 @@ import {
   go,
   err,
   type Group,
+  type DeletionInfo,
   type Job,
   type Revision,
   type RevisionSummary,
@@ -140,7 +144,8 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
   const { t, formatDate, formatDateTime } = useI18n()
   const compat = useCompatibility()
   const [groups, gs] = useState<Group[]>([]),
-    [runs, rs] = useState<Job[]>([])
+    [runs, rs] = useState<Job[]>([]),
+    [showArchived, setShowArchived] = useState(false)
   // Project (group) and model are separate filters: a model is not a project.
   const [projectFilter, pf] = useState(''),
     [modelFilter, mf] = useState(''),
@@ -159,9 +164,18 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
   const [openRevisions, revealRevisions] = useState<string | null>(null),
     [history, setHistory] = useState<RevisionSummary[]>([])
   const [busy, setBusy] = useState(false)
+  // A late response for the previous archive filter must not overwrite the
+  // list produced by the current one after the user toggles the checkbox.
+  const showArchivedRef = useRef(showArchived)
+  showArchivedRef.current = showArchived
   async function refresh() {
+    const include = showArchivedRef.current
     try {
-      const [a, b] = await Promise.all([request<Group[]>('/api/groups'), request<Job[]>('/api/runs')])
+      const [a, b] = await Promise.all([
+        request<Group[]>('/api/groups?include_archived=' + (include ? 'true' : 'false')),
+        request<Job[]>('/api/runs'),
+      ])
+      if (include !== showArchivedRef.current) return
       gs(a)
       rs(b)
     } catch (e) {
@@ -170,14 +184,14 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
   }
   useEffect(() => {
     void refresh()
-  }, [notify])
+  }, [notify, showArchived])
   // Faster cadence only while a run can still change; an idle dashboard settles to
   // a slow refresh instead of polling every 1.4 s forever.
   const active = anyActive(runs)
   useEffect(() => {
     const id = setInterval(refresh, active ? ACTIVE_POLL_MS : IDLE_POLL_MS)
     return () => clearInterval(id)
-  }, [active])
+  }, [active, showArchived])
   const projects = groups.flatMap((group) => group.models)
   async function addGroup(e: React.FormEvent) {
     e.preventDefault()
@@ -248,6 +262,73 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
       notify(err(e))
     }
   }
+  async function setArchived(kind: 'model' | 'group', id: string, archived: boolean) {
+    if (!compat.ok) return
+    try {
+      await request(
+        `/api/${kind === 'model' ? 'projects' : 'groups'}/${id}/${archived ? 'archive' : 'restore'}`,
+        'POST',
+      )
+      await refresh()
+      notify(t(archived ? 'dashboard.archived' : 'dashboard.restored'))
+    } catch (e) {
+      notify(err(e))
+    }
+  }
+
+  async function remove(kind: 'model' | 'group', id: string) {
+    if (!compat.ok) return
+    try {
+      const info = await request<DeletionInfo>(
+        `/api/${kind === 'model' ? 'projects' : 'groups'}/${id}/deletion-info`,
+      )
+      const activeJobs = info.active_jobs ?? []
+      if (!info.deletable) {
+        notify(
+          t('dashboard.deleteBlocked', {
+            reason: activeJobs.length
+              ? t('dashboard.deleteActive', { jobs: activeJobs.join(', ') })
+              : t('dashboard.deleteArchiveFirst'),
+          }),
+        )
+        return
+      }
+      const details =
+        kind === 'model'
+          ? t('dashboard.deleteModelConfirm', {
+              name: info.name,
+              revisions: info.revisions,
+              jobs: info.jobs,
+            })
+          : t('dashboard.deleteGroupConfirm', {
+              name: info.name,
+              models: info.models,
+              revisions: info.revisions,
+              jobs: info.jobs,
+            })
+      if (!window.confirm(details)) return
+      const typed = window.prompt(t('dashboard.deleteTypeName', { name: info.name }))
+      if (typed === null) return
+      if (typed.trim() !== info.name) {
+        notify(t('dashboard.deleteNameMismatch'))
+        return
+      }
+      const result = await request<{ cleanup: string }>(
+        `/api/${kind === 'model' ? 'projects' : 'groups'}/${id}/delete`,
+        'POST',
+        { confirm: typed },
+      )
+      notify(
+        result.cleanup === 'pending'
+          ? t('dashboard.deletedPending', { name: info.name })
+          : t('dashboard.deleted', { name: info.name }),
+      )
+      await refresh()
+    } catch (e) {
+      notify(err(e))
+    }
+  }
+
   async function showRevisions(id: string) {
     if (openRevisions === id) {
       revealRevisions(null)
@@ -278,6 +359,14 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           </div>
           <h1>{t('dashboard.title')}</h1>
         </div>
+        <label className="check archive-toggle">
+          <input
+            type="checkbox"
+            checked={showArchived}
+            onChange={(e) => setShowArchived(e.target.checked)}
+          />
+          {t('dashboard.showArchived')}
+        </label>
         <button className="primary" onClick={toggleCreateForm} disabled={!compat.ok}>
           <Plus />
           {t('dashboard.newProject')}
@@ -355,12 +444,36 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               <div>
                 <strong>{group.name}</strong>
                 <small>
-                  {t('dashboard.modelsCount', { count: group.models.length })} Â·{' '}
+                  {group.archived ? t('dashboard.archivedBadge') + ' · ' : ''}
+                  {t('dashboard.modelsCount', { count: group.models.length })} ·{' '}
                   {formatDate(group.created)}
                 </small>
               </div>
               <div className="spacer" />
-              <button onClick={() => setModelGroup(modelGroup === group.id ? null : group.id)}>
+              <button
+                type="button"
+                title={group.archived ? t('dashboard.restore') : t('dashboard.archive')}
+                aria-label={(group.archived ? t('dashboard.restore') : t('dashboard.archive')) + ' · ' + group.name}
+                disabled={!compat.ok}
+                onClick={() => setArchived('group', group.id, !group.archived)}
+              >
+                {group.archived ? <ArchiveRestore /> : <Archive />}
+              </button>
+              {group.archived && (
+                <button
+                  type="button"
+                  title={t('dashboard.deleteGroup')}
+                  aria-label={t('dashboard.deleteGroup') + ' · ' + group.name}
+                  disabled={!compat.ok}
+                  onClick={() => remove('group', group.id)}
+                >
+                  <Trash2 />
+                </button>
+              )}
+              <button
+                onClick={() => setModelGroup(modelGroup === group.id ? null : group.id)}
+                disabled={group.archived}
+              >
                 <Plus />
                 {t('dashboard.newModel')}
               </button>
@@ -403,7 +516,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             {group.models.length ? (
               <div className="project-cards">
                 {group.models.map((p) => (
-                  <div className="model-entry" key={p.id}>
+                  <div className={'model-entry' + (p.archived ? ' archived' : '')} key={p.id}>
                     <button className="project-card" onClick={() => go('workspace/' + p.revision)}>
                       <span className="project-symbol">
                         <Layers3 />
@@ -411,7 +524,8 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       <span>
                         <strong>{p.name}</strong>
                         <small>
-                          {p.dimension} Â· {t('dashboard.revision', { number: p.number })} Â·{' '}
+                          {p.archived ? t('dashboard.archivedBadge') + ' · ' : ''}
+                          {p.dimension} · {t('dashboard.revision', { number: p.number })} ·{' '}
                           {t('dashboard.revisionCount', { count: p.revisions })}
                         </small>
                       </span>
@@ -429,10 +543,34 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       <button
                         onClick={() => duplicateModel(p.id)}
                         title={t('dashboard.duplicateModel')}
-                        aria-label={t('dashboard.duplicateModel') + ' Â· ' + p.name}
+                        aria-label={t('dashboard.duplicateModel') + ' · ' + p.name}
                       >
                         <Copy />
                       </button>
+                      <button
+                        type="button"
+                        title={p.archived ? t('dashboard.restore') : t('dashboard.archive')}
+                        aria-label={
+                          (p.archived ? t('dashboard.restore') : t('dashboard.archive')) +
+                          ' · ' +
+                          p.name
+                        }
+                        disabled={!compat.ok}
+                        onClick={() => setArchived('model', p.id, !p.archived)}
+                      >
+                        {p.archived ? <ArchiveRestore /> : <Archive />}
+                      </button>
+                      {p.archived && (
+                        <button
+                          type="button"
+                          title={t('dashboard.deleteModel')}
+                          aria-label={t('dashboard.deleteModel') + ' · ' + p.name}
+                          disabled={!compat.ok}
+                          onClick={() => remove('model', p.id)}
+                        >
+                          <Trash2 />
+                        </button>
+                      )}
                     </div>
                     {openRevisions === p.id && (
                       <div className="revision-list">
@@ -525,11 +663,11 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                     <td>
                       <strong>{r.name}</strong>
                       <small>
-                        {(r.group_name ? r.group_name + ' Â· ' : '') + r.project_name} Â·{' '}
-                        {r.dimension} Â· Rev {r.number}
+                        {(r.group_name ? r.group_name + ' · ' : '') + r.project_name} ·{' '}
+                        {r.dimension} · Rev {r.number}
                       </small>
                       <small className="run-identity">
-                        {t('dashboard.runId')} {r.id.slice(0, 8)} Â· {formatDateTime(r.created)}
+                        {t('dashboard.runId')} {r.id.slice(0, 8)} · {formatDateTime(r.created)}
                       </small>
                       <small className="mode-label">
                         {r.mode === 'DEMO' ? t('demo.notice') : r.mode}
@@ -540,7 +678,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       <small>
                         {labelFrom(t, 'phase', r.step || r.phase)}
                         {r.increment != null
-                          ? ' Â· ' + t('dashboard.increment', { value: r.increment })
+                          ? ' · ' + t('dashboard.increment', { value: r.increment })
                           : ''}
                       </small>
                     </td>

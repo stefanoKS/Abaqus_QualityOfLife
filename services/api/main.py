@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -17,16 +17,26 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from integrations import dwg, drawings
 from packages import engineering
 from packages.engineering.model import Project
-from services import readiness, release, store
+from services import activity, material_library, readiness, release, store
 from .contracts import (
     Build,
     Deck,
+    DeleteConfirm,
+    DeletionInfo,
+    DeletionResult,
     DuplicateModel,
     Fixture,
     FixtureInfo,
     GroupCreated,
     GroupSummary,
     Job,
+    LibraryCreate,
+    LibraryDetail,
+    LibraryDuplicate,
+    LibrarySummary,
+    LibraryUpdate,
+    MaterialImportRequest,
+    MaterialImportResult,
     NewGroup,
     NewProject,
     NewProjectGroup,
@@ -101,6 +111,14 @@ GIT = _git_head()
 def revision_payload(row):
     """Attach the mesh-compatibility digest so the browser can decide mesh reuse."""
     return {**row, "mesh_compat": engineering.mesh_compat(Project.model_validate(row["setup"]))}
+
+
+def assert_editable(pid):
+    """Archived models/groups stay readable but cannot change or queue work."""
+    if store.project_locked(str(pid)):
+        raise store.Conflict(
+            "This model is archived. Restore it before changing its setup or starting new work."
+        )
 
 
 def mesh_artifact(jid):
@@ -231,9 +249,81 @@ def capabilities():
     return result
 
 
+@app.get("/api/materials", response_model=list[LibrarySummary])
+def materials(query: str = "", include_archived: bool = False):
+    """Global material library, with immutable version history per material."""
+    return material_library.list_materials(query, include_archived)
+
+
+@app.post("/api/materials", response_model=LibraryDetail, status_code=201)
+def create_material(body: LibraryCreate):
+    body.card.checked(body.name)
+    return material_library.create(
+        body.name, body.card.model_dump(mode="json"), body.note
+    )
+
+
+@app.post("/api/materials/import", response_model=list[MaterialImportResult])
+def import_materials(body: MaterialImportRequest):
+    """Explicitly import selected model-local cards; never merge by name."""
+    return material_library.import_from_revision(body.revision, body.material_ids)
+
+
+@app.get("/api/materials/{mid}", response_model=LibraryDetail)
+def material(mid: str):
+    return material_library.get(mid)
+
+
+@app.put("/api/materials/{mid}", response_model=LibraryDetail)
+def update_material(mid: str, body: LibraryUpdate):
+    if body.card is not None:
+        body.card.checked(body.name or "Library material")
+    return material_library.update(
+        mid,
+        body.name,
+        body.card.model_dump(mode="json") if body.card is not None else None,
+        body.note,
+    )
+
+
+@app.post("/api/materials/{mid}/duplicate", response_model=LibraryDetail, status_code=201)
+def duplicate_material(mid: str, body: LibraryDuplicate = LibraryDuplicate()):
+    return material_library.duplicate(mid, body.name)
+
+
+@app.post("/api/materials/{mid}/archive", response_model=LibraryDetail)
+def archive_material(mid: str):
+    return material_library.set_archived(mid, True)
+
+
+@app.post("/api/materials/{mid}/restore", response_model=LibraryDetail)
+def restore_material(mid: str):
+    return material_library.set_archived(mid, False)
+
+
 @app.get("/api/groups", response_model=list[GroupSummary])
-def groups():
-    return store.groups()
+def groups(include_archived: bool = False):
+    return store.groups(include_archived)
+
+
+@app.post("/api/groups/{gid}/archive", response_model=GroupSummary)
+def archive_group(gid: UUID):
+    return store.set_group_archived(gid, True)
+
+
+@app.post("/api/groups/{gid}/restore", response_model=GroupSummary)
+def restore_group(gid: UUID):
+    return store.set_group_archived(gid, False)
+
+
+@app.get("/api/groups/{gid}/deletion-info", response_model=DeletionInfo)
+def group_deletion_info(gid: UUID):
+    return store.group_deletion_info(gid)
+
+
+@app.post("/api/groups/{gid}/delete", response_model=DeletionResult)
+def delete_group(gid: UUID, body: DeleteConfirm = DeleteConfirm()):
+    return store.purge_group(gid, body.confirm)
 
 
 @app.post("/api/groups", response_model=GroupSummary, status_code=201)
@@ -242,8 +332,28 @@ def create_group(body: NewGroup):
 
 
 @app.get("/api/projects", response_model=list[Summary])
-def projects():
-    return store.projects()
+def projects(include_archived: bool = False):
+    return store.projects(include_archived)
+
+
+@app.post("/api/projects/{pid}/archive", response_model=Summary)
+def archive_model(pid: UUID):
+    return store.set_project_archived(pid, True)
+
+
+@app.post("/api/projects/{pid}/restore", response_model=Summary)
+def restore_model(pid: UUID):
+    return store.set_project_archived(pid, False)
+
+
+@app.get("/api/projects/{pid}/deletion-info", response_model=DeletionInfo)
+def model_deletion_info(pid: UUID):
+    return store.project_deletion_info(pid)
+
+
+@app.post("/api/projects/{pid}/delete", response_model=DeletionResult)
+def delete_model(pid: UUID, body: DeleteConfirm = DeleteConfirm()):
+    return store.purge_project(pid, body.confirm)
 
 
 @app.get("/api/projects/{pid}/revisions", response_model=list[RevisionSummary])
@@ -269,13 +379,15 @@ def duplicate_model(pid: UUID, body: DuplicateModel = DuplicateModel()):
 
 
 @app.get("/api/jobs")
-def job_list():
+def job_list(response: Response):
     """Lightweight activity list for the launcher and polling.
 
     Deliberately omits manifests, fixture node lists and logs: the startup check
     only needs to know whether anything is still owned, and dashboard lists use
-    the paginated detail endpoints on demand.
+    the paginated detail endpoints on demand. The coverage header is explicit so
+    an older API's empty list can never be mistaken for "nothing is running".
     """
+    response.headers["X-Abaqus-QOL-Jobs"] = "all-modes-v1"
     keys = (
         "id",
         "project",
@@ -287,8 +399,20 @@ def job_list():
         "solver",
         "extraction",
         "created",
+        "started",
+        "ended",
+        "owner",
+        "heartbeat",
+        "pid",
+        "process_started",
+        "cancelled",
     )
-    return [{key: job.get(key) for key in keys} for job in store.jobs()]
+    result = []
+    for job in store.jobs(store.ALL_MODES):
+        row = {key: job.get(key) for key in keys}
+        row["activity"] = activity.classify(job)
+        result.append(row)
+    return result
 
 
 @app.post("/api/project-groups", response_model=GroupCreated, status_code=201)
@@ -318,6 +442,8 @@ def create_project_group(body: NewProjectGroup):
 def create(body: NewProject):
     if body.group and not store.group_exists(str(body.group)):
         raise KeyError("Project group not found")
+    if body.group and store.group_archived(str(body.group)):
+        raise store.Conflict("This project is archived. Restore it before adding a model.")
     # Creating a model never invents geometry. ``example`` is the only path to the
     # public synthetic section, and it is an explicit user choice.
     setup = engineering.synthetic(body.name) if body.example else engineering.empty(body.name)
@@ -357,6 +483,7 @@ def topology(setup):
 
 @app.put("/api/projects/{pid}", response_model=Revision)
 def save(pid: UUID, body: Save):
+    assert_editable(pid)
     previous = store.revision(body.base)
     setup = body.setup.model_dump(mode="json")
     if topology(setup) != topology(previous["setup"]):
@@ -378,6 +505,7 @@ def save(pid: UUID, body: Save):
 def drawing(
     pid: UUID, base: UUID = Form(...), units: str = Form(...), file: UploadFile = File(...)
 ):
+    assert_editable(pid)
     previous = store.revision(base)
     if previous["project"] != str(pid):
         raise store.Conflict("Choose a revision from this project.")
@@ -443,7 +571,9 @@ def display(body: Project):
 
 @app.post("/api/meshes", response_model=Job)
 def create_mesh(body: Build):
-    setup = Project.model_validate(store.revision(body.revision)["setup"])
+    revision = store.revision(body.revision)
+    assert_editable(revision["project"])
+    setup = Project.model_validate(revision["setup"])
     if setup.is_empty:
         raise ValueError(
             "This model has no drawing yet. Import a DXF or DWG at Import, assign the "
@@ -474,17 +604,15 @@ def save_fixture(jid: UUID, body: Fixture):
     row = store.job(jid)
     if row["mode"] != "MESH" or row["status"] != "Completed" or not row["mesh_digest"]:
         raise store.Conflict("Generate the mesh before reviewing its fixed nodes.")
-    current = store.fixture(jid)
-    current_hash = current["hash"] if current else ""
-    if body.expected_hash is not None and body.expected_hash != current_hash:
-        raise store.Conflict(
-            "The fixed nodes were changed by another tab or session. Reopen Mounting to "
-            f"see the current selection ({current['count'] if current else 0} nodes), then "
-            "save again."
-        )
     labels = engineering.fixture.normalize(body.labels, mesh_artifact(jid))
-    return store.set_fixture(
-        jid, row["mesh_digest"], engineering.fixture.labels_hash(labels), labels
+    # Compare and update under one SQLite write transaction. The pre-read above
+    # is only a fast rejection; it is never the concurrency decision.
+    return store.set_fixture_checked(
+        jid,
+        row["mesh_digest"],
+        engineering.fixture.labels_hash(labels),
+        labels,
+        body.expected_hash,
     )
 
 
@@ -525,7 +653,9 @@ def resolve_legacy_fixture(jid: UUID, revision: UUID | None = None):
 
 @app.post("/api/decks", response_model=Job)
 def create_deck(body: Deck):
-    setup = Project.model_validate(store.revision(body.revision)["setup"])
+    revision = store.revision(body.revision)
+    assert_editable(revision["project"])
+    setup = Project.model_validate(revision["setup"])
     if setup.is_empty:
         raise ValueError(
             "This model has no drawing yet. Prepare the input deck only after importing a "
@@ -558,7 +688,9 @@ def submit(body: Submit):
             "DEMO execution has been withdrawn for new submissions. Historical DEMO runs "
             "remain readable. Select ABAQUS to analyse the reviewed input deck."
         )
-    setup = Project.model_validate(store.revision(body.revision)["setup"])
+    revision = store.revision(body.revision)
+    assert_editable(revision["project"])
+    setup = Project.model_validate(revision["setup"])
     if setup.is_empty:
         raise ValueError(
             "This model has no drawing yet. Import a drawing and prepare an input deck "

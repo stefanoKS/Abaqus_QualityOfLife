@@ -9,9 +9,15 @@ Run from the repository root. Every command must exit non-zero on failure.
 | Contract regeneration (inspect the diff) | `.\.venv\Scripts\python scripts\schema.py` |
 | Python unit and integration tests | `.\.venv\Scripts\python -m pytest -q` |
 | Translation completeness | `npm --prefix apps/web run test:i18n` |
+| Source encoding quality | `npm --prefix apps/web run test:encoding` |
 | TypeScript contract check | `npm --prefix apps/web run typecheck` |
-| Production build (publishes an immutable release) | `npm --prefix apps/web run build` |
+| Production build (verified, immutable release) | `npm --prefix apps/web run build` |
 | Browser end-to-end tests | `npm --prefix apps/web run test:browser` |
+
+The build stages the whole bundle, verifies every referenced file, hashes the complete file manifest
+and only then writes `dist/release.json`. A failed build exits non-zero and leaves the previous
+manifest untouched. `/api/health` reports `releaseValid`; the launcher refuses to serve an incomplete
+release. Confirm `releaseValid: true` and that `releaseFiles` matches the published directory.
 
 Run the build and browser gates from an isolated implementation root, not from a checkout whose
 `dist/` or data directory belongs to a running instance. A build publishes
@@ -47,7 +53,11 @@ locked by `apps/web/package-lock.json` and installed with `npm ci`.
    that an unrelated process on the port produces the "used by another application" message. Verify a
    custom port (`--port N`) starts its own instance with its own `SEAL_DATA` and does not join the
    default instance, and that a second port on the same data directory is refused with the owner's PID.
-   Verify `--takeover` refuses while a job is active or when the job list cannot be read.
+   Verify a second worker on the same directory exits non-zero. Verify `--takeover` refuses while any
+   IMPORT/MESH/DECK/ABAQUS job is queued, preparing, waiting for a license, running, cancelling,
+   extracting, disconnected or termination-unconfirmed, and when the job list cannot be read.
+   Verify a reconciled idle instance can be taken over, and that killing the launcher leaves the
+   worker lock held so a relaunch fails closed until the worker exits.
 5. Verify release pinning: start instance A, rebuild from another root (or with a changed source) to
    publish release B, refresh A, and confirm A still serves its original entry asset and reports its
    original `release`/`frontend`. Start B with separate data and confirm it serves its own pair.
@@ -72,16 +82,43 @@ locked by `apps/web/package-lock.json` and installed with `npm ci`.
    **Save fixed nodes**, **Prepare input deck**, then submit. Confirm Review performs no mesh
    submission. Change panel travel and confirm the mesh and nodes survive; change the mesh size and
    confirm regeneration asks for a deliberate Regenerate/Cancel and the fixture must be reviewed again.
-13. Verify numeric and paste integrity: leave an invalid travel or mesh size in the field and confirm
+13. Verify viewport and component review: middle-button drag pans without page scroll while wheel
+    still zooms; no mesh hash appears in ordinary Mounting/Mesh/Review text; component rows show
+    name, role, inclusion, element type and count with an included total equal to the mesh total;
+    renaming a component persists through Save/reload, does not force a remesh, and Escape cancels.
+    Repeat in Japanese and English.
+14. Verify numeric and paste integrity: leave an invalid travel or mesh size in the field and confirm
     it stays visible, Save/Generate/Prepare/Submit and step navigation are refused, and Escape
     restores. Paste a hyperfoam table with one malformed middle row and confirm Apply is blocked, the
     saved card is unchanged on Cancel, and a corrected paste reaches the saved revision and deck.
-14. Replay a completed run: delay a frame, scrub out of order, pan and zoom, switch component and
+15. Replay a completed run: delay a frame, scrub out of order, pan and zoom, switch component and
     deformed/undeformed. Confirm the previous complete frame stays visible while loading, the camera
     does not reset, and each quantity's legend range is stable. Toggle Reverse X/Y in full view and
     after a deliberate zoom; confirm the visible axis limits mirror the data and reversing twice
     restores the interval.
-15. Do **not** claim engineering production readiness unless the physical validation gate has passed
+16. Verify archive/delete: archive a model and a project, confirm they disappear by default, appear
+    with **Show archived**, open read-only, and restore. Confirm a duplicate stays independent.
+    Queue work and confirm permanent deletion is refused with the active job named. Delete an archived
+    model with the typed confirmation and confirm its artifact directory is gone, a shared drawing used
+    by its duplicate remains, and library materials remain. Simulate an interrupted cleanup and
+    confirm the next startup finishes it without removing a live record.
+17. Verify the two-step template without a license: choose body-then-door in Motion, confirm the body
+    fields and missing-body rejection, mesh a model with one body and one door, and inspect the INP:
+    Body seating before Closing, body held in step 2, door held in step 1, both reference points with
+    U/RF history, WSFIX, two rigid bodies, and no `op=NEW`. Confirm the results step selector appears
+    only for a two-step result. **Do not mark this physically validated without a licensed run.**
+18. Verify diagnostics: while a fake or real job runs, the top card shows solver and extraction
+    separately, the current step/increment/simulated time, and a determinate bar only when a valid
+    fraction exists. Confirm 99% with running extraction and 100% only after extraction succeeds;
+    confirm license wait, stale heartbeat, unknown step and failure states, and that no ETA is shown.
+    For a two-step job, confirm the active step is highlighted.
+19. Verify the material library: create a card on the Materials page, edit it twice, confirm v1 is
+    unchanged and v2/v3 are readable; archive/restore; import model-local cards from two revisions and
+    confirm same-named cards are not merged; assign a library version in a model, adopt a newer
+    version, and confirm the mesh is reused, a new deck is required and old revisions/runs are
+    unchanged. Compare two hyperfoam versions and confirm only measured points are plotted with units
+    and version labels. Repeat in Japanese.
+20. Do **not** claim engineering production readiness unless the physical validation gate has passed
     with authorized licensed evidence.
 
 ## Optional licensed checks (never in public CI)

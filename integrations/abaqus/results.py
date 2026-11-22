@@ -2,45 +2,87 @@
 
 from pathlib import Path
 
-from .deck import exterior, fixed_nodes, mesh_parts, vertical_gap
+from .deck import _mesh_parts, exterior, fixed_nodes, mesh_parts, vertical_gap
 from .interchange import align_histories, finish, result_header, save_frame, write_json
 
 
-def _metadata(project, nodes, ws, panel, fixture=None):
+def _metadata(project, nodes, ws, panel, fixture=None, body=None):
     roles = {c.id: c.role for c in project.components}
     instance = {c: "PANEL-1" if role == "moving_panel" else "WS-1" for c, role in roles.items()}
+    if body is not None:
+        instance = {
+            c: (
+                "PANEL-1"
+                if role == "moving_panel"
+                else "BODY-1"
+                if role == "vehicle_body"
+                else "WS-1"
+            )
+            for c, role in roles.items()
+        }
     reference = max(n for e in panel for n in e["nodes"]) + 1
-    # The vertical closing template moves the panel down Y; the direction is
-    # normalized so the reported travel is a signed distance along it.
+    # The vertical template moves rigid profiles down Y; the direction is
+    # normalized so reported travel is a signed distance along it.
     direction = [0.0, -1.0]
-    return {
+
+    def label(component_id):
+        return next(
+            (
+                component.alias.strip() or component.name
+                for component in project.components
+                if component.id == component_id
+            ),
+            component_id,
+        )
+
+    closing = {
+        "panel": panel[0]["component"],
+        "panel_name": label(panel[0]["component"]),
+        "instance": "PANEL-1",
+        "reference_label": reference,
+        "direction": direction,
+        "distance_mm": abs(project.motion.travel),
+        "measure_from_step_start": True,
+        "steps": [{"name": "Closing", "role": "door"}],
+    }
+    steps = [
+        {
+            "name": "Closing",
+            "role": "door",
+            "instance": "PANEL-1",
+            "reference_label": reference,
+            "direction": direction,
+            "distance_mm": abs(project.motion.travel),
+            "travel_mm": project.motion.travel,
+            "duration_s": project.motion.duration,
+        }
+    ]
+    placement = {
+        "initial_offset_y_mm": project.motion.offset,
+        "initial_vertical_mesh_clearance_mm": vertical_gap(
+            nodes, exterior(ws), panel, project.motion.offset
+        ),
+        "prescribed_panel_travel_y_mm": project.motion.travel,
+    }
+    regions = {
+        "WS-1": {str(e["id"]): e["entity"] for e in ws},
+        "PANEL-1": {str(e["id"]): e["entity"] for e in panel},
+    }
+    result = {
         "version": 1,
         "units": project.units,
         "dimension": project.dimension,
         "thickness": project.analysis.thickness,
         "force_normalization": project.analysis.force_normalization,
         "requested": project.analysis.outputs,
-        "placement": {
-            "initial_offset_y_mm": project.motion.offset,
-            "initial_vertical_mesh_clearance_mm": vertical_gap(
-                nodes, exterior(ws), panel, project.motion.offset
-            ),
-            "prescribed_panel_travel_y_mm": project.motion.travel,
-        },
+        "placement": placement,
         "fixture": {
             "source": "cad-edge-selection" if fixture is None else "mesh-node-selection",
             "count": None if fixture is None else len(fixture),
             "nodes": None if fixture is None else list(fixture),
         },
-        "closing": {
-            "panel": panel[0]["component"],
-            "instance": "PANEL-1",
-            "reference_label": reference,
-            "direction": direction,
-            "distance_mm": abs(project.motion.travel),
-            "measure_from_step_start": True,
-            "steps": [{"name": "Closing", "role": "door"}],
-        },
+        "closing": closing,
+        "steps": steps,
         "sets": {
             "edges": {
                 e.id: f"{instance[e.component]}.EDGE_{i}" for i, e in enumerate(project.edges, 1)
@@ -54,17 +96,57 @@ def _metadata(project, nodes, ws, panel, fixture=None):
             "instance": "PANEL-1",
             "label": reference,
         },
-        "regions": {
-            name: {str(e["id"]): e["entity"] for e in group}
-            for name, group in (("WS-1", ws), ("PANEL-1", panel))
-        },
+        "regions": regions,
     }
+    if body is not None:
+        body_reference = max(n for e in body for n in e["nodes"]) + 1
+        body_component = body[0]["component"]
+        body_block = {
+            "panel": body_component,
+            "panel_name": label(body_component),
+            "instance": "BODY-1",
+            "reference_label": body_reference,
+            "direction": direction,
+            "distance_mm": abs(project.motion.body.travel),
+            "travel_mm": project.motion.body.travel,
+            "duration_s": project.motion.body.duration,
+            "measure_from_step_start": True,
+        }
+        placement.update(
+            {
+                "initial_body_offset_y_mm": project.motion.body.offset,
+                "initial_body_vertical_mesh_clearance_mm": vertical_gap(
+                    nodes, exterior(ws), body, project.motion.body.offset
+                ),
+                "prescribed_body_travel_y_mm": project.motion.body.travel,
+            }
+        )
+        steps = [
+            {
+                "name": "Body seating",
+                "role": "body",
+                "instance": "BODY-1",
+                "reference_label": body_reference,
+                "direction": direction,
+                "distance_mm": abs(project.motion.body.travel),
+                "travel_mm": project.motion.body.travel,
+                "duration_s": project.motion.body.duration,
+            },
+            steps[0],
+        ]
+        result["steps"] = steps
+        result["body"] = body_block
+        result["body_reference"] = {"instance": "BODY-1", "label": body_reference}
+        result["closing"]["steps"] = steps
+        regions["BODY-1"] = {str(e["id"]): e["entity"] for e in body}
+    return result
 
 
 def write_metadata(project, mesh, job_dir, fixture=None):
-    nodes, ws, panel = mesh_parts(project, mesh)
+    nodes, ws, panel, body = _mesh_parts(project, mesh)
     write_json(
-        Path(job_dir) / "result-metadata.json", _metadata(project, nodes, ws, panel, fixture)
+        Path(job_dir) / "result-metadata.json",
+        _metadata(project, nodes, ws, panel, fixture, body if body else None),
     )
 
 
@@ -76,6 +158,11 @@ def write_playback(project, mesh, job_dir, fixture=None, mode="DEMO", notice=Non
     ``notice`` then makes the manufactured provenance explicit. The library is
     never reachable through the HTTP API for a new submission.
     """
+    if project.analysis.mode == "body_then_door":
+        raise ValueError(
+            "Manufactured playback does not model body-then-door contact; "
+            "a licensed Abaqus run is required for this mode."
+        )
     nodes, ws, panel = mesh_parts(project, mesh)
     metadata = _metadata(project, nodes, ws, panel, fixture)
     instances = []

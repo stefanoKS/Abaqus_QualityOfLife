@@ -8,6 +8,11 @@ export type Summary = components['schemas']['Summary']
 export type Group = components['schemas']['GroupSummary']
 export type RevisionSummary = components['schemas']['RevisionSummary']
 export type FixtureInfo = components['schemas']['FixtureInfo']
+export type LibrarySummary = components['schemas']['LibrarySummary']
+export type LibraryDetail = components['schemas']['LibraryDetail']
+export type LibraryCard = components['schemas']['MaterialCard']
+export type MaterialImportResult = components['schemas']['MaterialImportResult']
+export type DeletionInfo = components['schemas']['DeletionInfo']
 
 export async function request<T>(
   path: string,

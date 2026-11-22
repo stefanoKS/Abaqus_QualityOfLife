@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build && node scripts/publish-release.mjs",
     "typecheck": "tsc --noEmit",
     "test:i18n": "node scripts/check-translations.mjs",
+    "test:encoding": "node scripts/check-encoding.mjs",
     "test:browser": "playwright test"
   },
   "dependencies": {

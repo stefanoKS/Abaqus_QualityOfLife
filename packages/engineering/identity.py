@@ -71,6 +71,14 @@ def mesh_inputs(project: Project):
             }
             for f in project.faces
         ],
+        # FE inclusion depends on the analysis mode. The key is omitted for the
+        # legacy door-only mode so every digest computed before this field
+        # existed stays valid and historical meshes remain reusable.
+        **(
+            {"analysis_mode": project.analysis.mode}
+            if project.analysis.mode != "door_only"
+            else {}
+        ),
         "components": [{"id": c.id, "role": c.role} for c in project.components],
         "mesh": {
             "size": project.mesh.size,

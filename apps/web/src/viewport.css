@@ -2,6 +2,7 @@
   position: relative;
   isolation: isolate;
   overflow: hidden;
+  overscroll-behavior: contain;
   display: block;
   flex: 1 1 auto;
   width: 100%;
@@ -19,6 +20,7 @@
 }
 .seal-vtk-host {
   touch-action: none;
+  overscroll-behavior: contain;
   outline: 0;
   user-select: none;
 }

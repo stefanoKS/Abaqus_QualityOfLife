@@ -1303,3 +1303,243 @@ input[type='color'] {
   font-size: var(--text-meta);
   font-variant-numeric: tabular-nums;
 }
+
+/* Component rename in the assembly tree. */
+.tree-rename {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.tree-rename input {
+  min-width: 0;
+  width: 100%;
+  padding: 4px 6px;
+}
+.tree-rename-open {
+  flex: none;
+}
+
+/* Structured components-in-mesh review. */
+.mesh-components {
+  display: grid;
+  gap: 8px;
+}
+.mesh-component {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.mesh-component header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mesh-component dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 12px;
+  margin: 8px 0 4px;
+}
+.mesh-component dt {
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+}
+.mesh-component dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.mesh-included-total {
+  margin: 2px 0 0;
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Global material library. */
+.library-grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 340px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+@media (max-width: 1080px) {
+  .library-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.library-list {
+  padding: 12px;
+}
+.library-list .search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.library-list .search input {
+  flex: 1;
+  min-width: 0;
+}
+.material-row-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.material-row-wrap .material-row {
+  flex: 1;
+  min-width: 0;
+}
+.material-row-wrap .compare-toggle {
+  flex: none;
+}
+.library-editor {
+  padding: 16px;
+}
+.library-editor-head {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.library-editor-head label {
+  flex: 1;
+}
+.version-list,
+.usage-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.version-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+.version-list li .check {
+  flex: 1;
+}
+.import-panel {
+  margin-top: 14px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 10px;
+}
+.import-panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 4px;
+}
+.import-panel p {
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+  margin: 0 0 8px;
+}
+.import-panel select {
+  width: 100%;
+  margin-bottom: 6px;
+}
+.comparison-card {
+  margin-top: 16px;
+  padding: 16px;
+}
+.compare-plot {
+  width: 100%;
+  height: 320px;
+}
+
+/* Archive lifecycle. */
+.archive-toggle {
+  margin-right: 8px;
+  white-space: nowrap;
+  font-size: var(--text-meta);
+}
+.model-entry.archived .project-card {
+  opacity: 0.62;
+}
+
+/* Live run progress. */
+.run-progress {
+  margin-bottom: 14px;
+  padding: 14px 16px;
+}
+.progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.progress-head h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.progress-track {
+  position: relative;
+  height: 9px;
+  border-radius: 999px;
+  background: #e3eaec;
+  overflow: hidden;
+}
+.progress-track > span {
+  display: block;
+  height: 100%;
+  background: var(--color-primary, #197968);
+  transition: width 0.4s ease;
+}
+.progress-track.indeterminate {
+  background: repeating-linear-gradient(
+    90deg,
+    #e3eaec 0 18px,
+    #f4f8f9 18px 36px
+  );
+}
+.progress-caption {
+  margin: 6px 0;
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.progress-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+}
+.progress-steps li {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 5px 9px;
+  font-size: var(--text-meta);
+}
+.progress-steps li[data-state="active"] {
+  border-color: var(--color-primary, #197968);
+  background: var(--color-primary-soft, #e7f3f1);
+}
+.progress-steps li[data-state="complete"] strong {
+  color: #197968;
+}
+.progress-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 6px 14px;
+  margin: 8px 0;
+}
+.progress-facts dt {
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+}
+.progress-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}

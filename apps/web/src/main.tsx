@@ -1,8 +1,9 @@
-﻿import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Languages, LayoutDashboard, Monitor, PanelTop, X } from 'lucide-react'
+import { FlaskConical, Languages, LayoutDashboard, Monitor, PanelTop, X } from 'lucide-react'
 import logo from '../assets/logo.png'
 import Dashboard from './Dashboard'
+import MaterialsPage from './MaterialsPage'
 import Workspace from './Workspace'
 import { RunView } from './RunView'
 import { err, go, lastModel, rememberModel, request, type Revision, type Summary, type Job } from './api'
@@ -58,7 +59,7 @@ function App() {
       setRev(null)
       setJob(undefined)
       setError('')
-      if (['dashboard', 'diagnostics', 'results'].includes(view)) return
+      if (['dashboard', 'diagnostics', 'results', 'materials'].includes(view)) return
       let rid = id
       if (view === 'setup') {
         const j = await request<Job>('/api/jobs/' + id, 'GET', undefined, ac.signal)
@@ -76,7 +77,7 @@ function App() {
     }
     void open().catch((e) => {
       if (!ac.signal.aborted) {
-        setError(err(e) + (id ? ' Â· ' + id : ''))
+        setError(err(e) + (id ? ' · ' + id : ''))
       }
     })
     return () => ac.abort()
@@ -105,7 +106,7 @@ function App() {
         <div className="nav-separator" />
         <nav aria-label={t('nav.main')}>
           <button
-            className={!['dashboard', 'diagnostics', 'results'].includes(view) ? 'here' : ''}
+            className={!['dashboard', 'diagnostics', 'results', 'materials'].includes(view) ? 'here' : ''}
             onClick={workspace}
           >
             <PanelTop />
@@ -120,6 +121,10 @@ function App() {
             <LayoutDashboard />
             {t('nav.dashboard')}
           </button>
+          <button className={view === 'materials' ? 'here' : ''} onClick={() => go('materials')}>
+            <FlaskConical />
+            {t('nav.materials')}
+          </button>
         </nav>
         <span className="spacer" />
         <span className="local">
@@ -129,7 +134,9 @@ function App() {
         <LanguageButton />
       </header>
       <CompatibilityBanner />
-      {view === 'dashboard' ? (
+      {view === 'materials' ? (
+        <MaterialsPage notify={notify} />
+      ) : view === 'dashboard' ? (
         <Dashboard notify={notify} />
       ) : view === 'diagnostics' || view === 'results' ? (
         <RunView key={route} id={id} resultView={view === 'results'} notify={notify} />

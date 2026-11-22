@@ -76,6 +76,8 @@ function freshCard(materials: Material[], name: string): Material {
     young: 5,
     poisson: 0.49,
     test_data: [],
+    library_id: null,
+    library_version: null,
   }
 }
 
@@ -602,4 +604,4 @@ export function MaterialEditor({
   )
 }
 
-export { freshCard }
+export { freshCard, TestDataTable }
