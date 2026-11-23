@@ -60,10 +60,18 @@ test('Import is immediate, records the unit basis and survives failures', async 
   )
   await expect(page.getByTestId('import-unit-basis')).not.toContainText('confirmed')
 
-  // An inches drawing is rejected by name and never replaces the saved drawing.
+  // An inches drawing is converted once and recorded; the saved geometry is in mm.
   await page.locator('input[type=file]').setInputFiles(INCHES)
-  await expect(page.locator('.toast')).toContainText('inches', { timeout: 60000 })
-  await expect(page.locator('.subtitle')).toContainText('unitless.dxf')
+  await expect(page.locator('.subtitle')).toContainText('inches.dxf', { timeout: 60000 })
+  const inchesRevision: Revision = await (
+    await page.request.get('/api/revisions/' + page.url().split('/').pop())
+  ).json()
+  expect(inchesRevision.setup.source.unit_basis).toBe('converted_to_mm')
+  expect(inchesRevision.setup.source.unit_factor).toBeCloseTo(25.4)
+  expect(inchesRevision.setup.source.unit_declaration).toBe('inches')
+  await openImport(page, inchesRevision.id)
+  await expect(page.getByTestId('import-unit-basis')).toContainText('converted')
+  await expect(page.getByTestId('import-unit-basis')).toContainText('25.4')
 
   // A corrupt file fails as a job with a readable error; the drawing survives.
   const scratch = mkdtempSync(join(tmpdir(), 'units-browser-'))
@@ -71,7 +79,7 @@ test('Import is immediate, records the unit basis and survives failures', async 
   writeFileSync(broken, 'not a dxf')
   await page.locator('input[type=file]').setInputFiles(broken)
   await expect(page.locator('.toast')).toContainText('DXF', { timeout: 60000 })
-  await expect(page.locator('.subtitle')).toContainText('unitless.dxf')
+  await expect(page.locator('.subtitle')).toContainText('inches.dxf')
 
   // The imported revision is bound to this model only.
   const other: Revision = await (
@@ -79,8 +87,8 @@ test('Import is immediate, records the unit basis and survives failures', async 
   ).json()
   await openImport(page, other.id)
   await expect(page.getByTestId('no-drawing')).toBeVisible()
-  await openImport(page, imported.id)
-  await expect(page.locator('.subtitle')).toContainText('unitless.dxf')
+  await openImport(page, inchesRevision.id)
+  await expect(page.locator('.subtitle')).toContainText('inches.dxf')
 })
 
 test('a declared-millimetre drawing imports directly', async ({ page, request }) => {

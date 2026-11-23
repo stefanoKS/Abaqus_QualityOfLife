@@ -31,18 +31,17 @@ async function completedRun(
 
 async function exportCsv(page: import('@playwright/test').Page) {
   const pending = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'Export displayed curve' }).click()
+  await page.getByRole('button', { name: 'Export displayed curve (2 rows)' }).click()
   const file = await pending
   const path = await file.path()
   expect(path).toBeTruthy()
-  return readFileSync(path!, 'utf8')
+  return { csv: readFileSync(path!, 'utf8'), name: file.suggestedFilename() }
 }
 
 function rows(csv: string) {
   return csv
     .split(/\r?\n/)
-    .filter((line) => line && !line.startsWith('#'))
-    .slice(1)
+    .filter((line) => line.length > 0)
     .map((line) => line.split(','))
 }
 
@@ -61,32 +60,37 @@ test('door response is projected, sign-reversible and exported as displayed', as
   // The closing direction is stated instead of being implied by an axis name.
   await expect(page.locator('.property-body')).toContainText('0.000, -1.000')
 
-  const plain = await exportCsv(page)
-  expect(plain).toContain('# provenance,ABAQUS solver')
-  expect(plain).toContain('# x_sign,1')
-  expect(plain).toContain('# y_sign,1')
-  expect(plain).toContain('# closing_step,Closing')
+  const { csv: plain, name: plainName } = await exportCsv(page)
+  expect(plainName).toMatch(/^door-curve-.+-closing-total-W100mm\.csv$/)
+  // Exactly two numeric rows and one column per aligned sample: no preamble,
+  // header, index or time column.
+  expect(plain.startsWith('#')).toBe(false)
+  expect(plain).not.toContain('time_s')
   const first = rows(plain)
-  // Travel along the closing direction is positive; the required closing force
-  // is positive too (Abaqus reports RF2 < 0 while the seal resists).
+  expect(first).toHaveLength(2)
+  expect(first[0].length).toBe(first[1].length)
+  expect(first[0].length).toBeGreaterThan(2)
+  // Row 1: step-relative displacement magnitude (starts at zero, grows).
   expect(Number(first[0][0])).toBeCloseTo(0, 6)
-  expect(Number(first.at(-1)![0])).toBeGreaterThan(0)
-  expect(Number(first.at(-1)![1])).toBeGreaterThan(0)
-  // Raw signed global components remain available in the same export.
-  expect(Number(first.at(-1)![5])).toBeLessThan(0)
-  expect(Number(first.at(-1)![7])).toBeLessThan(0)
+  expect(Number(first[0].at(-1))).toBeGreaterThan(0)
+  // Row 2: signed projected force in the selected total basis (100 mm width).
+  expect(Number(first[1][0])).toBeCloseTo(0, 6)
+  expect(Number(first[1].at(-1))).toBeGreaterThan(0)
+  expect(
+    first.flat().every((value) => value === '' || Number.isFinite(Number(value))),
+  ).toBeTruthy()
+  // The basis is stated next to the button, and in the filename.
+  await expect(page.getByTestId('export-basis')).toContainText('W = 100 mm')
 
-  await page.getByLabel('Reverse X sign').check()
   await page.getByLabel('Reverse Y sign').check()
-  const flipped = await exportCsv(page)
-  expect(flipped).toContain('# x_sign,-1')
-  expect(flipped).toContain('# y_sign,-1')
+  const { csv: flipped, name: flippedName } = await exportCsv(page)
+  expect(flippedName).toContain('-force-flipped')
   const mirrored = rows(flipped)
-  expect(Number(mirrored.at(-1)![0])).toBeCloseTo(-Number(first.at(-1)![0]), 6)
-  expect(Number(mirrored.at(-1)![1])).toBeCloseTo(-Number(first.at(-1)![1]), 6)
-  // The raw components are untouched by the display transformation.
-  expect(mirrored.at(-1)![6]).toBe(first.at(-1)![6])
-  expect(mirrored.at(-1)![8]).toBe(first.at(-1)![8])
+  expect(mirrored).toHaveLength(2)
+  // Magnitudes stay nonnegative; the displayed force matches the flipped sign.
+  expect(Number(mirrored[0].at(-1))).toBeCloseTo(Number(first[0].at(-1)), 6)
+  expect(Number(mirrored[1].at(-1))).toBeCloseTo(-Number(first[1].at(-1)), 6)
+  await expect(page.getByTestId('export-basis')).toContainText('displayed force flipped')
 
   // The raw artifact keeps its original signed values regardless of display.
   const raw = await (await request.get('/api/jobs/' + run.id + '/artifacts/history.csv')).text()
@@ -95,6 +99,8 @@ test('door response is projected, sign-reversible and exported as displayed', as
 
   // A later model edit must not disturb reopening this historical run.
   const edited = structuredClone(revision.setup)
+  edited.motion.stroke = 4
+  edited.motion.angle = -90
   edited.motion.travel = -4
   const saved = await request.put('/api/projects/' + revision.project, {
     data: { base: revision.id, setup: edited },

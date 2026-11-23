@@ -62,6 +62,10 @@ interface Index {
   instances: ResultInstance[]
   unavailable: string[]
   thickness: number
+  thickness_mm?: number
+  reporting_width_mm?: number
+  reporting_width_basis?: string
+  force_basis?: string
   averaging?: string
   force_normalization?: 'total' | 'per_mm'
   closing?: Closing | null
@@ -118,6 +122,31 @@ function displayedCurve(history: HistoryRow[], reverseX: boolean, reverseY: bool
     x: history.map((row) => (reverseX ? -row.displacement : row.displacement)),
     y: history.map((row) => (reverseY ? -row.force : row.force)),
   }
+}
+
+/**
+ * Gate D export: exactly two numeric rows, one column per aligned sample, in
+ * the selected step. Row 1 is the step-relative displacement magnitude from the
+ * measured U1/U2, row 2 the signed projected force in the selected basis.
+ * Missing measurements stay empty cells; a measured zero stays `0`.
+ */
+function twoRowExport(rows: HistoryRow[], reverseY: boolean) {
+  const sorted = [...rows].sort((a, b) => a.time - b.time)
+  const number = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value)
+  const firstU1 = sorted.find((row) => number(row.u1))?.u1 as number | undefined
+  const firstU2 = sorted.find((row) => number(row.u2))?.u2 as number | undefined
+  const magnitudes = sorted.map((row) => {
+    if (!number(row.u1) || !number(row.u2) || firstU1 === undefined || firstU2 === undefined)
+      return ''
+    return String(Number(Math.hypot(row.u1 - firstU1, row.u2 - firstU2).toPrecision(12)))
+  })
+  const forces = sorted.map((row) => {
+    if (!number(row.force)) return ''
+    const value = reverseY ? -row.force : row.force
+    return String(Number(value.toPrecision(12)))
+  })
+  return { magnitudes, forces, count: sorted.length }
 }
 
 function sourceLog(job: Job) {
@@ -202,7 +231,7 @@ export function RunView({
     useState<Record<RangeKind, { min: number; max: number }>>(DEFAULT_RANGE)
   const [loop, setLoop] = useState(true)
   // Independent display toggles. They never touch the solver artifacts.
-  const [edges, setEdges] = useState(false)
+  const [edges, setEdges] = useState(true)
   const [markers, setMarkers] = useState(false)
   const [deformationScale, setDeformationScale] = useState(1)
   const [scaleDraft, setScaleDraft] = useState('1')
@@ -292,10 +321,49 @@ export function RunView({
   // Only the newest request may commit. The last complete frame stays on screen
   // while the next one loads, so playback never blanks the viewport.
   const frameRequest = useRef(0)
+  const generation = useRef(0)
+  const deadline = useRef(0)
+  const inflight = useRef(new Map<string, Promise<Frame>>())
+  const CACHE_LIMIT = 24
+  const READ_AHEAD = 4
+  const CADENCE_MS = 220
+  const loadFrame = useCallback(
+    (file: string): Promise<Frame> => {
+      const cached = frameCache.current.get(file)
+      if (cached) {
+        // Refresh LRU position: replaying a nearby frame stays cheap.
+        frameCache.current.delete(file)
+        frameCache.current.set(file, cached)
+        return Promise.resolve(cached)
+      }
+      const queued = inflight.current.get(file)
+      if (queued) return queued
+      const load = request<Frame>(artifact(id, file), 'GET')
+        .then((loaded) => {
+          frameCache.current.set(file, loaded)
+          while (frameCache.current.size > CACHE_LIMIT) {
+            const oldest = frameCache.current.keys().next().value
+            if (!oldest) break
+            frameCache.current.delete(oldest)
+          }
+          inflight.current.delete(file)
+          return loaded
+        })
+        .catch((error) => {
+          inflight.current.delete(file)
+          throw error
+        })
+      inflight.current.set(file, load)
+      return load
+    },
+    [id],
+  )
   useEffect(() => {
     if (!index) return
-    const file = index.frames[n].file
-    const cached = frameCache.current.get(file)
+    const target = index.frames[n]
+    if (!target) return
+    const sequence = ++frameRequest.current
+    const cached = frameCache.current.get(target.file)
     if (cached) {
       setFrame(cached)
       setDisplayedFrame(n)
@@ -303,51 +371,66 @@ export function RunView({
       setPendingFrame(null)
       return
     }
-    const ac = new AbortController()
-    const sequence = ++frameRequest.current
     setPendingFrame(n)
-    request<Frame>(artifact(id, file), 'GET', undefined, ac.signal)
+    loadFrame(target.file)
       .then((loaded) => {
-        if (ac.signal.aborted || sequence !== frameRequest.current) return
-        // Bounded cache: replaying nearby frames must not grow without limit.
-        frameCache.current.set(file, loaded)
-        if (frameCache.current.size > 8) {
-          const oldest = frameCache.current.keys().next().value
-          if (oldest) frameCache.current.delete(oldest)
-        }
+        if (sequence !== frameRequest.current) return
         setFrame(loaded)
         setDisplayedFrame(n)
         setFrameError(null)
         setPendingFrame(null)
       })
-      .catch((e) => {
-        if (ac.signal.aborted || sequence !== frameRequest.current) return
+      .catch((error) => {
+        if (sequence !== frameRequest.current) return
         // Keep the last good frame visible and say which one failed.
         setFrameError(n)
         setPendingFrame(null)
         playing(false)
-        notify(err(e))
+        deadline.current = 0
+        notify(err(error))
       })
-    return () => ac.abort()
-  }, [index, n, id, notify])
-  // Advance only after the requested frame is actually displayed. At the final
-  // frame, hold it for one cadence and then wrap to the first frame when Loop is
-  // on; with Loop off playback stops exactly as before. A zero/one-frame run
-  // never starts a timer.
+  }, [index, n, loadFrame, notify])
+  // Bounded read-ahead: upcoming frames (including the loop boundary) are
+  // fetched while the current one is displayed. Requests are deduplicated and
+  // the cache never exceeds its limit, so scrubbing cannot runaway.
+  useEffect(() => {
+    if (!play || !index || displayedFrame === null) return
+    const total = index.frames.length
+    if (total <= 1) return
+    for (let step = 1; step <= READ_AHEAD; step++) {
+      const upcoming = index.frames[(displayedFrame + step) % total]
+      if (!upcoming) continue
+      void loadFrame(upcoming.file).catch(() => {
+        // Prefetch failures are silent; the request on demand reports them.
+      })
+    }
+  }, [play, index, displayedFrame, loadFrame])
+  // A new run or a deliberate seek restarts the cadence cleanly.
+  useEffect(() => {
+    generation.current += 1
+    deadline.current = 0
+  }, [id, n])
+  // Monotonic per-frame deadlines. The timer arms only once the requested frame
+  // is on screen, so a slow frame holds the last image and then resumes without
+  // a catch-up burst or duplicate advance.
   useEffect(() => {
     if (!play || !index || index.frames.length <= 1) return
     if (displayedFrame !== n) return
     const last = index.frames.length - 1
-    if (n >= last) {
-      if (!loop) {
-        playing(false)
-        return
-      }
-      const t2 = setTimeout(() => setN(0), 220)
-      return () => clearTimeout(t2)
+    if (n >= last && !loop) {
+      playing(false)
+      deadline.current = 0
+      return
     }
-    const t2 = setTimeout(() => setN((value) => Math.min(value + 1, last)), 220)
-    return () => clearTimeout(t2)
+    const now = performance.now()
+    if (!deadline.current) deadline.current = now + CADENCE_MS
+    const target = Math.max(now, deadline.current)
+    const wait = Math.max(0, target - now)
+    const timer = setTimeout(() => {
+      deadline.current = target + CADENCE_MS
+      setN(n >= last ? 0 : n + 1)
+    }, wait)
+    return () => clearTimeout(timer)
   }, [play, n, index, displayedFrame, loop])
   const hasLog = job?.manifest.includes(logFile)
   useEffect(() => {
@@ -569,63 +652,26 @@ export function RunView({
   )
   function exportCurve() {
     if (!index) return
-    const direction =
-      index.steps?.find((step) => (step.id ?? step.name) === curveStep)?.direction ??
-      index.closing?.direction ??
-      [0, -1]
-    const subject = stepRole === 'body' ? index.body : index.closing
-    const provenance = index.mode === 'DEMO' ? 'DEMO synthetic' : 'ABAQUS solver'
-    const header = [
-      ['# Abaqus QOL displayed ' + (stepRole === 'body' ? 'body' : 'door') + ' response'],
-      ['# panel', subject?.panel_name ?? subject?.panel ?? 'panel'],
-      ['# instance', subject?.instance ?? 'PANEL-1'],
-      ['# closing_step', curveStepName ?? closingStepName ?? 'all steps'],
-      ['# closing_step_id', curveStep ?? closingStepId ?? 'all steps'],
-      ['# direction', direction.join(' ')],
-      ['# length_unit', 'mm'],
-      ['# force_unit', index.force_unit],
-      ['# x_sign', reverseX ? '-1' : '1'],
-      ['# y_sign', reverseY ? '-1' : '1'],
-      ['# normalization', index.force_normalization ?? 'total'],
-      ['# provenance', provenance],
-      ['# note', 'Displayed values only. Raw signed components follow; artifacts are unchanged.'],
-    ].map((row) => row.map(csvCell).join(','))
-    header.push(
-      [
-        'displayed_displacement_mm',
-        'displayed_force_' + index.force_unit,
-        'time_s',
-        'step',
-        'raw_u1_mm',
-        'raw_u2_mm',
-        'raw_rf1_N',
-        'raw_rf2_N',
-        'normalization',
-        'provenance',
-      ].join(','),
-    )
-    historyRows.forEach((row, i) => {
-      header.push(
-        [
-          curve.x[i],
-          curve.y[i],
-          row.time,
-          row.step ?? '',
-          row.u1 ?? '',
-          row.u2 ?? '',
-          row.rf1 ?? '',
-          row.rf2 ?? '',
-          index.force_normalization ?? 'total',
-          provenance,
-        ]
-          .map(csvCell)
-          .join(','),
-      )
-    })
-    download(
-      (stepRole === 'body' ? 'body-response-' : 'door-response-') + id.slice(0, 8) + '.csv',
-      header.join('\r\n') + '\r\n',
-    )
+    const { magnitudes, forces, count } = twoRowExport(historyRows, reverseY)
+    if (!count) return
+    const role = stepRole === 'body' ? 'body' : 'door'
+    const width = index.reporting_width_mm ?? index.thickness
+    const basis = index.force_normalization === 'per_mm' ? 'per_mm' : 'total'
+    const step = curveStep ?? 'step'
+    const filename =
+      role +
+      '-curve-' +
+      id.slice(0, 8) +
+      '-' +
+      step.replace(/[^A-Za-z0-9_-]/g, '') +
+      '-' +
+      basis +
+      (basis === 'total' ? '-W' + String(Number(width)) + 'mm' : '') +
+      (reverseY ? '-force-flipped' : '') +
+      '.csv'
+    // Two numeric rows only: no preamble, header, index or time column. Adjacent
+    // UI and the filename carry panel, step, unit, width and sign.
+    download(filename, [magnitudes.join(','), forces.join(',')].join('\r\n') + '\r\n')
   }
   if (!job) return <main className="page">{t('run.opening')}</main>
   const disabled = index?.unavailable ?? []
@@ -792,19 +838,21 @@ export function RunView({
                 plain
               />
             </div>
-            <div className="playback">
+            <div className="playback" data-testid="playback">
               <button
+                className="play-toggle"
                 aria-label={play ? t('run.pausePlayback') : t('run.playFrames')}
                 onClick={() => {
+                  deadline.current = 0
                   if (!play && n === index.frames.length - 1) setN(0)
                   playing(!play)
                 }}
               >
                 {play ? <Pause /> : <Play />}
               </button>
-              <label>
-                {t('run.frame', { current: n + 1, total: index.frames.length })}
+              <div className="playback-body">
                 <input
+                  className="playback-slider"
                   aria-label={t('run.frame', { current: n + 1, total: index.frames.length })}
                   type="range"
                   min={0}
@@ -812,28 +860,40 @@ export function RunView({
                   value={n}
                   onChange={(e) => {
                     playing(false)
+                    deadline.current = 0
                     setN(+e.target.value)
                   }}
                 />
-              </label>
-              <span>{shownEntry ? shownEntry.time.toFixed(3) + ' s' : '—'}</span>
-              <label className="check loop-toggle">
-                <input
-                  type="checkbox"
-                  checked={loop}
-                  aria-label={t('run.loop')}
-                  onChange={(e) => setLoop(e.target.checked)}
-                />
-                {t('run.loop')}
-              </label>
-              {pendingFrame !== null && pendingFrame !== displayedFrame && (
-                <span className="loading-note">{t('run.loadingFrame')}</span>
-              )}
-              {frameError !== null && !play && (
-                <span className="error-text" role="alert">
-                  {t('run.frameFailed', { frame: frameError + 1 })}
-                </span>
-              )}
+                <div className="playback-status-row">
+                  <span className="frame-count" data-testid="frame-count">
+                    {n + 1} / {index.frames.length}
+                  </span>
+                  <span className="frame-time" data-testid="frame-time">
+                    {shownEntry ? shownEntry.time.toFixed(3) + ' s' : '—'}
+                  </span>
+                  <span
+                    className={pendingFrame !== null && pendingFrame !== displayedFrame ? 'loading-note' : 'playback-note'}
+                    role={frameError !== null ? 'alert' : 'status'}
+                    data-testid="playback-status"
+                    data-displayed={displayedFrame ?? ''}
+                  >
+                    {frameError !== null
+                      ? t('run.frameFailed', { frame: frameError + 1 })
+                      : pendingFrame !== null && pendingFrame !== displayedFrame
+                        ? t('run.loadingFrame')
+                        : t('run.frameReady')}
+                  </span>
+                  <label className="check loop-toggle">
+                    <input
+                      type="checkbox"
+                      checked={loop}
+                      aria-label={t('run.loop')}
+                      onChange={(e) => setLoop(e.target.checked)}
+                    />
+                    {t('run.loop')}
+                  </label>
+                </div>
+              </div>
             </div>
             <div className="result-controls" data-testid="result-controls">
               <fieldset>
@@ -1004,10 +1064,19 @@ export function RunView({
                       {t('run.reverseY')}
                     </label>
                   </fieldset>
-                  <button className="wide" onClick={exportCurve}>
+                  <button className="wide" onClick={exportCurve} data-testid="export-curve">
                     <Download />
-                    {t('run.exportCurve')}
+                    {t('run.exportCurveTwoRows')}
                   </button>
+                  <small data-testid="export-basis">
+                    {t('run.exportBasis', {
+                      panel: stepRole === 'body' ? 'BODY-1' : 'PANEL-1',
+                      step: curveStepName ?? 'Closing',
+                      unit: index.force_unit,
+                      width: String(index.reporting_width_mm ?? index.thickness),
+                      sign: reverseY ? t('run.exportFlipped') : t('run.exportAsMeasured'),
+                    })}
+                  </small>
                 </>
               ) : (
                 <p>{t('run.historyUnavailable')}</p>
@@ -1015,7 +1084,16 @@ export function RunView({
               <dl>
                 <div>
                   <dt>{t('run.thickness')}</dt>
-                  <dd>{index.thickness} mm</dd>
+                  <dd>{index.thickness_mm ?? index.thickness} mm</dd>
+                </div>
+                <div>
+                  <dt>{t('run.reportingWidth')}</dt>
+                  <dd>
+                    {(index.reporting_width_mm ?? index.thickness_mm ?? index.thickness)} mm
+                    {index.reporting_width_basis === 'legacy_thickness'
+                      ? ' · ' + t('run.legacyBasis')
+                      : ''}
+                  </dd>
                 </div>
                 <div>
                   <dt>{t('run.forceUnit')}</dt>

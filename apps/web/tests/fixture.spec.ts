@@ -222,8 +222,8 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Motion' })
     .click()
-  await page.getByLabel('Prescribed Y travel (mm)').fill('-5')
-  await page.getByLabel('Prescribed Y travel (mm)').press('Tab')
+  await page.getByLabel('Door panel stroke (mm)').fill('5')
+  await page.getByLabel('Door panel stroke (mm)').press('Tab')
   await page.getByRole('button', { name: 'Save revision' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   await page

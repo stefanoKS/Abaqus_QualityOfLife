@@ -40,9 +40,15 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
         doc = ezdxf.readfile(path)
     except (ezdxf.DXFError, OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Could not read drawing as DXF: {exc}") from exc
-    # The raw header distinguishes an explicit unitless drawing (0) from a
-    # missing header; decode_units rejects any other declared unit by name.
-    basis, unit_note = units_policy.interpret(doc.header.get("$INSUNITS", None), "DXF")
+    # One interpretation is decided before any geometry exists: a declared unit
+    # is converted exactly once to project millimetres, and the original
+    # declaration, factor and provenance are recorded beside the source digest.
+    unit = units_policy.interpret(
+        doc.header.get("$INSUNITS", None),
+        "DXF",
+        measurement=doc.header.get("$MEASUREMENT", None),
+    )
+    factor = unit.factor
     builder = Builder(prefix=digest[:10] + "_")
     seen_poly = set()
     unsupported = Counter()
@@ -60,7 +66,17 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
         component = "panel" if layer.upper() in PANEL_LAYERS else "section"
 
         def add(a, b, **kwargs):
-            return builder.edge(a, b, component, handle=handle, layer=layer, **kwargs)
+            label = f"{kind} {handle}"
+            if kwargs.get("center") is not None:
+                kwargs["center"] = unit.point(kwargs["center"], label + " arc center")
+            return builder.edge(
+                unit.point(a, label),
+                unit.point(b, label),
+                component,
+                handle=handle,
+                layer=layer,
+                **kwargs,
+            )
 
         def read_segment(segment):
             if segment.dxftype() == "LINE":
@@ -88,8 +104,10 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
             return [add(a, b, center=c, sweep=span / n) for a, b in zip(pts, pts[1:])]
 
         def read_spline(segment):
-            control = [tuple(p) for p in segment.control_points]
-            fits = [tuple(p) for p in segment.fit_points]
+            # Control/fit points are dimensioned; knots, weights and tangents are
+            # dimensionless. Scale the points once, never the parameterization.
+            control = [unit.point(tuple(p), f"SPLINE {handle} control point") for p in segment.control_points]
+            fits = [unit.point(tuple(p), f"SPLINE {handle} fit point") for p in segment.fit_points]
             if control:
                 fits = []  # the control polygon is authoritative when both are stored
             elif not fits:
@@ -151,12 +169,9 @@ def import_dxf(path: Path, name: str, units: str = "N-mm-s-tonne") -> Project:
     project, _report = assemble(
         builder,
         name,
-        Source(
-            kind="dxf",
-            filename=path.name,
-            digest=digest,
-            drawing_units=unit_note,
-            unit_basis=basis,
+        units_policy.record(
+            unit,
+            Source(kind="dxf", filename=path.name, digest=digest),
         ),
     )
     return project

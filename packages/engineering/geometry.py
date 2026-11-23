@@ -169,7 +169,7 @@ def synthetic(name="Hollow bulb section"):
         ),
     ]
     return Project(
-        schema_version=3,
+        schema_version=4,
         name=name,
         vertices=b.vertices,
         edges=b.edges,
@@ -211,7 +211,8 @@ def two_panel_section(name="Two-panel seating section", body_y=-1.0, body_travel
         )
     )
     project.analysis.mode = "body_then_door"
-    project.motion.body.travel = body_travel
+    project.motion.body.stroke = abs(body_travel)
+    project.motion.body.angle = -90 if body_travel < 0 else 90
     project.motion.body.duration = 1.0
     project.motion.duration = 1.3
     return Project.model_validate(project.model_dump(mode="json"))
@@ -224,7 +225,7 @@ def empty(name="Untitled model", dimension="2D"):
     invented: the absence of geometry is the state the engineer sees at Import.
     """
     return Project(
-        schema_version=3,
+        schema_version=4,
         name=name,
         dimension=dimension,
         formulation="plane_stress" if dimension == "2D" else "extrusion_preview",

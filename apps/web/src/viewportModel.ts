@@ -118,6 +118,32 @@ export interface ViewportProps {
   onBoxSelect?: (labels: string[]) => void
   /** Proposed partition line in model XY, drawn as an overlay only. */
   guide?: number[][] | null
+  /**
+   * Interactive section cut. The boundary is the selected face's eligible
+   * exterior polyline in model XY; points are always snapped onto it before
+   * they reach the server, which keeps its own 0.05 mm engineering tolerance.
+   */
+  cut?: ViewportCut | null
+  onCutPoint?: (point: [number, number]) => void
+  onCutHover?: (point: [number, number] | null) => void
+  onCutCancel?: () => void
+  /**
+   * Display-only translation of one component, keyed by component id, in model
+   * millimetres. Used by the prescribed-motion preview; it never mutates setup,
+   * saved geometry, results or a queued job.
+   */
+  previewTranslation?: Record<string, [number, number]>
+}
+
+export type ViewportCut = {
+  active: boolean
+  boundary: number[][]
+  start?: [number, number] | null
+  end?: [number, number] | null
+  phase?: 'start' | 'end' | 'previewed'
+  invalid?: boolean
+  /** Snapped candidate under the pointer, drawn as a rubber-band end. */
+  hover?: [number, number] | null
 }
 
 export interface Surface {
@@ -432,14 +458,15 @@ export function makeScene(props: ViewportProps): Scene {
       (a, b) => rank(a) - rank(b) || a.localeCompare(b)
     )) {
       const group = groups.get(name)!
+      const preview = props.previewTranslation?.[group.elements[0]?.component ?? ''] ?? [0, 0]
       surfaces.push(
         ...instanceSurfaces(
           {
             instance: group.instance,
             nodes: props.mesh.nodes.map((node) => [
               node.id,
-              node.xyz[0],
-              node.xyz[1] + group.offset,
+              node.xyz[0] + preview[0],
+              node.xyz[1] + group.offset + preview[1],
               node.xyz[2],
             ]),
             elements: group.elements.map((e) => ({ ...e, connectivity: e.nodes })),
@@ -454,8 +481,13 @@ export function makeScene(props: ViewportProps): Scene {
     if (props.hidden?.some((id) => id === p.component || id === p.entity))
       continue
     if (props.mesh && props.dimension === '2D' && p.kind === 'face') continue
+    const preview = props.previewTranslation?.[p.component] ?? [0, 0]
     surfaces.push({
       ...p,
+      points:
+        preview[0] || preview[1]
+          ? p.points.map((point) => [point[0] + preview[0], point[1] + preview[1], point[2]])
+          : p.points,
       // CAD identity is the drawing entity, not its array position.
       key: ['cad', p.kind, p.id, p.source ?? '', p.component].join('|'),
       cad: { entity: p.entity, component: p.component, source: p.source },

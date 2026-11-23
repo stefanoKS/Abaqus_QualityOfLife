@@ -1,6 +1,7 @@
 import type { Project, Job, FixtureInfo } from '../../api'
 import type { TranslationKey } from '../../i18n'
 import { STAGE_ORDER, type StageId } from './stages'
+import { stepPlan } from './stepSequence'
 
 /**
  * Workflow completion is derived from the saved engineering configuration, never
@@ -41,19 +42,35 @@ export function workflowStates(input: WorkflowInput): Record<StageId, StepStatus
     p.faces.filter((f) => !f.cavity).length > 0 &&
     p.faces.filter((f) => !f.cavity).every((f) => !!f.material)
   const fixtureReviewed = !!fixture && fixture.count > 0
-  const twoStep = p.analysis.mode === 'body_then_door'
+  // The role-derived plan is authoritative for a draft too; the server stores
+  // the same derived mode on save.
+  const twoStep = stepPlan(p).mode === 'body_then_door'
   // Zero travel is a valid hold: the panel keeps its assembled position for
   // the full positive step duration. Only the duration and a numeric travel
   // are required here; the deck writer checks a nonzero travel's direction
   // against the measured contact side.
+  const motion = p.schema_version >= 4
+    ? Number.isFinite(p.motion.stroke) &&
+      p.motion.stroke >= 0 &&
+      Number.isFinite(p.motion.angle) &&
+      Math.abs(p.motion.angle) <= 360 &&
+      (!twoStep ||
+        (Number.isFinite(p.motion.body?.stroke ?? 0) &&
+          (p.motion.body?.stroke ?? 0) >= 0 &&
+          Number.isFinite(p.motion.body?.angle ?? 0) &&
+          Math.abs(p.motion.body?.angle ?? 0) <= 360))
+    : Number.isFinite(p.motion.travel) && Number.isFinite(p.motion.body?.travel ?? 0)
   const motionValid =
-    Number.isFinite(p.motion.travel) &&
+    motion &&
     p.motion.duration > 0 &&
-    (!twoStep ||
-      (Number.isFinite(p.motion.body?.travel ?? 0) &&
-        (p.motion.body?.duration ?? 0) > 0))
+    (!twoStep || (p.motion.body?.duration ?? 0) > 0)
+  const inRange = (value: number) => Number.isFinite(value) && value >= 0 && value <= 5
   const contactValid =
-    Number.isFinite(p.contact.friction) && p.contact.friction >= 0 && p.contact.friction <= 5
+    p.contact.friction !== null
+      ? inRange(p.contact.friction)
+      : inRange(p.contact.door_seal) &&
+        inRange(p.contact.body_seal) &&
+        inRange(p.contact.seal_self)
   const solved = runs.some((r) => r.status === 'Completed')
 
   const geometryReady = allRolesAssigned && hasPanel

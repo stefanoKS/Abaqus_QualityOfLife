@@ -1,5 +1,82 @@
 # Engineering validation
 
+## Second UI and 2D engineering pass — licensed execution · 2026-11-24
+
+Three small disposable synthetic cases were run through the normal API -> worker -> Abaqus 2024 solver ->
+Abaqus-Python extractor path on this machine, under an isolated `SEAL_DATA`
+(`.local/phase2-licensed/data`). License checkout succeeded (5 tokens from the local Flexnet server).
+Artifacts were retained under `.local/phase2-licensed/`; they are not committed. No operator project,
+retained licensed run or original drawing was modified.
+
+**These are execution and extraction results, not physical validation.** All three runs completed with
+repeated contact penetration-error and cut-back warnings. They do not establish mesh/time sensitivity,
+contact onset accuracy or agreement with an independent reference.
+
+### Case 1 — vertical door-only reference (t = 1 mm, W = 100 mm, stroke 2.5 mm at −90°, 0.5 s)
+
+| Item | Value |
+|---|---|
+| Run | `b3859d0a-606f-4685-93bb-ba199e2d4d96` |
+| Solver / extraction | Succeeded / Succeeded (Completed) |
+| Mesh digest | `5a3bfaa14c54f97c3a9ffb3c345fcfda8e5ca8fe84b3cc9f8063151be0d68bad` |
+| Input deck SHA-256 | `59a7bb66c7360de7a8e062baa0b0f4fed66a219a825701b91a123dab7c1ec768` |
+| Frames / aligned samples | 26 / 26 |
+| Final measured RP | U1 = 0.0, U2 = −2.5 mm; RF1 = 0.0001033 N, RF2 = −0.0122732 N |
+| Projection | (RF·d) = +0.0122732 N at d = (0,−1) |
+| Displayed total | 0.0122732 × 100 / 1 = **1.2273 N** (matches `history.csv` `force`) |
+| Thickness / width / basis | 1.0 mm / 100.0 mm / `total_width` |
+| Contact | named pairs, door 0.7 / body 0.7 / self 0.7 |
+
+### Case 2 — oblique two-panel with distinct coefficients
+
+Door stroke 5.0 mm at −53.130102° → Δ = (3,−4) mm over 0.6 s; body stroke 2.0 mm at +90° → Δ = (0,2) mm
+over 0.4 s; μ door 0.17, body 0.43, self 0.81.
+
+| Item | Value |
+|---|---|
+| Run | `76b20d84-dc96-4d24-8059-85ed8a3942ad` |
+| Solver / extraction | Succeeded / Succeeded (Completed) |
+| Mesh digest | `c3a80d49512a03bce4a43e6e1bf59bf78b34362502993849db11aeadb6910282` |
+| Input deck SHA-256 | `83093f33d9b095665f41938b674242bc576c86217fb32e9c891c4d4ce75c32b4` |
+| Frames / aligned samples | 52 / 52 |
+| Body seating final | U = (0, 2.0) mm; RF2 = 1178.329 N; projected total 117832.9 N at W = 100 |
+| Closing final | U = (3.0, −4.0) mm; RF = (0.013030, −0.077473) N |
+| Closing projection | 0.6(0.013030) + (−0.8)(−0.077473) = 0.069796 N → **6.9796 N** total |
+| Metadata | two steps, directions (0,1) and (0.6,−0.8), Δ (0,2)/(3,−4); μ 0.17/0.43/0.81; W = 100; t = 1 |
+| Contact evidence | `.msg` reports contact points changing open→closed in both steps; the datacheck names the three surface interactions and property assignments |
+
+The body-seating reaction is very large (1178 N raw at 2 mm into the seal) and is reported as a numerical
+observation, not a validated physical magnitude.
+
+### Case 3 — bonded partition, two child materials, then solve
+
+Synthetic foot cut at x = 0 from (0,0) to (0,3.2); children assigned `base_rubber` and `bulb_foam`;
+default door closing 10 mm.
+
+| Item | Value |
+|---|---|
+| Run | `bbe7a44c-773d-4fe6-8973-6b8f90860caf` |
+| Solver / extraction | Succeeded / Succeeded (Completed) |
+| Input deck SHA-256 | `3ef78cf39268e83e4da348c7e0e2066eb12b91c41e6254c563386f409f6047b8` |
+| Children / areas | `p09bfe93481f1`, `p09bfe93481f2`; 28.8 / 28.8 mm² |
+| Sections in INP | 3 (`REGION_1`..`REGION_3`) with both child materials |
+| Interface | 9 shared mesh nodes between the two children; no internal seam side in `SEAL_EXTERIOR` |
+| Frames / samples | 51 / 51; final U2 = −10.0 mm, total force 1264.84 N at W = 100 |
+| Contact | door ↔ seal and seal ↔ self (no body); 0.7 each |
+
+### What these runs do not establish
+
+- **Self-contact participation — BLOCKED.** No measured pressure/slip evidence shows the seal touching
+  itself. The self pair is declared and accepted by the input processor, but no claim of occurrence is made.
+- **Numerical sensitivity — BLOCKED.** No mesh or time/ramp refinement was run.
+- **Physical correlation — BLOCKED.** No independent reference measurements or agreed tolerances exist.
+- **Convergence quality.** The message files show recurring “penetration error too large compared with the
+  displacement increment”, displacement-correction and cut-back warnings. A Completed status alone is not
+  convergence-quality evidence.
+- A first vertical attempt (`c7a7e2e9-…`) solved but failed extraction because the metadata version had been
+  bumped; that defect was fixed (version restored to 1 for the installed extractor) and the case re-ran.
+  The failed artifacts were kept under `.local/phase2-licensed/vertical-odb-failed-extraction/`.
+
 ## UI redesign, direct deletion and seal partitioning · 2026-11-23
 
 This slice changed the browser/API workflow and added a CAD material partition. **No licensed solver

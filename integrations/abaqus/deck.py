@@ -4,6 +4,9 @@ from collections import defaultdict
 from math import hypot, isfinite
 
 from packages.engineering import fixture as fixtures
+from shapely.affinity import translate
+
+from packages.engineering import motion as motion_policy
 
 ELEMENT_SIZES = {"CPS3": 3, "CPS4": 4, "CPS4R": 4, "R2D2": 2}
 
@@ -408,8 +411,209 @@ def vertical_gap(nodes, boundary, panel, offset):
     return clearance_report(nodes, boundary, panel, offset)["clearance"]
 
 
-def motion_assessment(nodes, boundary, elements, motion, role, instance, label):
+def _closest_on_segment(px, py, segment):
+    x0, y0, x1, y1 = segment
+    dx, dy = x1 - x0, y1 - y0
+    length2 = dx * dx + dy * dy
+    if length2 <= CLEARANCE_TOLERANCE**2:
+        return x0, y0
+    t = ((px - x0) * dx + (py - y0) * dy) / length2
+    t = max(0.0, min(1.0, t))
+    return x0 + t * dx, y0 + t * dy
+
+
+def _segment_distance(first, second):
+    """Minimum Euclidean distance between two segments and its closest pair."""
+    best = None
+    for px, py, other in (
+        (first[0], first[1], second),
+        (first[2], first[3], second),
+        (second[0], second[1], first),
+        (second[2], second[3], first),
+    ):
+        cx, cy = _closest_on_segment(px, py, other)
+        distance = hypot(px - cx, py - cy)
+        if best is None or distance < best[0]:
+            best = (distance, (px, py), (cx, cy))
+    return best
+
+
+def _polyline(segments):
+    """A multi-segment polyline for geometric distance and nearest-point work."""
+    from shapely.geometry import MultiLineString
+
+    return MultiLineString([[(s[0], s[1]), (s[2], s[3])] for s in segments])
+
+
+def _swept_contact(profile_geom, seal_geom, delta, samples=200):
+    """First fraction of the prescribed path that touches the seal, if any.
+
+    The translated profile's Euclidean distance to the seal surface is sampled
+    along the swept segment and bracketed to a tight tolerance. A path that
+    passes through the seal between two samples is still caught because the
+    sample spacing is far below any engineering feature in this template.
+    """
+    dx, dy = delta
+    if hypot(dx, dy) <= CLEARANCE_TOLERANCE:
+        return None, 0.0
+    if profile_geom.distance(seal_geom) <= CLEARANCE_TOLERANCE:
+        return 0.0, 0.0
+    previous_t, previous_d = 0.0, profile_geom.distance(seal_geom)
+    closest = (previous_d, 0.0)
+    for index in range(1, samples + 1):
+        t = index / samples
+        distance = translate(profile_geom, dx * t, dy * t).distance(seal_geom)
+        if distance < closest[0]:
+            closest = (distance, t)
+        if distance <= 1e-6:
+            low, high = previous_t, t
+            for _ in range(60):
+                middle = (low + high) / 2.0
+                if (
+                    translate(profile_geom, dx * middle, dy * middle).distance(seal_geom)
+                    <= 1e-6
+                ):
+                    high = middle
+                else:
+                    low = middle
+            return high, closest[0]
+        previous_t, previous_d = t, distance
+    return None, closest[0]
+
+
+def _direction_to_seal(profile_geom, seal_geom):
+    """Unit vector from the assembled profile toward its nearest seal surface."""
+    from shapely.ops import nearest_points
+
+    on_profile, on_seal = nearest_points(profile_geom, seal_geom)
+    dx, dy = on_seal.x - on_profile.x, on_seal.y - on_profile.y
+    length = hypot(dx, dy)
+    if length <= CLEARANCE_TOLERANCE:
+        return None
+    return [dx / length, dy / length]
+
+
+def _side_from_direction(direction):
+    """Describe where the profile sits relative to the seal surface it faces."""
+    if direction is None:
+        return None
+    if abs(direction[1]) >= abs(direction[0]):
+        # The seal lies below an "above" profile, so the direction points down.
+        return "above" if direction[1] < 0 else "below"
+    return "left" if direction[0] > 0 else "right"
+
+
+def directional_motion_assessment(nodes, boundary, elements, motion, role, instance, label):
+    """Geometric assessment along the swept segment for an arbitrary angle.
+
+    Works in model coordinates for any in-plane direction: the prescribed path,
+    its first geometric intersection with the seal and the closest approach are
+    distinct quantities. Nothing is inferred from a solver status.
+    """
+    profile = _profile_segments(nodes, elements)
+    offset = motion.offset
+    if offset:
+        profile = [(x0, y0 + offset, x1, y1 + offset) for x0, y0, x1, y1 in profile]
+    seal = _boundary_segments(nodes, boundary)
+    if not profile or not seal:
+        raise ClearanceError(
+            "unsupported_geometry",
+            f"The {label} profile or the seal boundary has no measurable surface.",
+            label=label,
+        )
+    resolved = motion_policy.resolve(motion, 4)
+    delta = resolved["delta"]
+    profile_geom = _polyline(profile)
+    seal_geom = _polyline(seal)
+    if _inside_material(_profile_points(profile), seal):
+        minimum, maximum = _separation(profile, seal, label)
+        depth = min(-minimum, maximum)
+        raise ClearanceError(
+            "initial_penetration",
+            f"The {label} intersects the seal: {format(depth, '.6g')} mm initial penetration. "
+            "Review its initial placement.",
+            label=label,
+            depth=round(depth, 9),
+        )
+    direction = _direction_to_seal(profile_geom, seal_geom)
+    side = _side_from_direction(direction)
+    if side is None:
+        raise ClearanceError(
+            "side_ambiguous",
+            f"The {label} profile touches or crosses the nearest seal surface, so its "
+            "contact normal is ambiguous. Review its initial placement.",
+            label=label,
+        )
+    initial = profile_geom.distance(seal_geom)
+    first_t, closest = _swept_contact(profile_geom, seal_geom, delta)
+    final = translate(profile_geom, delta[0], delta[1]).distance(seal_geom)
+    approaching = final < initial - CLEARANCE_TOLERANCE
+    left = max(min(s[0] for s in profile), min(s[0] for s in seal))
+    right = min(max(s[2] for s in profile), max(s[2] for s in seal))
+    x_overlap = right - left > CLEARANCE_TOLERANCE
+    if first_t is None and not x_overlap:
+        raise ClearanceError(
+            "no_x_overlap",
+            f"The {label} profile does not overlap the seal in X and its prescribed path "
+            "never reaches it.",
+            label=label,
+            overlap=round(max(0.0, right - left), 9),
+        )
+    if resolved["stroke"] > 0 and first_t is None and not approaching:
+        raise ClearanceError(
+            "motion_away",
+            f"The {label} prescribed motion at {resolved['angle']:g} deg does not approach "
+            f"the seal: the closest approach grows from {initial:.6g} mm to {final:.6g} mm.",
+            label=label,
+            side=side,
+            angle=resolved["angle"],
+            stroke=resolved["stroke"],
+        )
+    path = (
+        "hold"
+        if resolved["stroke"] == 0
+        else (
+            "touching"
+            if first_t == 0.0
+            else ("contact" if first_t is not None else ("approaching" if approaching else "missed"))
+        )
+    )
+    # A zero stroke is a hold: report the assembled role direction (the way the
+    # panel faces the seal) rather than an arbitrary draft angle.
+    if resolved["stroke"] == 0:
+        shown_direction = direction
+        shown_angle = motion_policy.angle_of(direction)
+    else:
+        shown_direction = motion_policy.unit_vector(resolved["angle"])
+        shown_angle = resolved["angle"]
+    return {
+        "role": role,
+        "instance": instance,
+        "side": side,
+        "direction": shown_direction,
+        "direction_to_seal": direction,
+        "angle_deg": shown_angle,
+        "stroke_mm": resolved["stroke"],
+        "delta_mm": delta,
+        "initial_offset_mm": offset,
+        "clearance_mm": max(0.0, initial),
+        "travel_mm": resolved["delta"][1],
+        "duration_s": motion.duration,
+        "hold": resolved["stroke"] == 0,
+        "first_contact_fraction": first_t,
+        "closest_after_mm": closest,
+        "reaches_initial_gap": first_t is not None,
+        "path": path,
+        "legacy": False,
+    }
+
+
+def motion_assessment(nodes, boundary, elements, motion, role, instance, label, schema_version=3):
     """Clearance, assembled side, direction and hold/gap reach for one profile."""
+    if schema_version >= 4:
+        return directional_motion_assessment(
+            nodes, boundary, elements, motion, role, instance, label
+        )
     # Zero travel is a hold and has no direction check; measuring it here must
     # not be reported as motion away from the seal.
     report = clearance_report(
@@ -428,6 +632,12 @@ def motion_assessment(nodes, boundary, elements, motion, role, instance, label):
         # Necessary to cross the measured gap, never a guarantee of contact.
         "reaches_initial_gap": motion.travel != 0
         and abs(motion.travel) >= report["clearance"],
+        "angle_deg": motion_policy.legacy_angle(motion.travel),
+        "stroke_mm": abs(motion.travel),
+        "delta_mm": [0.0, motion.travel],
+        "first_contact_fraction": None,
+        "path": "hold" if motion.travel == 0 else "prescribed",
+        "legacy": True,
     }
 
 
@@ -443,14 +653,14 @@ def assembly_assessment(project, mesh):
     result = {
         "door": motion_assessment(
             nodes, boundary, panel, project.motion, role="door", instance="PANEL-1",
-            label="door",
+            label="door", schema_version=project.schema_version,
         ),
         "body": None,
     }
     if body:
         result["body"] = motion_assessment(
             nodes, boundary, body, project.motion.body, role="body", instance="BODY-1",
-            label="body",
+            label="body", schema_version=project.schema_version,
         )
     return result
 
@@ -525,17 +735,120 @@ def fixed_nodes(project, mesh, fixture):
     return nodes
 
 
+def orient_toward(ordered, nodes, direction):
+    """Order R2D2 connectivity so SPOS faces an explicit model-space direction.
+
+    Used for an oblique setup, where "above/below" is not sufficient: the
+    assembly assessor supplies the unit vector from the assembled profile to its
+    nearest seal surface, and the connectivity is reversed only when the mean
+    SPOS normal points away from it.
+    """
+    if direction is None:
+        raise ValueError("An oblique rigid profile needs a measured contact direction.")
+    total = 0.0
+    for element in ordered:
+        normal = surface_normal(nodes, element)
+        total += normal[0] * direction[0] + normal[1] * direction[1]
+    if total >= 0:
+        return ordered
+    return [
+        dict(element, nodes=[element["nodes"][1], element["nodes"][0]])
+        for element in reversed(ordered)
+    ]
+
+
+def _contact_properties(project, has_body):
+    """Contact interactions and surface assignments for the selected basis.
+
+    Legacy revisions keep the exact single ``SEAL_CONTACT`` property and
+    ``all exterior`` domain they were solved with. New setups declare the three
+    independent interfaces explicitly: door panel to seal, body panel to seal
+    when the body participates, and seal self-contact. The interior bonded
+    partition seam is not part of ``SEAL_EXTERIOR``, and no rigid-to-rigid
+    pairing is included.
+    """
+    contact = project.contact
+    legacy = project.schema_version < 4 or contact.friction is not None
+    if legacy:
+        mu = contact.friction if contact.friction is not None else 0.3
+        return [
+            "*Surface Interaction, name=SEAL_CONTACT",
+            scalar(project.analysis.thickness),
+            "*Surface Behavior, pressure-overclosure=HARD",
+            "*Friction, slip tolerance=0.005",
+            scalar(mu),
+            "*Contact",
+            "*Contact Inclusions, all exterior",
+            "*Contact Property Assignment",
+            ", , SEAL_CONTACT",
+        ]
+    # Abaqus creates assembly-level surfaces named <assembly>_<instance>_<name>;
+    # general contact data must reference those, not the part-level source names.
+    seal = "ASSEMBLY_WS-1_SEAL_EXTERIOR"
+    door = "ASSEMBLY_PANEL-1_PANEL_FACE"
+    body = "ASSEMBLY_BODY-1_BODY_FACE"
+    pairs = []
+    lines = []
+    for name, mu in (
+        ("DOOR_SEAL", contact.door_seal),
+        *((("BODY_SEAL", contact.body_seal),) if has_body else ()),
+        ("SEAL_SELF", contact.seal_self),
+    ):
+        lines += [
+            f"*Surface Interaction, name={name}",
+            scalar(project.analysis.thickness),
+            "*Surface Behavior, pressure-overclosure=HARD",
+            "*Friction, slip tolerance=0.005",
+            scalar(mu),
+        ]
+        pairs.append((name, mu))
+    lines.append("*Contact")
+    lines.append("*Contact Inclusions")
+    lines.append(f"{seal}, {door}")
+    if has_body:
+        lines.append(f"{seal}, {body}")
+    lines.append(f"{seal}, {seal}")
+    lines.append("*Contact Property Assignment")
+    lines.append(f"{seal}, {door}, DOOR_SEAL")
+    if has_body:
+        lines.append(f"{seal}, {body}, BODY_SEAL")
+    lines.append(f"{seal}, , SEAL_SELF")
+    return lines
+
+
+def _motion_boundary_lines(resolved, reference):
+    """Prescribed U1/U2 targets; both components are always written for v4."""
+    dx, dy = resolved["delta"]
+    return [f"{reference}, 1, 1, {scalar(dx)}", f"{reference}, 2, 2, {scalar(dy)}"]
+
+
+def _motion_boundary_legacy(travel, reference):
+    return [f"{reference}, 2, 2, {scalar(travel)}"]
+
+
 def write_inp(project, mesh, fixture=None):
     if project.analysis.mode == "body_then_door":
         return write_two_step_inp(project, mesh, fixture)
     nodes, ws, panel = mesh_parts(project, mesh)
     boundary = exterior(ws)
     door = motion_assessment(
-        nodes, boundary, panel, project.motion, role="door", instance="PANEL-1", label="door"
+        nodes,
+        boundary,
+        panel,
+        project.motion,
+        role="door",
+        instance="PANEL-1",
+        label="door",
+        schema_version=project.schema_version,
     )
     clearance = door["clearance_mm"]
-    # SPOS must face the seal; a door mounted above it keeps the legacy order.
-    panel = orient_for_contact(panel, door["side"])
+    resolved = motion_policy.resolve(project.motion, project.schema_version)
+    # SPOS must face the seal; a door mounted above it keeps the legacy order and
+    # an oblique setup follows the measured direction to the nearest surface.
+    if project.schema_version >= 4:
+        panel = orient_toward(panel, nodes, door["direction_to_seal"])
+    else:
+        panel = orient_for_contact(panel, door["side"])
     seal_nodes = sorted({n for e in ws for n in e["nodes"]})
     panel_nodes = sorted({n for e in panel for n in e["nodes"]})
     seal_node_set = set(seal_nodes)
@@ -548,10 +861,12 @@ def write_inp(project, mesh, fixture=None):
         "*Heading",
         "Abaqus QOL 2D plane stress / implicit dynamic closing",
         "** Units: N, mm, s, tonne. Panel RF2 is total reaction for the specified thickness.",
-        f"** Initial vertical clearance on the assembled mesh: {scalar(clearance)} mm.",
+        f"** Initial clearance on the assembled mesh: {scalar(clearance)} mm.",
         f"** Door is {door['side']} the seal; the contact normal and travel direction are "
         f"[{', '.join(scalar(v) for v in door['direction'])}].",
-        f"** Prescribed Y travel: {scalar(project.motion.travel)} mm; measured from initial placement.",
+        f"** Prescribed motion: {scalar(resolved['stroke'])} mm at "
+        f"{scalar(resolved['angle'])} deg; delta "
+        f"[{', '.join(scalar(v) for v in resolved['delta'])}] mm from initial placement.",
         f"** Fixed weatherstrip nodes: {len(fixed)} from {source}.",
         "*Part, name=WS",
         "*Node",
@@ -616,16 +931,8 @@ def write_inp(project, mesh, fixture=None):
     for material in project.materials:
         if material.id in assigned:
             lines += material_cards(material, mat_names[material.id])
+    lines += _contact_properties(project, has_body=False)
     lines += [
-        "*Surface Interaction, name=SEAL_CONTACT",
-        scalar(project.analysis.thickness),
-        "*Surface Behavior, pressure-overclosure=HARD",
-        "*Friction, slip tolerance=0.005",
-        scalar(project.contact.friction),
-        "*Contact",
-        "*Contact Inclusions, all exterior",
-        "*Contact Property Assignment",
-        ", , SEAL_CONTACT",
         "*Boundary",
         "WSFIX, ENCASTRE",
         "PANEL_RP, 1, 2",
@@ -634,8 +941,11 @@ def write_inp(project, mesh, fixture=None):
         "*Dynamic",
         f"{scalar(min(0.0001, project.motion.duration / 100))}, {scalar(project.motion.duration)}, 1e-13",
         "*Boundary",
-        f"PANEL_RP, 2, 2, {scalar(project.motion.travel)}",
     ]
+    if project.schema_version >= 4:
+        lines += _motion_boundary_lines(resolved, "PANEL_RP")
+    else:
+        lines += _motion_boundary_legacy(project.motion.travel, "PANEL_RP")
     lines += output_cards(project)
     return "\n".join(lines + ["*End Step", ""])
 
@@ -653,16 +963,36 @@ def write_two_step_inp(project, mesh, fixture=None):
     nodes, ws, panel, body = _mesh_parts(project, mesh)
     boundary = exterior(ws)
     door = motion_assessment(
-        nodes, boundary, panel, project.motion, role="door", instance="PANEL-1", label="door"
+        nodes,
+        boundary,
+        panel,
+        project.motion,
+        role="door",
+        instance="PANEL-1",
+        label="door",
+        schema_version=project.schema_version,
     )
     seated = motion_assessment(
-        nodes, boundary, body, project.motion.body, role="body", instance="BODY-1", label="body"
+        nodes,
+        boundary,
+        body,
+        project.motion.body,
+        role="body",
+        instance="BODY-1",
+        label="body",
+        schema_version=project.schema_version,
     )
+    door_motion = motion_policy.resolve(project.motion, project.schema_version)
+    body_motion = motion_policy.resolve(project.motion.body, project.schema_version, body=True)
     # Each rigid part is oriented independently: the door above the seal keeps
     # the legacy right-to-left order, the body below it is turned around so its
     # SPOS side faces up toward the seal.
-    panel = orient_for_contact(panel, door["side"])
-    body = orient_for_contact(body, seated["side"])
+    if project.schema_version >= 4:
+        panel = orient_toward(panel, nodes, door["direction_to_seal"])
+        body = orient_toward(body, nodes, seated["direction_to_seal"])
+    else:
+        panel = orient_for_contact(panel, door["side"])
+        body = orient_for_contact(body, seated["side"])
     seal_nodes = sorted({n for e in ws for n in e["nodes"]})
     panel_nodes = sorted({n for e in panel for n in e["nodes"]})
     body_nodes = sorted({n for e in body for n in e["nodes"]})
@@ -688,12 +1018,12 @@ def write_two_step_inp(project, mesh, fixture=None):
         f"door is {door['side']} the seal.",
         f"** Initial body clearance on the assembled mesh: {scalar(seated['clearance_mm'])} mm; "
         f"body is {seated['side']} the seal.",
-        f"** Step 1 body travel: {scalar(project.motion.body.travel)} mm over "
-        f"{scalar(project.motion.body.duration)} s; body direction "
-        f"[{', '.join(scalar(v) for v in seated['direction'])}]. Door held.",
-        f"** Step 2 door travel: {scalar(project.motion.travel)} mm over "
-        f"{scalar(project.motion.duration)} s; door direction "
-        f"[{', '.join(scalar(v) for v in door['direction'])}]. Body held at its seated position.",
+        f"** Step 1 body motion: {scalar(body_motion['stroke'])} mm at "
+        f"{scalar(body_motion['angle'])} deg over {scalar(project.motion.body.duration)} s; "
+        f"delta [{', '.join(scalar(v) for v in body_motion['delta'])}] mm. Door held.",
+        f"** Step 2 door motion: {scalar(door_motion['stroke'])} mm at "
+        f"{scalar(door_motion['angle'])} deg over {scalar(project.motion.duration)} s; "
+        f"delta [{', '.join(scalar(v) for v in door_motion['delta'])}] mm. Body held at its seated position.",
         f"** Fixed weatherstrip nodes: {len(fixed)} from {source}.",
         "*Part, name=WS",
         "*Node",
@@ -783,16 +1113,8 @@ def write_two_step_inp(project, mesh, fixture=None):
     for material in project.materials:
         if material.id in assigned:
             lines += material_cards(material, mat_names[material.id])
+    lines += _contact_properties(project, has_body=True)
     lines += [
-        "*Surface Interaction, name=SEAL_CONTACT",
-        scalar(project.analysis.thickness),
-        "*Surface Behavior, pressure-overclosure=HARD",
-        "*Friction, slip tolerance=0.005",
-        scalar(project.contact.friction),
-        "*Contact",
-        "*Contact Inclusions, all exterior",
-        "*Contact Property Assignment",
-        ", , SEAL_CONTACT",
         "*Boundary",
         "WSFIX, ENCASTRE",
         "PANEL_RP, 1, 2",
@@ -804,9 +1126,17 @@ def write_two_step_inp(project, mesh, fixture=None):
         f"{scalar(min(0.0001, project.motion.body.duration / 100))}, "
         f"{scalar(project.motion.body.duration)}, 1e-13",
         "*Boundary",
-        f"BODY_RP, 2, 2, {scalar(project.motion.body.travel)}",
-        "PANEL_RP, 2, 2, 0.",
     ]
+    if project.schema_version >= 4:
+        lines += _motion_boundary_lines(body_motion, "BODY_RP")
+        lines += _motion_boundary_lines(
+            {"delta": [0.0, 0.0]}, "PANEL_RP"
+        )
+    else:
+        lines += [
+            f"BODY_RP, 2, 2, {scalar(project.motion.body.travel)}",
+            "PANEL_RP, 2, 2, 0.",
+        ]
     lines += output_cards(
         project,
         duration=project.motion.body.duration,
@@ -819,10 +1149,18 @@ def write_two_step_inp(project, mesh, fixture=None):
         f"{scalar(min(0.0001, project.motion.duration / 100))}, "
         f"{scalar(project.motion.duration)}, 1e-13",
         "*Boundary",
-        # Hold the body at the position reached in step 1; the door ramps closed.
-        f"BODY_RP, 2, 2, {scalar(project.motion.body.travel)}",
-        f"PANEL_RP, 2, 2, {scalar(project.motion.travel)}",
     ]
+    if project.schema_version >= 4:
+        # Hold the body at the position reached in step 1 in both components;
+        # the door ramps closed along its prescribed direction.
+        lines += _motion_boundary_lines(body_motion, "BODY_RP")
+        lines += _motion_boundary_lines(door_motion, "PANEL_RP")
+    else:
+        # Hold the body at the position reached in step 1; the door ramps closed.
+        lines += [
+            f"BODY_RP, 2, 2, {scalar(project.motion.body.travel)}",
+            f"PANEL_RP, 2, 2, {scalar(project.motion.travel)}",
+        ]
     lines += output_cards(
         project,
         duration=project.motion.duration,

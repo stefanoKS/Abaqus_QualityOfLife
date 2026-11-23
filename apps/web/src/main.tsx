@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { FlaskConical, Languages, LayoutDashboard, Monitor, PanelTop, X } from 'lucide-react'
-import logo from '../assets/logo.png'
+import { BrandLockup } from './Brand'
 import Dashboard from './Dashboard'
 import MaterialsPage from './MaterialsPage'
 import Workspace from './Workspace'
@@ -98,9 +98,9 @@ function App() {
     <>
       <header className="topbar">
         <button className="brand" onClick={workspace} aria-label={t('nav.brandAria')}>
-          {/* The supplied wordmark already reads "Abaqus QOL"; the hidden span
-              keeps a single accessible product name for assistive technology. */}
-          <img className="brand-logo" src={logo} alt="" aria-hidden="true" />
+          {/* Local vector mark + text wordmark: crisp at every zoom, and the
+              accessible product name is the visible one. */}
+          <BrandLockup />
           <span className="brand-name sr-only">{t('app.name')}</span>
         </button>
         <div className="nav-separator" />

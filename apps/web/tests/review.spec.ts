@@ -58,8 +58,8 @@ test('Review prepares decks without ever enqueueing a mesh', async ({ page, requ
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Motion' })
     .click()
-  await page.getByLabel('Prescribed Y travel (mm)').fill('-6.5')
-  await page.getByLabel('Prescribed Y travel (mm)').press('Tab')
+  await page.getByLabel('Door panel stroke (mm)').fill('6.5')
+  await page.getByLabel('Door panel stroke (mm)').press('Tab')
   await page.getByRole('button', { name: 'Save revision' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   const saved: Revision = await (

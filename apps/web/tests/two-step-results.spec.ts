@@ -44,13 +44,17 @@ test('a licensed two-step result opens on the door step and switches to the body
 
   const exported = async () => {
     const pending = page.waitForEvent('download')
-    await page.getByRole('button', { name: 'Export displayed curve' }).click()
+    await page.getByRole('button', { name: 'Export displayed curve (2 rows)' }).click()
     const download = await pending
-    return readFile((await download.path())!, 'utf8')
+    return {
+      text: await readFile((await download.path())!, 'utf8'),
+      name: download.suggestedFilename(),
+    }
   }
   const body = await exported()
-  expect(body).toContain('# closing_step,Body seating')
-  expect(body).toContain('# closing_step_id,bodyseating')
+  expect(body.name).toContain('body-curve-')
+  expect(body.name).toContain('bodyseating')
+  expect(body.text.split(/\r?\n/).filter(Boolean)).toHaveLength(2)
 
   // Return to the door step; the closing curve reaches the commanded travel.
   await step.selectOption('closing')
@@ -62,9 +66,10 @@ test('a licensed two-step result opens on the door step and switches to the body
     )
     .toBeCloseTo(2.3)
   const door = await exported()
-  expect(door).toContain('# closing_step,Closing')
-  expect(door).toContain('# closing_step_id,closing')
-  const last = door.trim().split('\n').filter((line) => !line.startsWith('#'))
-  expect(last.length).toBeGreaterThan(0)
-  expect(last[last.length - 1]).toContain('5.5')
+  expect(door.name).toContain('door-curve-')
+  expect(door.name).toContain('closing')
+  const rows = door.text.split(/\r?\n/).filter(Boolean)
+  expect(rows).toHaveLength(2)
+  // Row 1 is the step-relative measured displacement magnitude.
+  expect(Number(rows[0].split(',').at(-1))).toBeCloseTo(5.5, 2)
 })

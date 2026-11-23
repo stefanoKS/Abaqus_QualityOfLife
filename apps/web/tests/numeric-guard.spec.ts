@@ -36,10 +36,10 @@ test('blank required numeric fields block save and restore only on Escape', asyn
     if (['PUT', 'POST'].includes(req.method())) writes.push(req.method() + ' ' + req.url())
   })
 
-  const travel = page.getByLabel('Prescribed Y travel (mm)')
-  await travel.fill('-6.1')
+  const travel = page.getByLabel('Door panel stroke (mm)')
+  await travel.fill('6.1')
   await travel.press('Tab')
-  await expect(travel).toHaveValue('-6.1')
+  await expect(travel).toHaveValue('6.1')
 
   // Clear it. The blank draft stays visible with required-field feedback.
   await travel.fill('')
@@ -55,23 +55,24 @@ test('blank required numeric fields block save and restore only on Escape', asyn
 
   // Escape is the explicit restoration, never an automatic blur restore.
   await travel.press('Escape')
-  await expect(travel).toHaveValue('-6.1')
+  await expect(travel).toHaveValue('6.1')
   await expect(page.getByText('This numeric field is required.')).toHaveCount(0)
   await expect(save).toBeEnabled()
 
   // A valid new value saves normally.
-  await travel.fill('-4.2')
+  await travel.fill('4.2')
   await travel.press('Tab')
   await save.click()
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   const saved = (await (await request.get('/api/revisions/' + (await head(request, revision.project)))).json()) as Revision
+  expect(saved.setup.motion.stroke).toBe(4.2)
   expect(saved.setup.motion.travel).toBe(-4.2)
 
   // Duration and initial offset use the same guard. The milestone default step
   // duration is 1.0 s.
   for (const [label, value] of [
     ['Step duration (s)', '1'],
-    ['Initial Y offset (mm)', '0'],
+    ['Door panel direction angle (°)', '-90'],
   ] as const) {
     const field = page.getByLabel(label)
     await expect(field).toHaveValue(value)

@@ -832,6 +832,17 @@ export interface components {
              */
             thickness: number;
             /**
+             * Reporting Width
+             * @default 100
+             */
+            reporting_width: number;
+            /**
+             * Reporting Width Basis
+             * @default default_100_mm
+             * @enum {string}
+             */
+            reporting_width_basis: "default_100_mm" | "legacy_thickness";
+            /**
              * Force Normalization
              * @default total
              * @enum {string}
@@ -860,6 +871,17 @@ export interface components {
              */
             thickness: number;
             /**
+             * Reporting Width
+             * @default 100
+             */
+            reporting_width: number;
+            /**
+             * Reporting Width Basis
+             * @default default_100_mm
+             * @enum {string}
+             */
+            reporting_width_basis: "default_100_mm" | "legacy_thickness";
+            /**
              * Force Normalization
              * @default total
              * @enum {string}
@@ -879,15 +901,25 @@ export interface components {
              */
             offset: number;
             /**
-             * Travel
+             * Angle
+             * @default 90
+             */
+            angle: number;
+            /**
+             * Stroke
              * @default 0
              */
-            travel: number;
+            stroke: number;
             /**
              * Duration
              * @default 1
              */
             duration: number;
+            /**
+             * Travel
+             * @default 0
+             */
+            travel: number;
         };
         /**
          * BodyMotion
@@ -900,15 +932,25 @@ export interface components {
              */
             offset: number;
             /**
-             * Travel
+             * Angle
+             * @default 90
+             */
+            angle: number;
+            /**
+             * Stroke
              * @default 0
              */
-            travel: number;
+            stroke: number;
             /**
              * Duration
              * @default 1
              */
             duration: number;
+            /**
+             * Travel
+             * @default 0
+             */
+            travel: number;
         };
         /** Body_drawing_api_projects__pid__drawing_post */
         Body_drawing_api_projects__pid__drawing_post: {
@@ -985,15 +1027,27 @@ export interface components {
             normal: "hard";
             /**
              * Scope
-             * @default all_exterior
-             * @constant
+             * @default named_pairs
+             * @enum {string}
              */
-            scope: "all_exterior";
+            scope: "all_exterior" | "named_pairs";
+            /** Friction */
+            friction?: number | null;
             /**
-             * Friction
-             * @default 0.3
+             * Door Seal
+             * @default 0.7
              */
-            friction: number;
+            door_seal: number;
+            /**
+             * Body Seal
+             * @default 0.7
+             */
+            body_seal: number;
+            /**
+             * Seal Self
+             * @default 0.7
+             */
+            seal_self: number;
         };
         /** Contact */
         "Contact-Output": {
@@ -1005,15 +1059,27 @@ export interface components {
             normal: "hard";
             /**
              * Scope
-             * @default all_exterior
-             * @constant
+             * @default named_pairs
+             * @enum {string}
              */
-            scope: "all_exterior";
+            scope: "all_exterior" | "named_pairs";
+            /** Friction */
+            friction: number | null;
             /**
-             * Friction
-             * @default 0.3
+             * Door Seal
+             * @default 0.7
              */
-            friction: number;
+            door_seal: number;
+            /**
+             * Body Seal
+             * @default 0.7
+             */
+            body_seal: number;
+            /**
+             * Seal Self
+             * @default 0.7
+             */
+            seal_self: number;
         };
         /**
          * Deck
@@ -1661,51 +1727,71 @@ export interface components {
         /** Motion */
         "Motion-Input": {
             /**
-             * Axis
-             * @default Y
-             * @constant
+             * Offset
+             * @default 0
              */
-            axis: "Y";
+            offset: number;
+            /**
+             * Angle
+             * @default -90
+             */
+            angle: number;
+            /**
+             * Stroke
+             * @default 10
+             */
+            stroke: number;
+            /**
+             * Duration
+             * @default 1
+             */
+            duration: number;
             /**
              * Travel
              * @default -10
              */
             travel: number;
             /**
-             * Offset
-             * @default 0
+             * Axis
+             * @default Y
+             * @constant
              */
-            offset: number;
-            /**
-             * Duration
-             * @default 1
-             */
-            duration: number;
+            axis: "Y";
             body?: components["schemas"]["BodyMotion-Input"];
         };
         /** Motion */
         "Motion-Output": {
             /**
-             * Axis
-             * @default Y
-             * @constant
+             * Offset
+             * @default 0
              */
-            axis: "Y";
+            offset: number;
+            /**
+             * Angle
+             * @default -90
+             */
+            angle: number;
+            /**
+             * Stroke
+             * @default 10
+             */
+            stroke: number;
+            /**
+             * Duration
+             * @default 1
+             */
+            duration: number;
             /**
              * Travel
              * @default -10
              */
             travel: number;
             /**
-             * Offset
-             * @default 0
+             * Axis
+             * @default Y
+             * @constant
              */
-            offset: number;
-            /**
-             * Duration
-             * @default 1
-             */
-            duration: number;
+            axis: "Y";
             body: components["schemas"]["BodyMotion-Output"];
         };
         /** Mounting */
@@ -1911,7 +1997,7 @@ export interface components {
         "Project-Input": {
             /**
              * Schema Version
-             * @default 3
+             * @default 4
              */
             schema_version: number;
             /** Name */
@@ -1959,7 +2045,7 @@ export interface components {
         "Project-Output": {
             /**
              * Schema Version
-             * @default 3
+             * @default 4
              */
             schema_version: number;
             /** Name */
@@ -2104,6 +2190,21 @@ export interface components {
              * @default
              */
             unit_basis: string;
+            /**
+             * Unit Declaration
+             * @default
+             */
+            unit_declaration: string;
+            /**
+             * Unit Factor
+             * @default 1
+             */
+            unit_factor: number;
+            /**
+             * Unit Provenance
+             * @default
+             */
+            unit_provenance: string;
         };
         /** Source */
         "Source-Output": {
@@ -2132,6 +2233,21 @@ export interface components {
              * @default
              */
             unit_basis: string;
+            /**
+             * Unit Declaration
+             * @default
+             */
+            unit_declaration: string;
+            /**
+             * Unit Factor
+             * @default 1
+             */
+            unit_factor: number;
+            /**
+             * Unit Provenance
+             * @default
+             */
+            unit_provenance: string;
         };
         /**
          * SplineData

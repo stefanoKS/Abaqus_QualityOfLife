@@ -28,7 +28,9 @@ def test_deck_sections_history_mesh_and_motion(model_mesh):
     deck = write_inp(project, mesh)
     assert "*Hyperfoam, N=1, test data input" in deck and "*Uniaxial Test Data" in deck
     assert "*Elastic" in deck and "*Rigid Body, ref node=PANEL_RP" in deck
-    assert "*Contact Inclusions, all exterior" in deck and "*Dynamic\n" in deck
+    assert "*Contact Inclusions" in deck and "*Dynamic\n" in deck
+    assert "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_PANEL-1_PANEL_FACE" in deck
+    assert "*Surface Interaction, name=DOOR_SEAL" in deck
     assert "type=CPS4R" in deck and "type=R2D2" in deck and "CPE" not in deck
     assert "*Node Output, nset=PANEL_RP\nU1, U2, RF1, RF2" in deck
     assert "*Solid Section, elset=REGION_2" in deck

@@ -66,19 +66,27 @@ test('desktop shell fits the viewport, keeps panes adjacent and the viewport fix
   expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1)
   expect(Math.abs(after.height - before.height)).toBeLessThanOrEqual(1)
 
-  // Review anchors prepare-then-submit in the upper-right of the work area.
+  // Review actions are the first actionable group INSIDE the Properties pane.
   await page
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Review / Run' })
     .click()
+  const properties = (await page.locator('.workgrid > .right').boundingBox())!
+  const actions = (await page.getByTestId('review-actions').boundingBox())!
   const prepare = (await page.getByRole('button', { name: 'Prepare input deck' }).boundingBox())!
   const submit = (await page
     .getByRole('button', { name: 'Submit Abaqus analysis' })
     .boundingBox())!
-  expect(prepare.x).toBeLessThan(submit.x)
-  expect(prepare.y).toBeLessThan(900 / 2)
-  expect(submit.x).toBeGreaterThan(1440 / 2)
-  expect(submit.y).toBeLessThan(900 / 2)
+  const details = (await page
+    .getByRole('heading', { name: 'Closing analysis', exact: true })
+    .boundingBox())!
+  expect(prepare.y).toBeLessThan(submit.y)
+  expect(actions.x).toBeGreaterThanOrEqual(properties.x - 1)
+  expect(actions.y).toBeGreaterThanOrEqual(properties.y - 1)
+  expect(prepare.y).toBeGreaterThanOrEqual(properties.y - 1)
+  expect(prepare.y).toBeLessThan(details.y + 1)
+  expect(submit.y).toBeLessThan(details.y + 1)
+  await expect(page.getByRole('button', { name: 'Go to Mesh' })).toHaveCount(0)
 
   // Wheel zoom and Fit/reset stay inside the fixed canvas.
   const camera = () =>

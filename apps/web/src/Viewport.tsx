@@ -5,6 +5,32 @@ import { ViewportRenderer } from './viewportRenderer'
 import { useI18n } from './i18n'
 import './viewport.css'
 
+const CUT_ACQUIRE_PX = 12
+
+/** Nearest point on the eligible boundary polyline, or null outside tolerance. */
+function snapToBoundary(
+  boundary: number[][],
+  x: number,
+  y: number,
+  tolerance: number
+): [number, number] | null {
+  let best: { distance: number; point: [number, number] } | null = null
+  for (let i = 0; i < boundary.length - 1; i++) {
+    const [ax, ay] = boundary[i]
+    const [bx, by] = boundary[i + 1]
+    const dx = bx - ax
+    const dy = by - ay
+    const length2 = dx * dx + dy * dy
+    let t = length2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / length2 : 0
+    t = Math.max(0, Math.min(1, t))
+    const px = ax + t * dx
+    const py = ay + t * dy
+    const distance = Math.hypot(x - px, y - py)
+    if (!best || distance < best.distance) best = { distance, point: [px, py] }
+  }
+  return best && best.distance <= tolerance ? best.point : null
+}
+
 export type {
   Display,
   Picked,
@@ -29,6 +55,9 @@ export function Viewport(props: ViewportProps) {
   const [error, setError] = useState('')
   const [hoverLabel, setHoverLabel] = useState('')
   const [grabbing, setGrabbing] = useState(false)
+  const [cutHover, setCutHover] = useState<[number, number] | null>(null)
+  const cutRef = useRef(props.cut)
+  cutRef.current = props.cut
   const colorsKey = JSON.stringify(props.colors),
     hiddenKey = JSON.stringify(props.hidden)
   const scene = useMemo(
@@ -52,6 +81,7 @@ export function Viewport(props: ViewportProps) {
       props.resultRange,
       colorsKey,
       hiddenKey,
+      props.previewTranslation,
     ],
   )
   // Keep the view stable through frame changes while fitting newly loaded topology.
@@ -190,7 +220,32 @@ export function Viewport(props: ViewportProps) {
             drag.y = e.clientY
           } else {
             const [x, y] = local(e)
-            animation = requestAnimationFrame(() => setHover(view!.pick(latest.current.mode, x, y)))
+            const cut = latest.current.cut
+            if (cut?.active) {
+              // Acquisition uses a pixel band, then the hit is converted to a
+              // canonical point on the true model boundary. The server keeps its
+              // own 0.05 mm engineering tolerance; zoom never widens it.
+              const [mx, my] = view!.modelAt(x, y)
+              const snapped = snapToBoundary(
+                cut.boundary,
+                mx,
+                my,
+                view!.modelPerPixel() * CUT_ACQUIRE_PX
+              )
+              animation = requestAnimationFrame(() => {
+                setCutHover((previous) => {
+                  const next = snapped ?? ([mx, my] as [number, number])
+                  if (previous && previous[0] === next[0] && previous[1] === next[1])
+                    return previous
+                  return next
+                })
+                latest.current.onCutHover?.(snapped)
+              })
+            } else {
+              animation = requestAnimationFrame(() =>
+                setHover(view!.pick(latest.current.mode, x, y))
+              )
+            }
           }
         },
         { signal },
@@ -224,7 +279,19 @@ export function Viewport(props: ViewportProps) {
               latest.current.onSelect(view!.pick(latest.current.mode, lx, ly))
             }
           } else if (!drag.moved && drag.button === 0) {
-            latest.current.onSelect(view!.pick(latest.current.mode, lx, ly))
+            const cut = latest.current.cut
+            if (cut?.active) {
+              const [mx, my] = view!.modelAt(lx, ly)
+              const snapped = snapToBoundary(
+                cut.boundary,
+                mx,
+                my,
+                view!.modelPerPixel() * CUT_ACQUIRE_PX
+              )
+              if (snapped) latest.current.onCutPoint?.(snapped)
+            } else {
+              latest.current.onSelect(view!.pick(latest.current.mode, lx, ly))
+            }
           }
           el.dataset.camera = view!.cameraSignature()
           drag = null
@@ -278,7 +345,12 @@ export function Viewport(props: ViewportProps) {
             userMoved.current = true
             view!.zoom(1.25)
           }
-          else if (e.key === 'Escape') latest.current.onSelect(null)
+          else if (e.key === 'Escape') {
+            if (latest.current.cut?.active) {
+              setCutHover(null)
+              latest.current.onCutCancel?.()
+            } else latest.current.onSelect(null)
+          }
         },
         { signal },
       )
@@ -317,6 +389,22 @@ export function Viewport(props: ViewportProps) {
   useEffect(() => {
     controller.current?.setGuide(props.guide ?? [])
   }, [props.guide])
+  useEffect(() => {
+    if (!props.cut?.active) setCutHover(null)
+    controller.current?.setCut(
+      props.cut?.active
+        ? {
+            active: true,
+            boundary: props.cut.boundary,
+            start: props.cut.start ?? null,
+            end: props.cut.end ?? null,
+            phase: props.cut.phase ?? 'start',
+            invalid: props.cut.invalid,
+            hover: cutHover,
+          }
+        : null
+    )
+  }, [props.cut, cutHover])
 
   useEffect(() => {
     hover.current = null
@@ -340,6 +428,10 @@ export function Viewport(props: ViewportProps) {
       data-frame-time={props.results?.frame ? String(props.results.frame.time) : ''}
       data-scene-actors={scene.surfaces.length}
       data-plain={props.plain ? 'true' : 'false'}
+      data-cut-phase={props.cut?.active ? props.cut.phase ?? 'start' : ''}
+      data-preview-translation={
+        props.previewTranslation ? JSON.stringify(props.previewTranslation) : ''
+      }
       data-scene-instances={[
         ...new Set(
           scene.surfaces
@@ -402,18 +494,6 @@ export function Viewport(props: ViewportProps) {
       <div className="seal-vtk-orientation">
         {props.dimension === '2D' ? t('viewport.xySection') : t('viewport.segment3d')}
       </div>
-      {props.mesh && (props.rigidInstances?.length ?? 0) > 0 && (
-        <div className="seal-vtk-assembly" data-testid="assembly-preview">
-          <strong>{t('viewport.assembledPosition')}</strong>
-          {props.rigidInstances!.map((row) => (
-            <span key={row.instance} data-instance={row.instance} data-offset={row.offset}>
-              {row.instance}{' '}
-              {Number(row.offset) > 0 ? '+' : ''}
-              {formatNumber(row.offset)} {props.lengthUnit ?? 'mm'}
-            </span>
-          ))}
-        </div>
-      )}
       {error && (
         <div role="alert" className="seal-vtk-empty">
           {error}

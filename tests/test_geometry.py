@@ -134,8 +134,16 @@ def test_dxf_bulge_and_units(tmp_path):
     assert len(p.faces) == 1
     assert sum(e.sweep for e in p.edges if e.kind == "arc") == pytest.approx(math.pi)
     assert face_polygon(p.faces[0], sample_edges(p)).area == pytest.approx(math.pi / 2, rel=0.005)
-    with pytest.raises(ValueError, match="inches"):
-        import_dxf(save_drawing(tmp_path, bulge, units=1), "Inches")
+    with pytest.raises(ValueError):
+        import_dxf(save_drawing(tmp_path, bulge, units=99), "Bad")
+    # A declared inch drawing converts once and keeps the same physical arc.
+    inches = import_dxf(save_drawing(tmp_path, bulge, units=1), "Inches")
+    assert inches.source.unit_basis == "converted_to_mm"
+    assert inches.source.unit_factor == pytest.approx(25.4)
+    assert sum(e.sweep for e in inches.edges if e.kind == "arc") == pytest.approx(math.pi)
+    assert face_polygon(inches.faces[0], sample_edges(inches)).area == pytest.approx(
+        math.pi / 2 * 25.4**2, rel=0.005
+    )
 
 
 def test_project_rejects_stale_selections_and_nonplanar_points():

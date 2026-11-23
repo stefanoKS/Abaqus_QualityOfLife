@@ -50,6 +50,7 @@ import { componentLabel } from './features/workspace/componentLabel'
 import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
 import { orderedStates } from './features/workspace/workflowStates'
 import { findingKey, findingVars, type Readiness } from './features/workspace/readiness'
+import { motionDelta, stepPlan } from './features/workspace/stepSequence'
 import {
   MESH_STAGES,
   STAGE,
@@ -158,11 +159,21 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // Narrow and zoomed layouts can collapse the workflow/properties panes so the
   // canvas and the primary actions remain reachable without clipping.
   const [panesOpen, setPanesOpen] = useState(true)
-  // Straight two-point material partition, entered as model-space XY in mm.
+  // Straight two-point material partition. The primary interaction is on the
+  // white viewport; the XY fields remain as optional precision entry.
   const [cutStart, setCutStart] = useState({ x: 0, y: 0 })
   const [cutEnd, setCutEnd] = useState({ x: 0, y: 0 })
+  const [cutPhase, setCutPhase] = useState<'idle' | 'start' | 'end' | 'previewed'>('idle')
+  const [cutPointA, setCutPointA] = useState<[number, number] | null>(null)
+  const [cutPointB, setCutPointB] = useState<[number, number] | null>(null)
+  const [cutHover, setCutHover] = useState<[number, number] | null>(null)
+  const [cutPrecision, setCutPrecision] = useState(false)
   const [cutPlan, setCutPlan] = useState<PartitionPlan | null>(null)
+  const [cutDisplay, setCutDisplay] = useState<Display | null>(null)
   const [cutError, setCutError] = useState('')
+  // Prescribed-motion preview: a display-only animation of the rigid profile.
+  const [preview, setPreview] = useState<{ role: 'door' | 'body' } | null>(null)
+  const [previewProgress, setPreviewProgress] = useState(0)
   // Regeneration supersedes a reviewed fixture, so it is a deliberate choice.
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
   // A submitted setup replays its own archived mesh, never the newest one.
@@ -177,7 +188,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
     null,
   )
   const file = useRef<HTMLInputElement>(null),
-    token = useRef(crypto.randomUUID())
+    token = useRef(crypto.randomUUID()),
+    rightPane = useRef<HTMLElement>(null)
   const [drawingJob, setDrawingJob] = useState<string | null>(() =>
     locked ? null : sessionStorage.getItem('import:' + initial.id),
   )
@@ -516,7 +528,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
       }),
     [p, rev.setup.contact, meshJob, compatibleMesh, fixture, deck, deckReady, related],
   )
-  const twoStep = p.analysis.mode === 'body_then_door'
+  const plan = useMemo(() => stepPlan(p), [p])
+  const twoStep = plan.mode === 'body_then_door'
   // A measured motion rejection (penetration, wrong direction, missing X
   // overlap) is shown next to the motion fields, not only as a toast.
   const motionFinding =
@@ -560,6 +573,113 @@ export default function Workspace({ initial, locked, notify }: Props) {
         ),
     [p.components, p.analysis.mode, p.motion.offset, p.motion.body.offset],
   )
+  // Eligible cut boundary: the selected face's outer loop as tessellated model
+  // points. Arc/spline samples are within the display chord tolerance, and the
+  // server snaps the canonical point with its own 0.05 mm tolerance.
+  const cutFace = face && !face.cavity ? face : null
+  const cutBoundary = useMemo(() => {
+    if (!cutFace) return []
+    const edges = new Map(
+      (display?.primitives ?? [])
+        .filter((primitive) => primitive.kind === 'edge')
+        .map((primitive) => [primitive.entity, primitive]),
+    )
+    const points: number[][] = []
+    for (const token of cutFace.loops[0] ?? []) {
+      const primitive = edges.get(token.replace(/^-/, ''))
+      if (!primitive) continue
+      const ordered = token.startsWith('-')
+        ? [...primitive.points].reverse()
+        : primitive.points
+      for (const point of ordered) {
+        const last = points[points.length - 1]
+        if (last && Math.hypot(last[0] - point[0], last[1] - point[1]) < 1e-9) continue
+        points.push([point[0], point[1]])
+      }
+    }
+    return points
+  }, [cutFace, display])
+  const previewComponent = preview
+    ? p.components.find(
+        (component) =>
+          component.role === (preview.role === 'door' ? 'moving_panel' : 'vehicle_body'),
+      )
+    : undefined
+  const previewTranslation = useMemo(() => {
+    if (!preview || !previewComponent) return undefined
+    const motion = preview.role === 'door' ? p.motion : p.motion.body
+    const [dx, dy] = motionDelta(motion.stroke, motion.angle)
+    return {
+      [previewComponent.id]: [
+        dx * previewProgress,
+        dy * previewProgress,
+      ] as [number, number],
+    }
+  }, [preview, previewComponent, previewProgress, p.motion, p.motion.body])
+  function stopPreview() {
+    setPreview(null)
+    setPreviewProgress(0)
+  }
+  function previewMotion(role: 'door' | 'body') {
+    if (preview?.role === role) {
+      stopPreview()
+      return
+    }
+    const motion = role === 'door' ? p.motion : p.motion.body
+    if (!(motion.stroke > 0)) {
+      message(t('motion.holdPreview'))
+      return
+    }
+    setPreview({ role })
+    setPreviewProgress(0)
+  }
+  // A preview is display-only and must cancel on any route, stage or draft
+  // change; it never mutates the saved setup or queues work.
+  useEffect(() => {
+    stopPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stage, rev.id])
+  useEffect(() => {
+    if (!preview) return
+    stopPreview()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.motion.stroke, p.motion.angle, p.motion.body.stroke, p.motion.body.angle])
+  useEffect(() => {
+    if (!preview) return
+    const reduced =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (reduced) {
+      setPreviewProgress(1)
+      const timer = setTimeout(() => {
+        setPreviewProgress(0)
+        setPreview(null)
+      }, 500)
+      return () => clearTimeout(timer)
+    }
+    const duration = Math.max(320, Math.min(1200, p.motion.duration * 1000))
+    const hold = 220
+    const back = 360
+    const started = performance.now()
+    let frame = 0
+    const tick = (now: number) => {
+      const elapsed = now - started
+      if (elapsed < duration) setPreviewProgress(elapsed / duration)
+      else if (elapsed < duration + hold) setPreviewProgress(1)
+      else if (elapsed < duration + hold + back)
+        setPreviewProgress(1 - (elapsed - duration - hold) / back)
+      else {
+        setPreviewProgress(0)
+        setPreview(null)
+        return
+      }
+      frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(frame)
+    // The animation restarts only for a new preview request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preview])
   function target(next: SelectionMode) {
     setMode(next)
     if (next === 'component') {
@@ -592,6 +712,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
     setShowMesh(MESH_STAGES.includes(id))
     setFixtureMode(id === 'mounting')
     target(stageMode(id))
+    // The action group of a newly selected stage must be reachable at the top of
+    // its own scrolling pane; a previous stage's scroll position is not kept.
+    requestAnimationFrame(() => rightPane.current?.scrollTo({ top: 0 }))
   }
   async function save() {
     assertNumericDrafts()
@@ -623,34 +746,94 @@ export default function Workspace({ initial, locked, notify }: Props) {
       ? t(('partition.error.' + code) as TranslationKey)
       : message
   }
-  async function previewCut() {
+  function setCutPoints(a: [number, number] | null, b: [number, number] | null) {
+    if (a) setCutStart({ x: Number(a[0].toFixed(6)), y: Number(a[1].toFixed(6)) })
+    if (b) setCutEnd({ x: Number(b[0].toFixed(6)), y: Number(b[1].toFixed(6)) })
+  }
+  function startCut() {
+    setCutPhase('start')
+    setCutPointA(null)
+    setCutPointB(null)
+    setCutHover(null)
+    setCutPlan(null)
+    setCutDisplay(null)
+    setCutError('')
+  }
+  function resetCut() {
+    setCutPhase('idle')
+    setCutPointA(null)
+    setCutPointB(null)
+    setCutHover(null)
+    setCutPlan(null)
+    setCutDisplay(null)
+    setCutError('')
+  }
+  function backCut() {
+    if (cutPhase === 'previewed') {
+      setCutPlan(null)
+      setCutDisplay(null)
+      setCutPointB(null)
+      setCutError('')
+      setCutPhase('end')
+    } else if (cutPhase === 'end') {
+      setCutPointA(null)
+      setCutPointB(null)
+      setCutPlan(null)
+      setCutPhase('start')
+    }
+  }
+  async function previewCutAt(a: [number, number], b: [number, number]) {
+    if (!face) return
+    try {
+      const result = await request<{ plan: PartitionPlan; display: Display }>(
+        '/api/partition/preview',
+        'POST',
+        { setup: p, cut: { face: face.id, start: [a[0], a[1]], end: [b[0], b[1]] } },
+      )
+      setCutError('')
+      setCutPlan(result.plan)
+      setCutDisplay(result.display)
+      setCutPhase('previewed')
+    } catch (e) {
+      setCutPlan(null)
+      setCutDisplay(null)
+      setCutError(partitionMessage(err(e)))
+      setCutPhase('end')
+    }
+  }
+  function placeCutPoint(point: [number, number]) {
+    if (cutPhase === 'start') {
+      setCutPointA(point)
+      setCutPoints(point, null)
+      setCutPointB(null)
+      setCutPlan(null)
+      setCutError('')
+      setCutPhase('end')
+      return
+    }
+    if (cutPhase === 'end' && cutPointA) {
+      setCutPointB(point)
+      setCutPoints(cutPointA, point)
+      void previewCutAt(cutPointA, point)
+    }
+  }
+  async function previewTypedCut() {
     if (!face) return
     if (!cutDraftValid()) {
       setCutPlan(null)
       return
     }
     const values = cutPoints()
-    try {
-      const result = await request<{ plan: PartitionPlan }>('/api/partition/preview', 'POST', {
-        setup: p,
-        cut: {
-          face: face.id,
-          start: [values[0], values[1]],
-          end: [values[2], values[3]],
-        },
-      })
-      setCutError('')
-      setCutPlan(result.plan)
-    } catch (e) {
-      setCutPlan(null)
-      setCutError(partitionMessage(err(e)))
-    }
+    const a: [number, number] = [values[0], values[1]]
+    const b: [number, number] = [values[2], values[3]]
+    setCutPointA(a)
+    setCutPointB(b)
+    await previewCutAt(a, b)
   }
   async function applyCut() {
     if (!face || !cutPlan) return
-    if (!cutDraftValid()) return
-    const values = cutPoints()
     const plan = cutPlan
+    if (cutPhase !== 'previewed') return
     try {
       const saved = await request<Revision>(
         '/api/projects/' + rev.project + '/partition',
@@ -659,16 +842,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
           base: rev.id,
           cut: {
             face: face.id,
-            start: [values[0], values[1]],
-            end: [values[2], values[3]],
+            start: [plan.start[0], plan.start[1]],
+            end: [plan.end[0], plan.end[1]],
           },
         },
       )
       replaceRoute('workspace/' + saved.id)
       setRev(saved)
       setP(saved.setup)
-      setCutPlan(null)
-      setCutError('')
+      resetCut()
       select({
         kind: 'face',
         id: plan.child_a,
@@ -680,10 +862,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
     } catch (e) {
       setCutError(partitionMessage(err(e)))
     }
-  }
-  function cancelCut() {
-    setCutPlan(null)
-    setCutError('')
   }
   async function execute(fn: () => Promise<unknown>) {
     if (busy) return
@@ -990,55 +1168,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
       <div
         id="workbench-panes"
         className={
-          'workgrid' +
-          (stage === STAGE.review && !locked ? ' has-review' : '') +
-          (panesOpen ? '' : ' panes-closed')
+          'workgrid' + (panesOpen ? '' : ' panes-closed')
         }
       >
-        {stage === STAGE.review && !locked && (
-          <div className="review-actions" data-testid="review-actions">
-            <section className="review-action card">
-              <h2>{t('mesh.prepareDeck')}</h2>
-              <p>{pendingDeck || reviewAction === 'prepare' ? t('mesh.preparingDeck') : prepareReason || (deckReady ? t('mesh.inputReady') : t('actions.readyPrepare'))}</p>
-              <small>{t('review.prepareNeverMesh')}</small>
-              <button className="review-prepare" disabled={busy || !!prepareReason || !!pendingDeck}
-                title={prepareReason || undefined} onClick={() => execute(async () => {
-                  setReviewAction('prepare')
-                  try { await prepareDeck() } finally { setReviewAction(null) }
-                })}>
-                <FileText /> {t('mesh.prepareDeck')}
-              </button>
-              {deck && (
-                <div className="build-info" data-testid="deck-status">
-                  <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
-                  {deckReady ? (
-                    <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
-                      <FileText /> {t('mesh.inspectDeck')}
-                    </a>
-                  ) : <small>{t('mesh.deckStaleHint')}</small>}
-                </div>
-              )}
-            </section>
-            <section className="review-action card">
-              <h2>{t('review.submitLicensed')}</h2>
-              <p>{reviewAction === 'submit' ? t('actions.submitting') : submitReason || t('actions.readySubmit')}</p>
-              {activeRun && <small>{t('actions.activeRun', { state: labelFrom(t, 'state', activeRun.status) })}</small>}
-              <label>{t('review.runName')}
-                <input maxLength={100} value={runName} onChange={(e) => setRunName(e.target.value)} />
-              </label>
-              <NumberInput label={t('review.cpus')} value={cpus} min={1} max={32} step="1"
-                rangeHint="1 – 32" onChange={setCpus} />
-              <small>{cap.abaqus}</small>
-              <button className="review-submit" disabled={busy || !!submitReason || !!pendingDeck}
-                title={submitReason || undefined} onClick={() => execute(async () => {
-                  setReviewAction('submit')
-                  try { await submit() } finally { setReviewAction(null) }
-                })}>
-                <Play /> {t('review.submitLicensed')}
-              </button>
-            </section>
-          </div>
-        )}
         <aside className="left card">
           <div className="panel-title">
             <Waypoints />
@@ -1154,7 +1286,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
           <div className="viewport-wrap">
             <Viewport
               dimension={p.dimension}
-              display={display}
+              display={cutPhase === 'previewed' && cutDisplay ? cutDisplay : display}
               mode={mode}
               selection={pick}
               onSelect={(hit) => {
@@ -1173,7 +1305,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
               selectedNodes={shownFixture}
               nodeInstances={['WS-1']}
               onBoxSelect={boxSelect}
-              guide={stage === STAGE.materials ? (cutPlan?.line ?? null) : null}
+              previewTranslation={previewTranslation}
+              cut={
+                stage === STAGE.materials && cutPhase !== 'idle'
+                  ? {
+                      active: true,
+                      boundary: cutBoundary,
+                      start: cutPointA,
+                      end: cutPointB,
+                      phase: cutPhase,
+                      invalid: !!cutError,
+                    }
+                  : null
+              }
+              onCutPoint={placeCutPoint}
+              onCutHover={setCutHover}
+              onCutCancel={resetCut}
+              guide={null}
             />
           </div>
           <div className="legend">
@@ -1198,12 +1346,56 @@ export default function Workspace({ initial, locked, notify }: Props) {
             </span>
           </div>
         </section>
-        <aside className="right card">
+        <aside className="right card" ref={rightPane}>
           <div className="panel-title">
             <SlidersHorizontal />
             {t('workspace.properties')}
           </div>
           <div className="property-body">
+        {stage === STAGE.review && !locked && (
+          <div className="review-actions in-properties" data-testid="review-actions">
+            <section className="review-action card">
+              <h2>{t('mesh.prepareDeck')}</h2>
+              <p>{pendingDeck || reviewAction === 'prepare' ? t('mesh.preparingDeck') : prepareReason || (deckReady ? t('mesh.inputReady') : t('actions.readyPrepare'))}</p>
+              <small>{t('review.prepareNeverMesh')}</small>
+              <button className="review-prepare" disabled={busy || !!prepareReason || !!pendingDeck}
+                title={prepareReason || undefined} onClick={() => execute(async () => {
+                  setReviewAction('prepare')
+                  try { await prepareDeck() } finally { setReviewAction(null) }
+                })}>
+                <FileText /> {t('mesh.prepareDeck')}
+              </button>
+              {deck && (
+                <div className="build-info" data-testid="deck-status">
+                  <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
+                  {deckReady ? (
+                    <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
+                      <FileText /> {t('mesh.inspectDeck')}
+                    </a>
+                  ) : <small>{t('mesh.deckStaleHint')}</small>}
+                </div>
+              )}
+            </section>
+            <section className="review-action card">
+              <h2>{t('review.submitLicensed')}</h2>
+              <p>{reviewAction === 'submit' ? t('actions.submitting') : submitReason || t('actions.readySubmit')}</p>
+              {activeRun && <small>{t('actions.activeRun', { state: labelFrom(t, 'state', activeRun.status) })}</small>}
+              <label>{t('review.runName')}
+                <input maxLength={100} value={runName} onChange={(e) => setRunName(e.target.value)} />
+              </label>
+              <NumberInput label={t('review.cpus')} value={cpus} min={1} max={32} step="1"
+                rangeHint="1 – 32" onChange={setCpus} />
+              <small>{cap.abaqus}</small>
+              <button className="review-submit" disabled={busy || !!submitReason || !!pendingDeck}
+                title={submitReason || undefined} onClick={() => execute(async () => {
+                  setReviewAction('submit')
+                  try { await submit() } finally { setReviewAction(null) }
+                })}>
+                <Play /> {t('review.submitLicensed')}
+              </button>
+            </section>
+                    </div>
+        )}
             <div className="eyebrow">{steps[stage]}</div>
             <fieldset disabled={!!locked || busy}>
               {stage === STAGE.import && (
@@ -1237,6 +1429,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       {': '}
                       {t(
                         ('import.unitBasis.' + p.source.unit_basis) as TranslationKey,
+                        {
+                          declaration: p.source.unit_declaration,
+                          factor: String(p.source.unit_factor),
+                        },
                       )}
                     </p>
                   )}
@@ -1378,64 +1574,100 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         <section className="partition-block" data-testid="partition-editor">
                           <h3>{t('partition.title')}</h3>
                           <p>{t('partition.help')}</p>
-                          <div className="cut-points">
-                            <NumberInput
-                              label={t('partition.startX')}
-                              unit="mm"
-                              value={cutStart.x}
-                              onChange={(x) => setCutStart((v) => ({ ...v, x }))}
-                            />
-                            <NumberInput
-                              label={t('partition.startY')}
-                              unit="mm"
-                              value={cutStart.y}
-                              onChange={(y) => setCutStart((v) => ({ ...v, y }))}
-                            />
-                            <NumberInput
-                              label={t('partition.endX')}
-                              unit="mm"
-                              value={cutEnd.x}
-                              onChange={(x) => setCutEnd((v) => ({ ...v, x }))}
-                            />
-                            <NumberInput
-                              label={t('partition.endY')}
-                              unit="mm"
-                              value={cutEnd.y}
-                              onChange={(y) => setCutEnd((v) => ({ ...v, y }))}
-                            />
-                          </div>
-                          <div className="actions">
+                          {cutPhase === 'idle' ? (
                             <button
                               type="button"
-                              onClick={() => execute(previewCut)}
+                              className="primary wide"
+                              data-testid="cut-region"
                               disabled={busy}
+                              onClick={startCut}
                             >
-                              {t('partition.preview')}
+                              <ScanLine />
+                              {t('partition.cutRegion')}
                             </button>
-                            <button
-                              type="button"
-                              className="primary"
-                              onClick={() => execute(applyCut)}
-                              disabled={busy || !cutPlan}
-                            >
-                              {t('partition.apply')}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={cancelCut}
-                              disabled={!cutPlan && !cutError}
-                            >
-                              {t('partition.cancel')}
-                            </button>
-                          </div>
-                          {cutError && (
-                            <p
-                              className="error-text"
-                              role="alert"
-                              data-testid="partition-error"
-                            >
-                              {cutError}
-                            </p>
+                          ) : (
+                            <>
+                              <p
+                                className={cutError ? 'error-text' : 'cut-status'}
+                                role={cutError ? 'alert' : 'status'}
+                                data-testid="cut-status"
+                                data-phase={cutPhase}
+                              >
+                                {cutError ||
+                                  (cutPhase === 'start'
+                                    ? t('partition.pickStart')
+                                    : cutPhase === 'end'
+                                      ? t('partition.pickEnd')
+                                      : t('partition.previewReady'))}
+                              </p>
+                              {cutPhase !== 'previewed' && cutHover && (
+                                <p className="motion-vector" data-testid="cut-hover">
+                                  {t('partition.candidate', {
+                                    x: cutHover[0].toFixed(3),
+                                    y: cutHover[1].toFixed(3),
+                                  })}
+                                </p>
+                              )}
+                              <div className="actions">
+                                <button type="button" onClick={backCut} disabled={cutPhase === 'start'}>
+                                  {t('partition.back')}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="primary"
+                                  onClick={() => execute(applyCut)}
+                                  disabled={busy || cutPhase !== 'previewed' || !cutPlan}
+                                >
+                                  {t('partition.apply')}
+                                </button>
+                                <button type="button" onClick={resetCut}>
+                                  {t('partition.cancel')}
+                                </button>
+                              </div>
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            className="link-button"
+                            aria-expanded={cutPrecision}
+                            onClick={() => setCutPrecision((open) => !open)}
+                          >
+                            {t('partition.precisionEntry')}
+                          </button>
+                          {cutPrecision && (
+                            <div className="cut-points">
+                              <NumberInput
+                                label={t('partition.startX')}
+                                unit="mm"
+                                value={cutStart.x}
+                                onChange={(x) => setCutStart((v) => ({ ...v, x }))}
+                              />
+                              <NumberInput
+                                label={t('partition.startY')}
+                                unit="mm"
+                                value={cutStart.y}
+                                onChange={(y) => setCutStart((v) => ({ ...v, y }))}
+                              />
+                              <NumberInput
+                                label={t('partition.endX')}
+                                unit="mm"
+                                value={cutEnd.x}
+                                onChange={(x) => setCutEnd((v) => ({ ...v, x }))}
+                              />
+                              <NumberInput
+                                label={t('partition.endY')}
+                                unit="mm"
+                                value={cutEnd.y}
+                                onChange={(y) => setCutEnd((v) => ({ ...v, y }))}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => execute(previewTypedCut)}
+                                disabled={busy}
+                              >
+                                {t('partition.preview')}
+                              </button>
+                            </div>
                           )}
                           {cutPlan && (
                             <div className="build-info" data-testid="partition-plan">
@@ -1584,24 +1816,58 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <Facts
                     rows={[
                       [t('contact.normal'), t('contact.hard')],
-                      [t('contact.domain'), t('contact.allExterior')],
+                      [t('contact.domain'), t('contact.pairsDomain')],
                       [t('contact.participants'), participantNames.join(', ') || t('contact.none')],
                       [t('contact.excluded'), bodyNames.join(', ') || t('contact.none')],
                     ]}
                   />
-                  <NumberInput
-                    label={t('contact.friction')}
-                    value={p.contact.friction}
-                    min={0}
-                    max={5}
-                    rangeHint={t('contact.frictionRange')}
-                    onChange={(v) =>
-                      edit((n) => {
-                        n.contact.friction = v
-                      })
-                    }
-                  />
-                  <small>{t('contact.allSurfaces')}</small>
+                  {p.contact.friction !== null ? (
+                    <p className="notice" data-testid="contact-legacy">
+                      {t('contact.legacyScalar', { value: String(p.contact.friction) })}
+                    </p>
+                  ) : (
+                    <>
+                      <NumberInput
+                        label={t('contact.doorSeal')}
+                        value={p.contact.door_seal}
+                        min={0}
+                        max={5}
+                        rangeHint={t('contact.muRange')}
+                        onChange={(v) =>
+                          edit((n) => {
+                            n.contact.door_seal = v
+                          })
+                        }
+                      />
+                      {twoStep && (
+                        <NumberInput
+                          label={t('contact.bodySeal')}
+                          value={p.contact.body_seal}
+                          min={0}
+                          max={5}
+                          rangeHint={t('contact.muRange')}
+                          onChange={(v) =>
+                            edit((n) => {
+                              n.contact.body_seal = v
+                            })
+                          }
+                        />
+                      )}
+                      <NumberInput
+                        label={t('contact.sealSelf')}
+                        value={p.contact.seal_self}
+                        min={0}
+                        max={5}
+                        rangeHint={t('contact.muRange')}
+                        onChange={(v) =>
+                          edit((n) => {
+                            n.contact.seal_self = v
+                          })
+                        }
+                      />
+                      <small>{t('contact.pairHelp')}</small>
+                    </>
+                  )}
                   {!twoStep && bodyNames.length > 0 && (
                     <p className="notice" data-testid="body-excluded">
                       {t('body.excluded')}
@@ -1622,49 +1888,66 @@ export default function Workspace({ initial, locked, notify }: Props) {
               {stage === STAGE.motion && !dimension && (
                 <>
                   <h2>{t('motion.title')}</h2>
-                  <label>
-                    {t('motion.mode')}
-                    <select
-                      value={p.analysis.mode}
-                      onChange={(e) =>
-                        edit((n) => {
-                          n.analysis.mode = e.target.value as typeof n.analysis.mode
-                        })
-                      }
-                    >
-                      <option value="door_only">{t('motion.modeDoorOnly')}</option>
-                      <option value="body_then_door">{t('motion.modeBodyThenDoor')}</option>
-                    </select>
-                  </label>
+                  <div className="step-plan" data-testid="step-plan">
+                    <strong>
+                      {twoStep ? t('motion.planTwoStep') : t('motion.planOneStep')}
+                    </strong>
+                    <ol>
+                      {plan.steps.map((step) => (
+                        <li key={step.id}>
+                          {step.role === 'body'
+                            ? t('motion.step1Body')
+                            : twoStep
+                              ? t('motion.step2Door')
+                              : t('motion.stepDoorOnly')}
+                        </li>
+                      ))}
+                    </ol>
+                    {plan.findings.map((item) => (
+                      <p
+                        key={item.code}
+                        className="error-text"
+                        data-testid={'step-plan-' + item.code}
+                      >
+                        {t(('readiness.' + item.code) as TranslationKey)}
+                      </p>
+                    ))}
+                  </div>
                   {twoStep && (
                     <>
                       <h3>{t('motion.step1Body')}</h3>
-                      {!bodyNames.length && (
-                        <p className="notice" data-testid="motion-needs-body">
-                          {t('motion.needsBody')}
-                        </p>
-                      )}
                       <NumberInput
-                        label={t('motion.bodyOffset')}
+                        label={t('motion.bodyStroke')}
                         unit="mm"
-                        value={p.motion.body.offset}
+                        min={0}
+                        max={10000}
+                        value={p.motion.body.stroke}
                         onChange={(v) =>
                           edit((n) => {
-                            n.motion.body.offset = v
+                            n.motion.body.stroke = v
+                            n.motion.body.travel = 0
                           })
                         }
                       />
                       <NumberInput
-                        label={t('motion.bodyTravel')}
-                        unit="mm"
-                        rangeHint={t('motion.bodyTravelHint')}
-                        value={p.motion.body.travel}
+                        label={t('motion.bodyAngle')}
+                        unit="°"
+                        min={-360}
+                        max={360}
+                        rangeHint={t('motion.angleHint')}
+                        value={p.motion.body.angle}
                         onChange={(v) =>
                           edit((n) => {
-                            n.motion.body.travel = v
+                            n.motion.body.angle = v
                           })
                         }
                       />
+                      <p className="motion-vector" data-testid="motion-body-vector">
+                        {t('motion.vectorSummary', {
+                          dx: motionDelta(p.motion.body.stroke, p.motion.body.angle)[0].toFixed(3),
+                          dy: motionDelta(p.motion.body.stroke, p.motion.body.angle)[1].toFixed(3),
+                        })}
+                      </p>
                       <NumberInput
                         label={t('motion.bodyDuration')}
                         unit="s"
@@ -1676,31 +1959,58 @@ export default function Workspace({ initial, locked, notify }: Props) {
                           })
                         }
                       />
+                      <button
+                        type="button"
+                        data-testid="preview-body"
+                        disabled={!twoStep || !(p.motion.body.stroke > 0)}
+                        onClick={() => previewMotion('body')}
+                      >
+                        <Play />
+                        {preview?.role === 'body' ? t('motion.stopPreview') : t('motion.previewBody')}
+                      </button>
+                      {p.motion.body.offset !== 0 && (
+                        <p className="notice" data-testid="retained-body-offset">
+                          {t('motion.retainedOffset', {
+                            instance: 'BODY-1',
+                            offset: String(p.motion.body.offset),
+                          })}
+                        </p>
+                      )}
                       <h3>{t('motion.step2Door')}</h3>
                     </>
                   )}
                   <NumberInput
-                    label={t('motion.offset')}
+                    label={t('motion.doorStroke')}
                     unit="mm"
-                    value={p.motion.offset}
+                    min={0}
+                    max={10000}
+                    value={p.motion.stroke}
                     onChange={(v) =>
                       edit((n) => {
-                        n.motion.offset = v
+                        n.motion.stroke = v
+                        n.motion.travel = 0
                       })
                     }
                   />
                   <NumberInput
-                    label={t('motion.travel')}
-                    unit="mm"
-                    max={0}
-                    rangeHint={t('motion.doorTravelHint')}
-                    value={p.motion.travel}
+                    label={t('motion.doorAngle')}
+                    unit="°"
+                    min={-360}
+                    max={360}
+                    rangeHint={t('motion.angleHint')}
+                    value={p.motion.angle}
                     onChange={(v) =>
                       edit((n) => {
-                        n.motion.travel = v
+                        n.motion.angle = v
                       })
                     }
                   />
+                  <p className="motion-vector" data-testid="motion-vector">
+                    {t('motion.vectorSummary', {
+                      dx: motionDelta(p.motion.stroke, p.motion.angle)[0].toFixed(3),
+                      dy: motionDelta(p.motion.stroke, p.motion.angle)[1].toFixed(3),
+                    })}
+                  </p>
                   <NumberInput
                     label={t('motion.duration')}
                     unit="s"
@@ -1712,6 +2022,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       })
                     }
                   />
+                  <button
+                    type="button"
+                    data-testid="preview-door"
+                    disabled={!(p.motion.stroke > 0)}
+                    onClick={() => previewMotion('door')}
+                  >
+                    <Play />
+                    {preview?.role === 'door' ? t('motion.stopPreview') : t('motion.previewDoor')}
+                  </button>
+                  {p.motion.offset !== 0 && (
+                    <p className="notice" data-testid="retained-door-offset">
+                      {t('motion.retainedOffset', {
+                        instance: 'PANEL-1',
+                        offset: String(p.motion.offset),
+                      })}
+                    </p>
+                  )}
                   <p>{t('motion.help')}</p>
                   <p className="quality-note subtle" data-testid="motion-zero-hold">
                     {t('motion.zeroHolds')}
@@ -1874,28 +2201,37 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       ],
                       [
                         t('review.contact'),
-                        t('review.contactSummary', { friction: p.contact.friction }),
+                        p.contact.friction !== null
+                          ? t('review.contactSummaryLegacy', {
+                              friction: String(p.contact.friction),
+                            })
+                          : t('review.contactSummaryPairs', {
+                              door: String(p.contact.door_seal),
+                              body: String(p.contact.body_seal),
+                              self: String(p.contact.seal_self),
+                            }),
                       ],
                       [t('review.panels'), participantNames.join(', ') || t('contact.none')],
                       [
                         t('review.stepSequence'),
-                        twoStep
-                          ? p.motion.body.travel === 0 && p.motion.travel === 0
-                            ? t('review.stepHoldOnly')
-                            : p.motion.travel === 0
-                              ? t('review.stepBodyThenHold')
-                              : t('review.stepBodyThenDoor')
-                          : p.motion.travel === 0
+                        plan.mode === 'door_only'
+                          ? p.motion.stroke === 0
                             ? t('review.stepDoorHold')
-                            : t('review.stepDoorOnly'),
+                            : t('review.stepDoorOnly')
+                          : p.motion.body.stroke === 0 && p.motion.stroke === 0
+                            ? t('review.stepHoldOnly')
+                            : p.motion.stroke === 0
+                              ? t('review.stepBodyThenHold')
+                              : t('review.stepBodyThenDoor'),
                       ],
-                      ...(twoStep
+                      ...(plan.mode === 'body_then_door'
                         ? [
                             [
                               t('review.bodyTravel'),
-                              t('review.bodyMotionSummary', {
-                                travel: p.motion.body.travel,
-                                duration: p.motion.body.duration,
+                              t('review.bodyMotionSummaryV2', {
+                                stroke: String(p.motion.body.stroke),
+                                angle: String(p.motion.body.angle),
+                                duration: String(p.motion.body.duration),
                               }),
                             ] as [string, string],
                           ]
@@ -1918,6 +2254,20 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       })
                     }
                   />
+                  <small>{t('review.thicknessHelp')}</small>
+                  <NumberInput
+                    label={t('review.reportingWidth')}
+                    unit="mm"
+                    min={1e-9}
+                    max={1e6}
+                    value={p.analysis.reporting_width}
+                    onChange={(v) =>
+                      edit((n) => {
+                        n.analysis.reporting_width = v
+                      })
+                    }
+                  />
+                  <small data-testid="reporting-width-help">{t('review.reportingWidthHelp')}</small>
                   <label>
                     {t('review.forceReporting')}
                     <select
@@ -1932,6 +2282,22 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       <option value="per_mm">{t('review.perMm')}</option>
                     </select>
                   </label>
+                  {p.analysis.reporting_width_basis === 'legacy_thickness' && (
+                    <p className="notice" data-testid="legacy-force-basis">
+                      {t('review.legacyForceBasis', {
+                        width: String(p.analysis.reporting_width),
+                      })}
+                    </p>
+                  )}
+                  {p.contact.friction === null && (
+                    <p className="motion-vector" data-testid="review-contact-pairs">
+                      {t('contact.pairSummary', {
+                        door: String(p.contact.door_seal),
+                        body: String(p.contact.body_seal),
+                        self: String(p.contact.seal_self),
+                      })}
+                    </p>
+                  )}
                   <AssemblyDiagnostics
                     assessment={readiness?.assembly ?? null}
                     dirty={dirty}
@@ -2015,10 +2381,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       clearance={placement?.initial_vertical_mesh_clearance_mm ?? null}
                     />
                   )}
-                  <button className="wide" onClick={() => changeStage(STAGE.mesh)}>
-                    <Grid2X2 />
-                    {t('review.goToMesh')}
-                  </button>
                 </>
               )}
               {locked && (
@@ -2130,10 +2492,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 <>
                   <h3>{t('mesh.meshSection')}</h3>
                   <p>{t('hint.meshRequired')}</p>
-                  <button className="wide" onClick={() => changeStage(STAGE.mesh)}>
-                    <Grid2X2 />
-                    {t('review.goToMesh')}
-                  </button>
                 </>
               )}
               {stage === STAGE.review &&
@@ -2144,9 +2502,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <>
                     <h3>{t('mesh.fixtureSection')}</h3>
                     <p>{dirty ? t('status.unsaved') : t('review.fixtureNeedsReview')}</p>
-                    <button className="wide" onClick={() => changeStage(dirty ? STAGE.mesh : STAGE.mounting)}>
-                      {dirty ? t('review.goToMesh') : t('review.goToMounting')}
-                    </button>
+                    {!dirty && (
+                      <button className="wide" onClick={() => changeStage(STAGE.mounting)}>
+                        {t('review.goToMounting')}
+                      </button>
+                    )}
                   </>
                 )}
             </fieldset>

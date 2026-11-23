@@ -1,5 +1,69 @@
 # Abaqus QOL implementation handoff
 
+## Second UI and 2D engineering pass — delivered · 2026-11-24
+
+Baseline `aa2964b4e1ed4640f2a4e28c8a2a74e1e7a37393`, matching `origin/main`; only the execution brief,
+visual reference and this handoff entry were uncommitted before work. All verification used isolated
+`--test-data` data and disposable synthetic projects. The operator instance, database, drawings and
+retained licensed runs were not modified.
+
+**Requests 1–16 are implemented.** The 16-row PASS/FAIL table, gate results and file list are in
+[implementation-report.md](docs/implementation-report.md#a10-second-ui-and-2d-engineering-pass--2026-11-24).
+Licensed execution (three synthetic cases) is recorded separately in
+[engineering-validation.md](docs/engineering-validation.md#second-ui-and-2d-engineering-pass--licensed-execution--2026-11-24).
+**Physical correlation, numerical sensitivity and self-contact participation remain BLOCKED.**
+
+### Delivered in this pass
+
+- Shell uses the full parent width with 16–32 px gutters; local vector hollow-seal brand; tangerine active
+  navigation; 16 px body type and role-specific labels.
+- Both Dashboard create flows start empty; the public-example checkbox is gone; synthetic seeding stays in
+  the test API.
+- DXF/DWG units are converted once to mm with declaration/factor/provenance recorded; US survey units and
+  aliases supported; range and contradictory metadata are reported, never guessed.
+- Contact has independent door↔seal, body↔seal and seal↔self coefficients written as named assembly
+  surface pairs in both decks; legacy scalar friction is preserved exactly.
+- Steps are derived from participating roles; duplicate roles are reported, never silently dropped.
+- Motion uses stroke + direction angle with a shared Δ convention; the deck writes both U1/U2 targets;
+  per-panel preview animates and restores without writing.
+- Reporting width W (default 100 mm) is separate from solver thickness t; displayed force is (RF·d)·W/t.
+- “Export displayed curve” is a two-row spreadsheet CSV (magnitude, projected force) with holes for missing
+  measurements and a stated basis.
+- The section cut is acquired on the white viewport with canonical snapping and real click preview/apply.
+- Review actions are the first Properties group; “Go to Mesh” shortcuts are removed; the pane scrolls to
+  the top on stage change.
+- Results defaults to mesh edges on; playback has a fixed status track, bounded read-ahead and monotonic
+  deadlines.
+
+### Tests actually run (this machine, isolated data)
+
+- `pytest -q`: **279 passed, 1 skipped** (opt-in Abaqus-Python roundtrip), exit 0.
+- `test:i18n`: **806 keys** both languages. `test:encoding`: 43 files. `typecheck`: pass.
+- `build`: release **`6a8527d475c5`**, entry `index-CfGm1X5y.js`, API 3.
+- `test:browser`: **103 passed, 3 skipped** (two opt-in replays, gated screenshot capture).
+- Gate F measured median 243.1 ms, p95 error 30 ms, worst 257 ms over 62 transitions; host/slider/camera
+  stable. See `.local/gate-f-measurements.json`.
+- Before/after screenshots: `.local/screenshots/{before,after}` at 2560/1440/390 in both locales.
+- Licensed runs: vertical `b3859d0a…`, oblique `76b20d84…`, partition `bbe7a44c…`; all solver and extraction
+  succeeded. Details and hashes in the validation record.
+
+### Next executable slice
+
+1. Re-run the oblique and partition cases with mesh/time refinement and inspect contact pressure/slip
+   history, then obtain independent reference measurements and agreed tolerances before any physical claim.
+2. Demonstrate self-contact participation with an observable pressure/slip result, or leave it BLOCKED.
+3. Run hosted Windows CI for this tree; reproduce the two previously hosted browser failures under comparable
+   conditions.
+4. Add pan/zoom DPR-2 cut acquisition coverage if the projection discrepancy is reproduced.
+
+## Second UI and 2D engineering pass — execution brief · 2026-11-23
+
+Start with [the 16-request execution brief](docs/workbench-phase-two-execution-brief.txt) and the [workbench visual reference](docs/workbench-visual-reference.png). Local and remote main matched `aa2964b4e1ed4640f2a4e28c8a2a74e1e7a37393` at inspection. [Hosted CI for that SHA](https://github.com/stefanoKS/Abaqus_QualityOfLife/actions/runs/45185600553/job/137730259257) passed Python and failed the material comparison and renderer browser checks.
+
+One temporary instrumented Edge/Playwright test passed against release `07b80dd311ac` on isolated port 18963 using the manufactured worker. The Dashboard scroller measured 1950 px in a 2560 px window. In 1440×900 Results the slider lost about 47 px on pending frames. With 180 ms added to odd frame requests, adjacent display intervals included 243 ms and 445 ms while camera signature and host size stayed stable. No licensed run or retained replay was used for this investigation. The previous full-suite counts below belong to the preceding implementation.
+
+**Next executable slice.** Capture these three baseline symptoms, repair the layout and playback regressions using Gates A/F, then carry the domain contracts for units, contact, motion and represented width through both deck paths, extraction and the two-row export. Gate E exercises the cut entirely by viewport clicks. Remaining engineering dependencies include a local licensed oblique/contact verification case, retained playback with proven provenance, and independent physical reference data.
+
 ## UI redesign, direct deletion and seal partitioning — delivered · 2026-11-23
 
 Baseline `6ace5475ba9f76b21cd2cc915a4c195f6d87fa9b`, matching `origin/main`. The working tree held

@@ -79,8 +79,8 @@ test('engineer-entered values and the active step survive a language switch', as
   await page.goto('/#workspace/' + revision.id)
   const workflow = page.getByRole('navigation', { name: 'ワークフロー' })
   await workflow.getByRole('button', { name: '移動条件' }).click()
-  const travel = page.getByLabel('Y 方向の強制移動量 (mm)')
-  await travel.fill('-6.5')
+  const travel = page.getByRole('spinbutton').first()
+  await travel.fill('6.5')
   await travel.press('Tab')
   await expect(page.getByText('未保存の変更があります')).toBeVisible()
 
@@ -88,8 +88,8 @@ test('engineer-entered values and the active step survive a language switch', as
 
   // Same step, same committed numeric value, English labels.
   await expect(page.getByRole('navigation', { name: 'Workflow' })).toBeVisible()
-  const englishTravel = page.getByLabel('Prescribed Y travel (mm)')
-  await expect(englishTravel).toHaveValue('-6.5')
+  const englishTravel = page.getByLabel('Door panel stroke (mm)')
+  await expect(englishTravel).toHaveValue('6.5')
   await expect(page.getByText('Unsaved changes')).toBeVisible()
   // The draft is still unsaved, so saving must remain available.
   await expect(page.getByRole('button', { name: 'Save revision' })).toBeEnabled()
@@ -102,6 +102,7 @@ test('engineer-entered values and the active step survive a language switch', as
   }[]
   const head = projects.find((project) => project.id === revision.project)!
   const saved = (await (await request.get('/api/revisions/' + head.revision)).json()) as Revision
+  expect(saved.setup.motion.stroke).toBe(6.5)
   expect(saved.setup.motion.travel).toBe(-6.5)
 })
 
@@ -162,10 +163,16 @@ test('Japanese Create, Import, Mesh, Mounting, Review and Results labels are rea
 }) => {
   await page.goto('/#dashboard')
   await page.getByRole('button', { name: '新規プロジェクト' }).click()
-  await expect(page.getByLabel('プロジェクト名')).toBeVisible()
-  await expect(page.getByLabel('モデル名')).toBeVisible()
-  await expect(page.getByLabel('公開サンプル断面から開始する')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'プロジェクトを作成' })).toBeVisible()
+  // Use the form container instead of accessible-name lookup so a large,
+  // accumulated dashboard cannot affect this localization check.
+  const form = page.locator('.create-form').first()
+  await expect(form).toBeVisible()
+  await expect(form).toContainText('プロジェクト名')
+  await expect(form).toContainText('モデル名')
+  await expect(form).toContainText(
+    '新しいモデルは空の状態で作成され、インポート画面で開きます。公開サンプルは自動では入りません。',
+  )
+  await expect(form.getByRole('button', { name: 'プロジェクトを作成' })).toBeVisible()
   await page.getByRole('button', { name: 'キャンセル' }).click()
 
   const revision: Revision = await (

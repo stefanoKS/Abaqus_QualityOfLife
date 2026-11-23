@@ -1,5 +1,76 @@
 # Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
+## A10. Second UI and 2D engineering pass · 2026-11-24
+
+Baseline `aa2964b4e1ed4640f2a4e28c8a2a74e1e7a37393`, equal to `origin/main`; the working tree held only
+the execution brief, the visual reference and the handoff entry before work. All tests used isolated
+`--test-data` data and disposable synthetic projects. The operator instance, database, drawings and
+retained licensed artifacts were not modified. Licensed verification used three disposable synthetic
+cases and the installed Abaqus 2024 launcher; it is recorded separately in
+[engineering-validation.md](engineering-validation.md).
+
+### Request status (16 rows)
+
+| # | Request | Change | Test / evidence | Outcome |
+|---|---|---|---|---|
+| 1 | Usable app width | Removed the 1950 px page cap and left alignment; full-width scrollers with 16–32 px symmetric gutters | `apps/web/tests/gate-a.spec.ts` at 2560/2547/1920/1440/1280/390 px; keyboard inline model flow | **PASS** |
+| 2 | Remove public-example checkbox | Both Dashboard create flows start empty; synthetic seeds only through the test API | `gate-a.spec.ts` create-flow test; `workflow.spec.ts`; `i18n.spec.ts` | **PASS** |
+| 3 | Normalize world geometry to mm | Full DXF/DWG unit enumeration (incl. US survey), one recorded conversion, range/metadata checks, no repeat scaling | `tests/test_units.py` (14), paired mm/inch/cm/m/survey fixtures; `import-units.spec.ts` | **PASS** (software) |
+| 4 | Remove overlapping viewport caption; three glyphs only | Caption deleted, retained offsets read-only in Motion, 44×44 icon buttons, focus ring | `gate-a.spec.ts` tools test; `renderer.spec.ts`; screenshots | **PASS** |
+| 5 | Independent contact coefficients | Door/body/self μ fields (default 0.7), named assembly surface pairs and three property assignments in both decks; legacy scalar preserved exactly | `tests/test_phase_two_domain.py`; `tests/test_two_step.py`; licensed oblique run with 0.17/0.43/0.81 | **PASS** (software + deck); self-contact participation **BLOCKED** |
+| 6 | Derive steps from roles | Server and browser derive one/two steps from participating roles; duplicate roles reported, never silently dropped; legacy modes retained | `tests/test_phase_two_domain.py`; `two-step.spec.ts`; `readiness` tests | **PASS** (software) |
+| 7 | Brand and visual identity | Local vector hollow-seal mark + text wordmark, ink/cobalt/jade/tangerine tokens, tangerine active nav | before/after screenshots; `gate-a.spec.ts`; contrast table in `tokens.css` | **PASS** |
+| 8 | Oblique in-plane motion | Nonnegative stroke + angle; Δ=(L cosθ, L sinθ) used by deck, assessment, metadata, extraction; both U1/U2 written and held | `test_phase_two_domain.py`; licensed oblique case measured U=(3,−4); `two-step.spec.ts` | **PASS** (software + licensed); numerical warnings recorded |
+| 9 | Prepare/submit inside Properties | Actions are the first group of the Review properties pane; grid dock removed; pane scrolls to top on stage change | `layout.spec.ts`, `contact-motion-actions.spec.ts`, screenshots | **PASS** |
+| 10 | Reporting width W | W=100 mm default separate from t=1 mm; (RF·d)·W/t and per-mm bases; W never enters the deck; legacy basis recorded | `test_phase_two_domain.py` golden identities; licensed 0.012273→1.2273 N; `curve.spec.ts` basis label | **PASS** |
+| 11 | Interactive section cut | Face boundary click acquisition, canonical snap, rubber band, back/Esc, one Apply, second cut, curved arc | `gate-e.spec.ts` (DPR 2, Escape, invalid, curved), `partition.spec.ts` (DPR 1 + pan/zoom); licensed bonded partition | **PASS** |
+| 12 | Remove Review “Go to Mesh” | All three shortcuts removed; explanations and the Mesh stage remain | `layout.spec.ts`, `contact-motion-actions.spec.ts` assert zero buttons | **PASS** |
+| 13 | Motion preview | Per-panel preview along the vector and back, stop/reduced-motion, no writes/camera change, hold disabled | `motion-preview.spec.ts` | **PASS** |
+| 14 | Larger readable type | 16 px body, ≥15 px workspace labels, larger metadata/controls/plots; 100% and 200% zoom | `gate-a.spec.ts`; screenshots at 1440 and 390 | **PASS** |
+| 15 | Two-row spreadsheet CSV | Exactly two numeric rows (magnitude, projected force), no header/time/index, holes vs measured zero | `curve.spec.ts` download bytes; `gate-d.spec.ts` missing/zero cells; `test_phase_two_domain.py` identities | **PASS** |
+| 16 | Stable playback and default edges | Fixed status track, bounded read-ahead, monotonic deadlines; mesh edges on by default | `gate-f.spec.ts` measured 62 transitions; `playback.spec.ts`; `ranges.spec.ts` | **PASS** |
+
+### Gates
+
+| Gate | Result | Evidence |
+|---|---|---|
+| A Layout / brand / actions | **PASS** | 10 Gate A assertions incl. 2560 px, 200% zoom, three 44 px tools, empty create flows, keyboard inline flow and focus checks |
+| B Units / role-derived steps | **PASS** (software) | Paired mm–inch–cm–m–survey fixtures, bulged arc, spline, missing/unitless/unknown/overflow; role one→two→one tests |
+| C Contact / oblique / preview | **PASS** software + licensed oblique; self-contact participation **BLOCKED** | Distinct μ in INP and metadata; U=(3,−4); preview endpoint/restore |
+| D Width / force / two-row curve | **PASS** | Browser download bytes incl. missing component/force and measured zero; (−3,4)→−500 N, per-mm 5 N/mm, legacy t=2→500 N |
+| E Interactive cut | **PASS** | Real WebGL clicks, DPR 1/2, panic/cancel with zero writes, curved arc; licensed bonded partition |
+| F Playback | **PASS** | median 243.1 ms, p95 error 30 ms, worst 257 ms, 31 frames/62 transitions; host 917.95×378 and slider 833.95 px stable; camera constant |
+| G Release / engineering | **PASS locally; hosted CI and physical correlation not run** | Full suites, schema regeneration stable, build `6a8527d475c5`; licensed runs recorded separately |
+
+### Verification actually run
+
+- `.\.venv\Scripts\python.exe -m pytest -q --junitxml=.local/phase2-final-pytest.xml`: **279 passed, 1 skipped** (the opt-in Abaqus-Python extractor roundtrip), exit 0.
+- `npm --prefix apps/web run test:i18n`: **806 keys** in both dictionaries.
+- `npm --prefix apps/web run test:encoding`: 43 source files, no known mojibake.
+- `npm --prefix apps/web run typecheck`: pass.
+- `npm --prefix apps/web run build`: release **`6a8527d475c5`**, entry `index-CfGm1X5y.js`, API 3, 3 files.
+- `npm --prefix apps/web run test:browser`: **103 passed, 3 skipped** (the 3 skips are the two opt-in retained-result replays and the gated screenshot capture).
+- `git diff --check`: clean. `scripts/schema.py` regenerated `generated.ts`; a second run was byte-identical (`0FF8684B…`).
+
+### Evidence
+
+- Before/after captures at 2560×1440, 1440×900 and 390×844 in both locales, plus Review and Results at 1440, are under `.local/screenshots/before/` and `.local/screenshots/after/` (local, ignored). "Before" was captured from an isolated worktree of `aa2964b` serving release `07b80dd311ac`; "after" from the final release `6a8527d475c5`.
+- Playback measurements: `.local/gate-f-measurements.json`.
+- Two-row sample export: `.local/evidence/sample-two-row-curve.csv` (2 rows × 31 samples, magnitude 0→10 mm,
+  projected total force 0→4001.6 N at W = 100). It is **manufactured test evidence** from the isolated
+  launcher double, not a licensed solve, and is labelled as such here.
+- Section-cut interaction: `.local/screenshots/after/partition-cut-hover-1440-en.png` (rubber band and A/B
+  handles) and `partition-cut-preview-1440-en.png` (children and shared edge; areas 28.803/28.797 mm²).
+- Licensed records and artifact paths: [engineering-validation.md](engineering-validation.md). The licensed files are under `.local/phase2-licensed/` and are not committed.
+
+### Known gaps after this delivery
+
+1. Licensed self-contact participation was not demonstrated; no pressure/slip evidence exists for the seal↔seal pair.
+2. All three licensed runs completed but emitted repeated contact penetration/cut-back warnings; numerical sensitivity and physical correlation remain **BLOCKED**.
+3. Pan/zoom acquisition at DPR 2 was not reproduced in the automated Gate E test (DPR 2 default camera and DPR 1 pan/zoom are covered separately); one development run showed a projection mismatch after pan+zoom at DPR 2 that was not reproduced after simplifying the test.
+4. The Gate D hole/zero test modifies only the results-index transport for the browser test; it is UI evidence, not a solver artifact.
+5. Hosted Windows CI was not run for this working tree.
+
 ## A8. UI redesign, direct deletion and seal partitioning · 2026-11-23
 
 Baseline `6ace5475ba9f76b21cd2cc915a4c195f6d87fa9b`, matching `origin/main`. Work continued in the

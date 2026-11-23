@@ -159,8 +159,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
     [creationToken, setCreationToken] = useState(requestToken)
   const [modelGroup, setModelGroup] = useState<string | null>(null),
     [modelName, mn] = useState(''),
-    [modelDim, md] = useState('2D'),
-    [example, setExample] = useState(false)
+    [modelDim, md] = useState('2D')
   const [openRevisions, revealRevisions] = useState<string | null>(null),
     [history, setHistory] = useState<RevisionSummary[]>([])
   const [busy, setBusy] = useState(false)
@@ -217,13 +216,11 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
         name: name.trim(),
         model_name: (firstModel.trim() || name).trim(),
         dimension: dim,
-        example,
         token: creationToken,
       })
       createGroupForm(false)
       nm('')
       first('')
-      setExample(false)
       setCreationToken(requestToken())
       await refresh()
       go('workspace/' + created.model.id)
@@ -250,11 +247,10 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
         name: modelName.trim(),
         dimension: modelDim,
         group,
-        example,
       })
       setModelGroup(null)
       mn('')
-      setExample(false)
+
       await refresh()
       go('workspace/' + r.id)
     } catch (e) {
@@ -458,15 +454,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               <option value="3D">{t('dashboard.section3d')}</option>
             </select>
           </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={example}
-              onChange={(e) => setExample(e.target.checked)}
-            />
-            {t('dashboard.example')}
-          </label>
-          <small>{t('dashboard.exampleHint')}</small>
+          <small className="create-note">{t('dashboard.startsEmpty')}</small>
           <button className="primary" disabled={busy || !name.trim() || !compat.ok}>
             {t('dashboard.createProject')}
           </button>
@@ -553,14 +541,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                     <option value="3D">{t('dashboard.section3d')}</option>
                   </select>
                 </label>
-                <label className="check">
-                  <input
-                    type="checkbox"
-                    checked={example}
-                    onChange={(e) => setExample(e.target.checked)}
-                  />
-                  {t('dashboard.example')}
-                </label>
+                <small className="create-note">{t('dashboard.startsEmpty')}</small>
                 <button className="primary" disabled={busy || !modelName.trim()}>
                   {t('dashboard.createModel')}
                 </button>

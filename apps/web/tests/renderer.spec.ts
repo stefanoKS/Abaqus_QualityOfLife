@@ -63,7 +63,8 @@ test('repeated display changes reuse or replace actors without leaking or mispic
     'data-scene-instances',
     'WS-1,PANEL-1',
   )
-  await expect(page.getByTestId('assembly-preview')).toContainText('PANEL-1')
+  // The assembled position overlay is gone; retained offsets are read-only in
+  // Properties, and the viewport only reports the instances it drew.
   await page.getByRole('button', { name: 'Toggle mesh' }).click()
   await expect.poll(() => actorCount(page)).toBe(twoD.primitives.length)
   await page.getByRole('button', { name: 'Toggle mesh' }).click()

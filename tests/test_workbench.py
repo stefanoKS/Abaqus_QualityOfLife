@@ -53,7 +53,9 @@ def request_run(api, r, deck, name="Test run"):
 def test_persisted_revisions_and_safe_topology(client):
     r = create_model(client, "Original")
     edited = copy.deepcopy(r["setup"])
-    edited["motion"]["travel"] = -4
+    edited["motion"]["stroke"] = 4.0
+    edited["motion"]["angle"] = -90.0
+    edited["motion"]["travel"] = -4.0
     payload = {"setup": edited, "base": r["id"]}
     saved = client.put("/api/projects/" + r["project"], json=payload)
     assert saved.is_success

@@ -9,6 +9,7 @@ from .deck import (
     mesh_parts,
     motion_assessment,
 )
+from packages.engineering import motion as motion_policy
 from .interchange import (
     align_histories,
     canonical_step,
@@ -17,6 +18,18 @@ from .interchange import (
     save_frame,
     write_json,
 )
+
+
+def _force_basis(project):
+    """Displayed-force basis recorded with every new run.
+
+    ``legacy_unscaled`` means the run predates the reporting width; its own
+    solver thickness was the whole basis. New setups record the represented
+    width explicitly so the chart, export and documentation agree.
+    """
+    if project.schema_version < 4 or project.analysis.reporting_width_basis == "legacy_thickness":
+        return "legacy_unscaled"
+    return "per_mm" if project.analysis.force_normalization == "per_mm" else "total_width"
 
 
 def _metadata(project, nodes, ws, panel, fixture=None, body=None):
@@ -50,23 +63,40 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
     # direction. A bottom-mounted body projects along +Y while the door above
     # it projects along -Y; neither direction is assumed from the other.
     door = motion_assessment(
-        nodes, boundary, panel, project.motion, role="door", instance="PANEL-1", label="door"
+        nodes,
+        boundary,
+        panel,
+        project.motion,
+        role="door",
+        instance="PANEL-1",
+        label="door",
+        schema_version=project.schema_version,
     )
     seated = (
         motion_assessment(
-            nodes, boundary, body, project.motion.body, role="body", instance="BODY-1",
+            nodes,
+            boundary,
+            body,
+            project.motion.body,
+            role="body",
+            instance="BODY-1",
             label="body",
+            schema_version=project.schema_version,
         )
-        if body is not None
+        if body
         else None
     )
+    door_motion = motion_policy.resolve(project.motion, project.schema_version)
+    body_motion = motion_policy.resolve(project.motion.body, project.schema_version, body=True)
     closing = {
         "panel": panel[0]["component"],
         "panel_name": label(panel[0]["component"]),
         "instance": "PANEL-1",
         "reference_label": reference,
         "direction": door["direction"],
-        "distance_mm": abs(project.motion.travel),
+        "distance_mm": door_motion["stroke"],
+        "angle_deg": door_motion["angle"],
+        "delta_mm": door_motion["delta"],
         "measure_from_step_start": True,
         "steps": [{"name": "Closing", "role": "door"}],
     }
@@ -80,18 +110,24 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
             "instance": "PANEL-1",
             "reference_label": reference,
             "direction": door["direction"],
-            "distance_mm": abs(project.motion.travel),
-            "travel_mm": project.motion.travel,
+            "distance_mm": door_motion["stroke"],
+            "angle_deg": door_motion["angle"],
+            "delta_mm": door_motion["delta"],
+            "travel_mm": door_motion["delta"][1],
+            "stroke_mm": door_motion["stroke"],
             "duration_s": project.motion.duration,
         }
     ]
     placement = {
         "initial_offset_y_mm": project.motion.offset,
         "initial_vertical_mesh_clearance_mm": door["clearance_mm"],
-        "prescribed_panel_travel_y_mm": project.motion.travel,
+        "prescribed_panel_travel_y_mm": door_motion["delta"][1],
         # Role-aware additions; the legacy key above keeps its exact meaning.
         "door_side": door["side"],
         "door_direction": door["direction"],
+        "door_angle_deg": door_motion["angle"],
+        "door_stroke_mm": door_motion["stroke"],
+        "door_delta_mm": door_motion["delta"],
         "initial_door_clearance_mm": door["clearance_mm"],
         "door_reaches_initial_gap": door["reaches_initial_gap"],
         "door_hold": door["hold"],
@@ -101,11 +137,24 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
         "PANEL-1": {str(e["id"]): e["entity"] for e in panel},
     }
     result = {
+        # Extractors accept version 1; new fields are additive and optional.
         "version": 1,
+        "schema_version": project.schema_version,
         "units": project.units,
         "dimension": project.dimension,
         "thickness": project.analysis.thickness,
+        "thickness_mm": project.analysis.thickness,
+        "reporting_width_mm": project.analysis.reporting_width,
+        "reporting_width_basis": project.analysis.reporting_width_basis,
+        "force_basis": _force_basis(project),
         "force_normalization": project.analysis.force_normalization,
+        "contact": {
+            "basis": "legacy" if project.contact.friction is not None else "named_pairs",
+            "door_seal": project.contact.door_seal,
+            "body_seal": project.contact.body_seal,
+            "seal_self": project.contact.seal_self,
+            "legacy_scalar": project.contact.friction,
+        },
         "requested": project.analysis.outputs,
         "placement": placement,
         "assembly": {"door": door, "body": seated},
@@ -140,8 +189,11 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
             "instance": "BODY-1",
             "reference_label": body_reference,
             "direction": seated["direction"],
-            "distance_mm": abs(project.motion.body.travel),
-            "travel_mm": project.motion.body.travel,
+            "distance_mm": body_motion["stroke"],
+            "angle_deg": body_motion["angle"],
+            "delta_mm": body_motion["delta"],
+            "travel_mm": body_motion["delta"][1],
+            "stroke_mm": body_motion["stroke"],
             "duration_s": project.motion.body.duration,
             "measure_from_step_start": True,
             "side": seated["side"],
@@ -150,9 +202,12 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
             {
                 "initial_body_offset_y_mm": project.motion.body.offset,
                 "initial_body_vertical_mesh_clearance_mm": seated["clearance_mm"],
-                "prescribed_body_travel_y_mm": project.motion.body.travel,
+                "prescribed_body_travel_y_mm": body_motion["delta"][1],
                 "body_side": seated["side"],
                 "body_direction": seated["direction"],
+                "body_angle_deg": body_motion["angle"],
+                "body_stroke_mm": body_motion["stroke"],
+                "body_delta_mm": body_motion["delta"],
                 "initial_body_clearance_mm": seated["clearance_mm"],
                 "body_reaches_initial_gap": seated["reaches_initial_gap"],
                 "body_hold": seated["hold"],
@@ -166,8 +221,11 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
                 "instance": "BODY-1",
                 "reference_label": body_block["reference_label"],
                 "direction": seated["direction"],
-                "distance_mm": abs(project.motion.body.travel),
-                "travel_mm": project.motion.body.travel,
+                "distance_mm": body_motion["stroke"],
+                "angle_deg": body_motion["angle"],
+                "delta_mm": body_motion["delta"],
+                "travel_mm": body_motion["delta"][1],
+                "stroke_mm": body_motion["stroke"],
                 "duration_s": project.motion.body.duration,
             },
             steps[0],
@@ -240,21 +298,36 @@ def write_playback(project, mesh, job_dir, fixture=None, mode="DEMO", notice=Non
     xmin, xmax = min(n[1] for n in seal), max(n[1] for n in seal)
     fixed = set(fixed_nodes(project, mesh, fixture))
     gap = metadata["placement"]["initial_vertical_mesh_clearance_mm"]
+    door_motion = motion_policy.resolve(project.motion, project.schema_version)
+    direction = door_motion["delta"]
+    length = (direction[0] ** 2 + direction[1] ** 2) ** 0.5
+    unit = (
+        [direction[0] / length, direction[1] / length] if length > 1e-12 else [0.0, -1.0]
+    )
+    perpendicular = [-unit[1], unit[0]]
     travel = {"U1": {}, "U2": {}, "RF1": {}, "RF2": {}}
     for i in range(31):
         fraction = i / 30
         time = project.motion.duration * fraction
-        movement = project.motion.travel * fraction
-        synthetic_closure = max(0, -movement - gap)
+        movement = [value * fraction for value in door_motion["delta"]]
+        along = movement[0] * unit[0] + movement[1] * unit[1]
+        synthetic_closure = max(0, along - gap)
         dy_max = min(synthetic_closure, (ymax - ymin) * 0.8)
         field = {}
         if "U" in project.analysis.outputs:
-            field["PANEL-1"] = [[n[0], 0, movement, 0] for n in instances[1]["nodes"]]
+            field["PANEL-1"] = [[n[0], movement[0], movement[1], 0] for n in instances[1]["nodes"]]
             field["WS-1"] = []
             for label, x, y, _ in seal:
                 weight = 0 if label in fixed else (y - ymin) / (ymax - ymin)
                 bulge = (x - (xmin + xmax) / 2) / (xmax - xmin) * 0.24 * dy_max * weight
-                field["WS-1"].append([label, bulge, -weight * dy_max, 0])
+                field["WS-1"].append(
+                    [
+                        label,
+                        weight * dy_max * unit[0] + bulge * perpendicular[0],
+                        weight * dy_max * unit[1] + bulge * perpendicular[1],
+                        0,
+                    ]
+                )
         save_frame(
             job_dir,
             result,
@@ -267,16 +340,15 @@ def write_playback(project, mesh, job_dir, fixture=None, mode="DEMO", notice=Non
             },
         )
         # Free illustrative curve; coefficients are not measured material parameters.
-        # Measured convention: Abaqus reports RF2 < 0 while the seal resists the
-        # downward stroke, so the force projected onto the closing direction is
-        # positive and grows with travel.
-        force = -project.analysis.thickness * (
+        # The reaction on the rigid panel opposes its prescribed travel, so the
+        # projection onto the travel direction is positive and grows with closure.
+        force = project.analysis.thickness * (
             1.6 * synthetic_closure + 0.4 * synthetic_closure**2
         )
-        travel["U1"][time] = 0.0
-        travel["U2"][time] = movement
-        travel["RF1"][time] = 0.0
-        travel["RF2"][time] = force
+        travel["U1"][time] = movement[0]
+        travel["U2"][time] = movement[1]
+        travel["RF1"][time] = force * unit[0]
+        travel["RF2"][time] = force * unit[1]
     if "U" not in project.analysis.outputs:
         result["unavailable"].append("U")
     result["history"] = align_histories(travel, metadata, step="Closing")

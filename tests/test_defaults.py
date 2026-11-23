@@ -24,11 +24,23 @@ def legacy_payload():
 
 def test_new_models_use_the_milestone_defaults():
     for project in (engineering.empty("Blank"), engineering.synthetic("Example")):
-        assert project.schema_version == 3
+        assert project.schema_version == 4
         assert project.motion.travel == -10.0
+        assert project.motion.stroke == 10.0
+        assert project.motion.angle == -90.0
         assert project.mesh.size == 0.5
         assert project.motion.duration == 1.0
         assert project.motion.body.duration == 1.0
+        # Version 4: represented 100 mm reporting width while the solve stays at
+        # a 1 mm plane-stress thickness, and independent pair coefficients.
+        assert project.analysis.thickness == 1.0
+        assert project.analysis.reporting_width == 100.0
+        assert project.analysis.reporting_width_basis == "default_100_mm"
+        assert project.contact.scope == "named_pairs"
+        assert project.contact.friction is None
+        assert project.contact.door_seal == 0.7
+        assert project.contact.body_seal == 0.7
+        assert project.contact.seal_self == 0.7
     # A named example that intentionally specifies a control keeps it.
     explicit = engineering.synthetic("Explicit example")
     explicit.mesh = MeshSpec(size=1.5)
@@ -40,6 +52,11 @@ def test_version_1_payload_keeps_its_original_defaults():
     assert project.mesh.size == 1.0
     assert project.motion.duration == 1.3
     assert project.motion.body.duration == 1.0
+    # Legacy contact keeps one global coefficient and its own force basis.
+    assert project.contact.scope == "all_exterior"
+    assert project.contact.friction == 0.3
+    assert project.analysis.reporting_width_basis == "legacy_thickness"
+    assert project.analysis.reporting_width == project.analysis.thickness
     # Saving a new revision writes the effective values explicitly; re-reading
     # them never applies the version-2 defaults.
     again = Project.model_validate(project.model_dump(mode="json"))
@@ -65,8 +82,12 @@ def test_api_creation_and_duplication_keep_effective_defaults(monkeypatch, tmp_p
             "/api/projects", json={"name": "Default model", "example": False}
         ).json()
         setup = revision["setup"]
-        assert setup["schema_version"] == 3
+        assert setup["schema_version"] == 4
         assert setup["motion"]["travel"] == -10.0
+        assert setup["motion"]["stroke"] == 10.0
+        assert setup["motion"]["angle"] == -90.0
+        assert setup["analysis"]["reporting_width"] == 100.0
+        assert setup["contact"]["scope"] == "named_pairs"
         assert setup["mesh"]["size"] == 0.5
         assert setup["motion"]["duration"] == 1.0
         assert setup["motion"]["body"]["duration"] == 1.0
@@ -101,9 +122,11 @@ def test_two_panel_template_is_explicit_and_reproducible(monkeypatch, tmp_path):
         ).json()
         setup = revision["setup"]
         assert setup["analysis"]["mode"] == "body_then_door"
-        assert setup["schema_version"] == 3
+        assert setup["schema_version"] == 4
         assert setup["mesh"]["size"] == 0.5
         assert setup["motion"]["body"]["travel"] == 5.0
+        assert setup["motion"]["body"]["stroke"] == 5.0
+        assert setup["motion"]["body"]["angle"] == 90.0
         assert setup["motion"]["body"]["duration"] == 1.0
         assert setup["motion"]["travel"] == -10.0
         # The historical two-panel scenario keeps its explicit 1.3 s door step.

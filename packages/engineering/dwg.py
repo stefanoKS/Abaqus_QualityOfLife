@@ -14,6 +14,7 @@ from pathlib import Path
 from .geometry import Builder
 from .model import Source, SplineData
 from .section import assemble
+from . import units as units_policy
 
 SUPPORTED = {"LINE", "LWPOLYLINE", "POLYLINE", "SPLINE", "ARC", "CIRCLE", "POINT", "INSERT"}
 MAX_DRAWING = 8 * 1024 * 1024
@@ -22,8 +23,6 @@ ARC_SEGMENTS = 4  # 90-degree analytic arcs share endpoints unambiguously in OCC
 
 def _drawing_units(source):
     """Interpret the DWG unit header under the shared project unit policy."""
-    from . import units as units_policy
-
     declared = source.get("insUnits")
     if declared is None and source.get("insUnitsName"):
         declared = source.get("insUnitsName")
@@ -76,12 +75,18 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
     if units != "N-mm-s-tonne":
         raise ValueError("This application uses N-mm-s-tonne project units.")
     source = inventory.get("source", {})
-    unit_basis, note = _drawing_units(source)
+    unit = _drawing_units(source)
     builder = Builder(prefix=(digest or source.get("sha256") or "")[:10] + "_")
     counts = Counter()
     skipped = []
     warnings = list(inventory.get("warnings", []))
     spline_provenance = Counter()
+
+    def point(value, label):
+        return unit.point(tuple(value), label)
+
+    def length(value, label):
+        return unit.apply(value, label)
 
     for entity in inventory.get("entities", []):
         kind = entity.get("type", "")
@@ -89,8 +94,8 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
         layer = entity.get("layer", "") or "0"
         if kind == "LINE":
             builder.edge(
-                tuple(entity["start"]),
-                tuple(entity["end"]),
+                point(entity["start"], f"Line {handle}"),
+                point(entity["end"], f"Line {handle}"),
                 "section",
                 name=f"Line {handle}",
                 handle=handle,
@@ -101,28 +106,32 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
             if sweep <= 1e-9:
                 skipped.append({"handle": handle, "reason": "zero-sweep arc"})
                 continue
+            center = point(entity["center"], f"Arc {handle} center")
             parts, step = _arc_parts(
-                entity["center"], entity["radius"], entity["startAngle"], sweep
+                center, length(entity["radius"], f"Arc {handle} radius"), entity["startAngle"], sweep
             )
             for a, b in zip(parts, parts[1:]):
                 builder.edge(
                     a,
                     b,
                     "section",
-                    center=tuple(entity["center"]),
+                    center=center,
                     sweep=step,
                     name=f"Arc {handle}",
                     handle=handle,
                     layer=layer,
                 )
         elif kind == "CIRCLE":
-            parts, step = _arc_parts(entity["center"], entity["radius"], 0.0, math.tau)
+            center = point(entity["center"], f"Circle {handle} center")
+            parts, step = _arc_parts(
+                center, length(entity["radius"], f"Circle {handle} radius"), 0.0, math.tau
+            )
             for a, b in zip(parts, parts[1:]):
                 builder.edge(
                     a,
                     b,
                     "section",
-                    center=tuple(entity["center"]),
+                    center=center,
                     sweep=step,
                     name=f"Circle {handle}",
                     handle=handle,
@@ -132,7 +141,10 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
             vertices = entity.get("vertices", [])
             if not entity.get("closed") and vertices:
                 pass  # an open polyline is a legitimate rigid profile candidate
-            ordered = [tuple((v["x"], v["y"], 0.0)) for v in vertices]
+            ordered = [
+                point((v["x"], v["y"], 0.0), f"Polyline {handle} vertex")
+                for v in vertices
+            ]
             pairs = list(zip(ordered, ordered[1:]))
             if entity.get("closed") and ordered:
                 pairs.append((ordered[-1], ordered[0]))
@@ -164,8 +176,14 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
                         layer=layer,
                     )
         elif kind == "SPLINE":
-            control = [tuple(point) for point in entity.get("controlPoints", [])]
-            fits = [tuple(point) for point in entity.get("fitPoints", [])]
+            control = [
+                point(value, f"Spline {handle} control point")
+                for value in entity.get("controlPoints", [])
+            ]
+            fits = [
+                point(value, f"Spline {handle} fit point")
+                for value in entity.get("fitPoints", [])
+            ]
             degree = int(entity.get("degree") or 3)
             if control:
                 fits = []
@@ -202,7 +220,11 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
                 fit_points=fits,
                 knots=knots if provenance == "control_points" else [],
                 weights=[float(value) for value in entity.get("weights", [])],
-                tangents=[tuple(entity[key]) for key in ("startTangent", "endTangent") if entity.get(key)],
+                tangents=[
+                    point(entity[key], f"Spline {handle} tangent")
+                    for key in ("startTangent", "endTangent")
+                    if entity.get(key)
+                ],
                 closed=closed,
                 periodic=bool(entity.get("periodic")),
             )
@@ -232,12 +254,13 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
             "The drawing contains no supported planar curve. Entity counts: "
             + (", ".join(f"{key} {value}" for key, value in sorted(counts.items())) or "none")
         )
-    source_model = Source(
-        kind="dwg",
-        filename=source.get("path") or Path(name).name,
-        digest=digest or source.get("sha256", ""),
-        drawing_units=note,
-        unit_basis=unit_basis,
+    source_model = units_policy.record(
+        unit,
+        Source(
+            kind="dwg",
+            filename=source.get("path") or Path(name).name,
+            digest=digest or source.get("sha256", ""),
+        ),
     )
     project, report = assemble(builder, name, source_model, allow_open_profiles=True)
     report.update(
@@ -245,8 +268,11 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
             "reader": inventory.get("reader", {}),
             "sourceSha256": source.get("sha256", digest),
             "sourceVersion": source.get("version", ""),
-            "units": note,
-            "unitBasis": unit_basis,
+            "units": unit.note,
+            "unitBasis": unit.basis,
+            "unitDeclaration": unit.declaration,
+            "unitFactor": unit.factor,
+            "unitProvenance": unit.provenance,
             "entityCounts": dict(sorted(counts.items())),
             "skipped": skipped,
             "unknownEntities": inventory.get("unknown", {}),

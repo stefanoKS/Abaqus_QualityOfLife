@@ -6,7 +6,7 @@ import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor'
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper'
 import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData'
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray'
-import { colorAt, type Picked, type Scene, type Surface } from './viewportModel'
+import { colorAt, type Picked, type Scene, type Surface, type ViewportCut } from './viewportModel'
 import {
   outline,
   pickAt,
@@ -187,6 +187,14 @@ export class ViewportRenderer {
   private fixture: Set<string> = new Set()
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null
   private guide: number[][] = []
+  private cut: {
+    boundary?: number[][]
+    start?: [number, number] | null
+    end?: [number, number] | null
+    hover?: [number, number] | null
+    phase?: 'start' | 'end' | 'previewed'
+    invalid?: boolean
+  } | null = null
   private originPoint: ScreenPoint = [0, 0, 0]
   private dimension: '2D' | '3D' = '2D'
   private ctx: CanvasRenderingContext2D
@@ -417,6 +425,37 @@ export class ViewportRenderer {
     this.guide = points
     this.drawOverlay()
   }
+  /** Interactive section-cut state drawn on the 2D overlay, never in the model. */
+  setCut(cut: ViewportCut | null) {
+    this.cut = cut
+    this.drawOverlay()
+  }
+  /** Model XY under a CSS-pixel point using the affine orthographic projection. */
+  modelAt(xCss: number, yCss: number): [number, number] {
+    if (this.axes.length < 2) return [0, 0]
+    const [ax, ay] = [this.axes[0][0], this.axes[0][1]]
+    const [bx, by] = [this.axes[1][0], this.axes[1][1]]
+    const det = ax * by - ay * bx
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return [0, 0]
+    const px = xCss - this.originPoint[0]
+    const py = yCss - this.originPoint[1]
+    return [(px * by - py * bx) / det, (ax * py - ay * px) / det]
+  }
+  /** Project model XY to CSS pixels with the same affine basis used for picking. */
+  modelToScreen(x: number, y: number): ScreenPoint {
+    const [px, py] = this.originPoint
+    const ax = this.axes[0] ?? [0, 0, 0]
+    const ay = this.axes[1] ?? [0, 0, 0]
+    return [px + ax[0] * x + ay[0] * y, py + ax[1] * x + ay[1] * y, 0]
+  }
+  /** Model-space length represented by one CSS pixel at the current zoom. */
+  modelPerPixel(): number {
+    if (!this.axes.length) return 1
+    const x = Math.hypot(this.axes[0][0], this.axes[0][1])
+    const y = Math.hypot(this.axes[1][0], this.axes[1][1])
+    const scale = Math.sqrt(Math.max(x * y, 1e-12))
+    return scale > 0 ? 1 / scale : 1
+  }
   highlight(selection: Picked | null, hover: Picked | null) {
     this.selected = selection
     this.hovered = hover
@@ -436,6 +475,7 @@ export class ViewportRenderer {
     this.drawFixture(ctx)
     this.drawBox(ctx)
     this.drawGuide(ctx)
+    this.drawCut(ctx)
     if (!this.axes.length || !this.scene.surfaces.length) return
     const scale =
       this.height / (2 * this.renderer.getActiveCamera().getParallelScale())
@@ -509,6 +549,70 @@ export class ViewportRenderer {
       ctx.strokeStyle = '#ffffff'
       ctx.stroke()
     }
+    ctx.restore()
+  }
+  private drawCut(ctx: CanvasRenderingContext2D) {
+    if (!this.cut) return
+    ctx.save()
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    // Eligible boundary: a quiet dashed guide so the operator sees where the
+    // canonical point will land without mistaking it for geometry.
+    if (this.cut.boundary && this.cut.boundary.length > 1) {
+      ctx.strokeStyle = 'rgba(255,150,44,0.55)'
+      ctx.lineWidth = 1.4
+      ctx.setLineDash([6, 5])
+      ctx.beginPath()
+      this.cut.boundary.forEach((point, index) => {
+        const p = this.modelToScreen(point[0], point[1])
+        if (index === 0) ctx.moveTo(p[0], p[1])
+        else ctx.lineTo(p[0], p[1])
+      })
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+    const start = this.cut.start ? this.modelToScreen(this.cut.start[0], this.cut.start[1]) : null
+    const end = this.cut.end ? this.modelToScreen(this.cut.end[0], this.cut.end[1]) : null
+    const hover = this.cut.hover
+      ? this.modelToScreen(this.cut.hover[0], this.cut.hover[1])
+      : null
+    // Rubber band: from the accepted first point to the snapped candidate (or
+    // the accepted second point once previewed).
+    const second = end ?? (this.cut.phase === 'end' ? hover : null)
+    if (start && second) {
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      ctx.moveTo(start[0], start[1])
+      ctx.lineTo(second[0], second[1])
+      ctx.stroke()
+      ctx.strokeStyle = this.cut.invalid ? '#b42318' : '#e07a12'
+      ctx.lineWidth = 2.2
+      ctx.setLineDash(this.cut.phase === 'previewed' ? [] : [8, 5])
+      ctx.beginPath()
+      ctx.moveTo(start[0], start[1])
+      ctx.lineTo(second[0], second[1])
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+    // Handles: filled circles for accepted endpoints, a ring for the candidate.
+    const handle = (p: number[], filled: boolean, label: string) => {
+      ctx.beginPath()
+      ctx.arc(p[0], p[1], 7, 0, 2 * Math.PI)
+      ctx.fillStyle = filled ? '#ff962c' : '#ffffff'
+      ctx.fill()
+      ctx.lineWidth = 2.4
+      ctx.strokeStyle = this.cut?.invalid ? '#b42318' : '#10233f'
+      ctx.stroke()
+      if (label) {
+        ctx.fillStyle = '#10233f'
+        ctx.font = '600 12px system-ui, sans-serif'
+        ctx.fillText(label, p[0] + 10, p[1] - 9)
+      }
+    }
+    if (start) handle(start, true, 'A')
+    if (end) handle(end, true, 'B')
+    if (hover && this.cut.phase !== 'previewed') handle(hover, false, '')
     ctx.restore()
   }
   private drawFixture(ctx: CanvasRenderingContext2D) {

@@ -2,24 +2,27 @@ import { test, expect } from './fixtures'
 import { resolve } from 'node:path'
 import type { Revision } from '../src/api'
 
-test('edit, run, reload and reopen an immutable closing setup', async ({ page }) => {
+test('edit, run, reload and reopen an immutable closing setup', async ({ page, request }) => {
   const errors: string[] = []
   page.on('pageerror', (e) => errors.push(String(e)))
-  await page.goto('/#dashboard')
-  await page.getByRole('button', { name: 'New project' }).click()
-  await page.getByLabel('Project name').fill('Closure test')
-  await page.getByLabel('Start from the public example section').check()
-  await page.getByRole('button', { name: 'Create project' }).click()
+  // Synthetic seed geometry comes from the existing test API, not from a
+  // dashboard checkbox: creating a model never seeds the public example.
+  const seeded = await request.post('/api/projects', {
+    data: { name: 'Closure test', example: true },
+  })
+  expect(seeded.ok()).toBeTruthy()
+  const revision = await seeded.json()
+  await page.goto('/#workspace/' + revision.id)
   const workflow = page.getByRole('navigation', { name: 'Workflow' })
   await workflow.getByRole('button', { name: 'Motion' }).click()
-  await page.getByLabel('Prescribed Y travel (mm)').fill('-6.5')
-  await page.getByLabel('Prescribed Y travel (mm)').press('Tab')
+  await page.getByLabel('Door panel stroke (mm)').fill('6.5')
+  await page.getByLabel('Door panel stroke (mm)').press('Tab')
   await page.getByRole('button', { name: 'Save revision' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   const savedURL = page.url()
   await page.reload()
   await workflow.getByRole('button', { name: 'Motion' }).click()
-  await expect(page.getByLabel('Prescribed Y travel (mm)')).toHaveValue('-6.5')
+  await expect(page.getByLabel('Door panel stroke (mm)')).toHaveValue('6.5')
   await workflow.getByRole('button', { name: 'Mesh' }).click()
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
@@ -87,14 +90,14 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page })
   await expect(page.getByRole('slider')).toBeVisible()
   await page.goto(savedURL)
   await workflow.getByRole('button', { name: 'Motion' }).click()
-  await page.getByLabel('Prescribed Y travel (mm)').fill('-4')
-  await page.getByLabel('Prescribed Y travel (mm)').press('Tab')
+  await page.getByLabel('Door panel stroke (mm)').fill('4')
+  await page.getByLabel('Door panel stroke (mm)').press('Tab')
   await page.getByRole('button', { name: 'Save revision' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 03')
   await page.goto('/#setup/' + runId)
   await workflow.getByRole('button', { name: 'Motion' }).click()
-  await expect(page.getByLabel('Prescribed Y travel (mm)')).toHaveValue('-6.5')
-  await expect(page.getByLabel('Prescribed Y travel (mm)')).toBeDisabled()
+  await expect(page.getByLabel('Door panel stroke (mm)')).toHaveValue('6.5')
+  await expect(page.getByLabel('Door panel stroke (mm)')).toBeDisabled()
   await page.getByRole('button', { name: 'Duplicate setup' }).click()
   await expect(page.getByRole('heading', { name: 'Closure test · copy' })).toBeVisible()
   expect(errors).toEqual([])

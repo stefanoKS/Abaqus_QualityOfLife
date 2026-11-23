@@ -6,6 +6,8 @@ import math
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .spline import endpoint_points as spline_endpoints
+from .roles import derive_mode
+from . import motion as motion_policy
 
 Id = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,79}$")]
 Name = Annotated[str, Field(min_length=1, max_length=160)]
@@ -159,33 +161,74 @@ class Mounting(Model):
 
 class Contact(Model):
     normal: Literal["hard"] = "hard"
-    scope: Literal["all_exterior"] = "all_exterior"
-    friction: Annotated[float, Field(ge=0, le=5)] = 0.3
+    # ``all_exterior`` is the historical single-property contact domain. New
+    # setups use independent named pairs so each interface can carry its own
+    # Coulomb coefficient; the interior bonded partition seam stays outside the
+    # exposed seal surface.
+    scope: Literal["all_exterior", "named_pairs"] = "named_pairs"
+    # Historical global coefficient. A version-3 revision keeps this exact value
+    # (including zero and explicit non-defaults); new setups leave it ``None`` and
+    # use the three independent pair coefficients below.
+    friction: Annotated[float, Field(ge=0, le=5)] | None = None
+    door_seal: Annotated[float, Field(ge=0, le=5)] = 0.7
+    body_seal: Annotated[float, Field(ge=0, le=5)] = 0.7
+    seal_self: Annotated[float, Field(ge=0, le=5)] = 0.7
 
 
 class BodyMotion(Model):
     """Step-1 motion of the moving body in the two-panel template."""
 
+    # Retained placement offset. New setups are drawn in place (zero); a legacy
+    # offset is preserved on load/save/duplicate and shown read-only.
     offset: Coord = 0
-    # Signed Y travel. Zero holds the body at its assembled position for the
-    # full step; otherwise the sign follows the mounted side: a body above the
-    # seal seats downward (negative), a body below it seats upward (positive).
-    # The deck writer checks the sign against the measured side.
-    travel: Annotated[float, Field(ge=-10000, le=10000)] = 0
+    # New (version 4) form: a nonnegative stroke and an in-plane direction angle.
+    # Global +X is 0 deg, +Y is 90 deg and positive is counterclockwise.
+    angle: Annotated[float, Field(ge=-360, le=360)] = 90
+    stroke: Annotated[float, Field(ge=0, le=10000)] = 0
     duration: Positive = 1.0
+    # Legacy signed Y travel. Version-3 revisions keep it verbatim; version-4
+    # revisions keep its Y component in sync for older readers but resolve the
+    # prescribed motion from ``angle``/``stroke``.
+    travel: Annotated[float, Field(ge=-10000, le=10000)] = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_travel(cls, data):
+        if isinstance(data, dict) and "travel" in data and "angle" not in data and "stroke" not in data:
+            travel = data.get("travel")
+            try:
+                return {**data, "angle": -90.0 if float(travel) < 0 else 90.0, "stroke": abs(float(travel))}
+            except (TypeError, ValueError):
+                return data
+        return data
 
 
 class Motion(Model):
-    axis: Literal["Y"] = "Y"
-    # A signed Y travel of 0 is a valid hold: the panel keeps its assembled
-    # position for the full positive step duration. A nonzero travel must move
-    # toward the measured contact side; the deck writer checks that against the
-    # geometry. A bottom-mounted profile can use the moving-body role.
-    travel: Annotated[float, Field(ge=-10000, le=10000)] = -10.0
+    # Retained placement offset (see BodyMotion.offset).
     offset: Coord = 0
+    # New (version 4) prescribed motion: nonnegative stroke in mm and in-plane
+    # direction angle in degrees. A zero stroke is a hold.
+    angle: Annotated[float, Field(ge=-360, le=360)] = -90
+    stroke: Annotated[float, Field(ge=0, le=10000)] = 10
     duration: Positive = 1.0
+    # Legacy signed Y travel, preserved exactly for version-3 revisions.
+    travel: Annotated[float, Field(ge=-10000, le=10000)] = -10.0
+    # Legacy schema name; the direction is carried by ``angle`` on new setups.
+    axis: Literal["Y"] = "Y"
     # Used only when analysis.mode == "body_then_door".
     body: BodyMotion = Field(default_factory=BodyMotion)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_travel(cls, data):
+        """A client that only knows signed Y travel still migrates losslessly."""
+        if isinstance(data, dict) and "travel" in data and "angle" not in data and "stroke" not in data:
+            travel = data.get("travel")
+            try:
+                return {**data, "angle": -90.0 if float(travel) < 0 else 90.0, "stroke": abs(float(travel))}
+            except (TypeError, ValueError):
+                return data
+        return data
 
 
 class MeshSpec(Model):
@@ -196,10 +239,19 @@ class MeshSpec(Model):
 
 class Analysis(Model):
     # Legacy door-only is the default so every historical revision keeps its
-    # exact meaning. Two-panel seating must be chosen explicitly.
+    # exact meaning. Version-4 setups derive this from the assigned roles.
     mode: Literal["door_only", "body_then_door"] = "door_only"
     template: Literal["implicit_dynamic_closing"] = "implicit_dynamic_closing"
+    # Solver plane-stress thickness. It is fed to *Solid Section and the surface
+    # interaction data and is never the reporting width.
     thickness: Positive = 1
+    # Reporting width W for displayed total force: (RF . d) * W / thickness.
+    # New setups default to a represented 100 mm section while still solving a
+    # 1 mm plane-stress section with no extruded mesh.
+    reporting_width: Annotated[float, Field(gt=0, le=1e6)] = 100
+    # ``legacy_thickness`` means an old revision whose force basis was its own
+    # solver thickness. Ambiguous old evidence keeps "basis unavailable".
+    reporting_width_basis: Literal["default_100_mm", "legacy_thickness"] = "default_100_mm"
     force_normalization: Literal["total", "per_mm"] = "total"
     outputs: list[Literal["U", "RF", "S", "LE", "CSTRESS"]] = Field(
         default_factory=lambda: ["U", "RF", "S", "LE", "CSTRESS"], max_length=5
@@ -228,11 +280,19 @@ class Source(Model):
     # How the drawing's declared unit header was interpreted. Empty on
     # revisions that predate the recorded policy.
     unit_basis: str = Field(default="", max_length=40)
+    # The original declaration, the one numeric factor applied to world
+    # geometry and where that decision came from. ``unit_factor`` is mm per
+    # drawing unit; geometry stored in the project is already mm.
+    unit_declaration: str = Field(default="", max_length=64)
+    unit_factor: Annotated[float, Field(gt=0, le=1e15)] = 1.0
+    unit_provenance: str = Field(default="", max_length=160)
 
 
 class Project(Model):
-    # Version 3 changes the default door travel; older revisions retain theirs.
-    schema_version: int = 3
+    # Version 4 adds role-derived steps, independent contact coefficients, an
+    # oblique prescribed motion and the represented reporting width. Versions
+    # 1-3 keep their stored meaning and are never silently rescaled.
+    schema_version: int = 4
     name: Name
     dimension: Literal["2D", "3D"] = "2D"
     formulation: Literal["plane_stress", "extrusion_preview"] = "plane_stress"
@@ -269,7 +329,7 @@ class Project(Model):
             version = int(data.get("schema_version", 1))
         except (TypeError, ValueError):
             return data
-        if version >= 3:
+        if version >= 4:
             return data
         changed = dict(data)
         changed.setdefault("schema_version", 1)
@@ -290,6 +350,22 @@ class Project(Model):
             if version < 2 and isinstance(body, dict) and "duration" not in body:
                 motion["body"] = {**body, "duration": 1.0}
             changed["motion"] = motion
+        # Version 3 and older carry one global contact coefficient and a force
+        # basis equal to the solver thickness. Both are preserved verbatim.
+        contact = changed.get("contact")
+        contact = dict(contact) if isinstance(contact, dict) else {}
+        # Version 3 and older always carried one global coefficient over the
+        # all-exterior domain, whatever a newer payload shape contains.
+        contact["scope"] = "all_exterior"
+        if contact.get("friction") is None:
+            contact["friction"] = 0.3
+        changed["contact"] = contact
+        analysis = changed.get("analysis")
+        analysis = dict(analysis) if isinstance(analysis, dict) else {}
+        thickness = analysis.get("thickness", 1)
+        analysis["reporting_width"] = thickness
+        analysis["reporting_width_basis"] = "legacy_thickness"
+        changed["analysis"] = analysis
         return changed
 
     @property
@@ -389,16 +465,28 @@ class Project(Model):
             raise ValueError("Geometry changed. Rebuild selections and local mesh controls.")
         if self.mounting.selection not in {s.id for s in self.selections}:
             raise ValueError("Mounting selection no longer exists.")
+        if self.schema_version >= 4 and self.components:
+            # The step sequence is derived from the assigned roles. An
+            # incomplete or duplicated assignment stays door-only and becomes a
+            # readiness finding instead of a partially built analysis.
+            self.analysis.mode = derive_mode(self.components, self.edges, self.faces)
+            # Keep the legacy Y component readable for older consumers while the
+            # prescribed motion itself resolves from angle/stroke.
+            door = motion_policy.resolve(self.motion, self.schema_version)
+            body = motion_policy.resolve(self.motion.body, self.schema_version, body=True)
+            self.motion.travel = round(door["delta"][1], 9)
+            self.motion.body.travel = round(body["delta"][1], 9)
         if self.analysis.mode == "body_then_door":
-            roles = [c.role for c in self.components]
-            if roles.count("moving_panel") != 1 or roles.count("vehicle_body") != 1:
-                raise ValueError(
-                    "Body-then-door analysis needs exactly one door panel and one body panel."
-                )
-            if not any(not face.cavity for face in self.faces):
-                raise ValueError("Body-then-door analysis needs at least one seal region.")
+            if self.schema_version < 4:
+                roles = [c.role for c in self.components]
+                if roles.count("moving_panel") != 1 or roles.count("vehicle_body") != 1:
+                    raise ValueError(
+                        "Body-then-door analysis needs exactly one door panel and one body panel."
+                    )
+                if not any(not face.cavity for face in self.faces):
+                    raise ValueError("Body-then-door analysis needs at least one seal region.")
             body = self.motion.body
-            # Zero travel is a valid hold; only a non-positive duration is invalid.
+            # Zero stroke/travel is a valid hold; only a non-positive duration is invalid.
             if body.duration <= 0:
                 raise ValueError("Body seating duration must be positive.")
             if self.motion.duration <= 0:

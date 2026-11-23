@@ -17,6 +17,8 @@ import time
 from datetime import datetime, timezone
 
 from packages.engineering.model import Project
+from packages.engineering.roles import findings as role_findings
+from packages.engineering.roles import step_plan
 from services import store
 
 # Severity vocabulary: only ``blocker`` prevents the next engineering action.
@@ -97,7 +99,27 @@ def _assembly(active, setup, findings):
         mesh = json.loads(
             (store.job_dir(active["id"]) / "mesh.json").read_text(encoding="utf-8")
         )
-        return assembly_assessment(setup, mesh)
+        result = assembly_assessment(setup, mesh)
+        # A prescribed path that never meets the seal is a legitimate setup but
+        # worth an explicit, non-blocking explanation: it must not be mistaken
+        # for measured contact.
+        for role in ("door", "body"):
+            part = result.get(role)
+            if part and part.get("path") == "missed":
+                findings.append(
+                    finding(
+                        "motion.path_misses_seal",
+                        "motion",
+                        WARNING,
+                        {
+                            "role": role,
+                            "closest_mm": part.get("closest_after_mm"),
+                            "stroke_mm": part.get("stroke_mm"),
+                        },
+                        artifact="mesh:" + active["id"],
+                    )
+                )
+        return result
     except ClearanceError as exc:
         findings.append(
             finding(
@@ -146,23 +168,15 @@ def evaluate(rid):
         findings.append(finding("drawing.digest_missing", "import", WARNING))
 
     unassigned_components = [c.id for c in setup.components if c.role == "unassigned"]
-    if unassigned_components:
+    for entry in role_findings(setup.components, setup.edges, setup.faces):
+        code = entry["code"]
+        severity = BLOCKER
+        params = {"count": entry.get("count", 0)}
+        if code == "components.unassigned":
+            params["components"] = unassigned_components[:8]
         findings.append(
-            finding(
-                "components.unassigned",
-                "components",
-                BLOCKER,
-                {"count": len(unassigned_components), "components": unassigned_components[:8]},
-                artifact="revision:" + str(rid),
-            )
+            finding(code, "components", severity, params, artifact="revision:" + str(rid))
         )
-    panel_roles = {c.role for c in setup.components}
-    if "moving_panel" not in panel_roles:
-        findings.append(finding("components.no_moving_panel", "components", BLOCKER))
-    if "seal" not in panel_roles:
-        findings.append(finding("components.no_seal", "components", BLOCKER))
-    if setup.analysis.mode == "body_then_door" and "vehicle_body" not in panel_roles:
-        findings.append(finding("components.no_moving_body", "components", BLOCKER))
 
     regions = [f for f in setup.faces if not f.cavity]
     unassigned_regions = [f.id for f in regions if not f.material]
@@ -339,6 +353,9 @@ def _document(revision, setup, findings, counts, latest_run, head_id, assembly=N
         "counts": counts,
         # Measured assembly geometry; nothing here is solver evidence.
         "assembly": assembly,
+        # The derived step sequence and role findings, so the browser shows the
+        # same plan the server stores instead of a separate manual switch.
+        "steps": step_plan(setup.components, setup.edges, setup.faces),
         "updated": _iso(time.time()),
         "setup_updated": _iso(revision["created"]),
     }

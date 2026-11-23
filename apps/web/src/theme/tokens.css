@@ -1,14 +1,19 @@
 /*
  * Abaqus QOL design tokens.
  *
+ * Brand direction from docs/workbench-visual-reference.png: ink navy shell,
+ * cobalt primary actions, jade active engineering sections, tangerine for cut
+ * handles and highlights. Red stays reserved for errors and destructive actions.
+ *
  * Contrast pairs below are computed with the WCAG 2.2 relative-luminance
  * formula, not estimated. Ratios in parentheses must stay >= 4.5 for body text
  * and >= 3.0 for large text and non-text boundaries.
  *
- *   #FFFFFF on --color-primary  #146953  -> 6.61  (AA normal text)
- *   #FFFFFF on --color-primary-hover      -> 8.62  (AAA normal text)
- *   #DCE6E8 on --color-nav      #142C39  -> 11.41 (AAA normal text)
- *   #AFC1C6 on --color-nav      #142C39  -> 7.78  (AAA normal text)
+ *   #FFFFFF on --color-primary  #2454D8  -> 6.31  (AA normal text)
+ *   #10233F on --color-tangerine #FF962C -> 7.20  (AA normal text)
+ *   #FFFFFF on --color-ink      #10233F  -> 15.66 (AAA normal text)
+ *   #E8EEFC on --color-ink      #10233F  -> 13.60 (AAA normal text)
+ *   #B9C6DD on --color-ink      #10233F  -> 9.30  (AAA normal text)
  *   #192E39 on --color-page     #F4F6F8  -> 13.69 (AAA normal text)
  *   #5D727A on --color-surface  #FFFFFF  -> 5.03  (AA normal text)
  *   #9A5600 on --color-surface  #FFFFFF  -> 5.67  (AA normal text)
@@ -16,19 +21,26 @@
  *   #CFD8DD border on #FFFFFF            -> 1.50  (decorative only, never the sole cue)
  */
 :root {
-  /* Surfaces */
-  --color-nav: #142c39;
-  --color-nav-hover: #254451;
-  --color-nav-divider: #48606b;
-  --color-nav-text: #dce6e8;
-  --color-nav-text-muted: #afc1c6;
-  --color-nav-accent: #6ed5bd;
+  /* Brand */
+  --color-ink: #10233f;
+  --color-cobalt: #2454d8;
+  --color-jade: #007c6e;
+  --color-tangerine: #ff962c;
+  --color-tangerine-ink: #10233f;
 
-  --color-primary: #146953;
-  --color-primary-hover: #0c5745;
+  /* Surfaces */
+  --color-nav: #10233f;
+  --color-nav-hover: #1b3654;
+  --color-nav-divider: #3c5674;
+  --color-nav-text: #e8eefc;
+  --color-nav-text-muted: #b9c6dd;
+  --color-nav-accent: #ff962c;
+
+  --color-primary: #2454d8;
+  --color-primary-hover: #1c43b5;
   --color-primary-text: #ffffff;
-  --color-primary-soft: #e3f2ec;
-  --color-primary-soft-strong: #e0eee9;
+  --color-primary-soft: #e8eeff;
+  --color-primary-soft-strong: #dbe5ff;
   --color-prepare: #1f4e8c;
   --color-submit: #16734a;
 
@@ -56,8 +68,8 @@
   --color-live: #176082;
   --color-live-surface: #deeff9;
 
-  --color-focus: #42ac9a;
-  --color-selection: #e3f2ec;
+  --color-focus: #2f6fed;
+  --color-selection: #e8eeff;
 
   /* Accent used by CAD preview geometry and the rigid panel. */
   --color-cad-edge: #354f55;
@@ -71,11 +83,11 @@
     'Segoe UI', 'Yu Gothic UI', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP',
     'Meiryo', Inter, Arial, sans-serif;
   --font-mono: 'Cascadia Mono', Consolas, 'Courier New', monospace;
-  --text-body: 0.9rem;
-  --text-label: 0.84rem;
-  --text-meta: 0.78rem;
-  --text-micro: 0.72rem;
-  --text-heading: 1.16rem;
+  --text-body: 1rem;
+  --text-label: 0.95rem;
+  --text-meta: 0.875rem;
+  --text-micro: 0.8rem;
+  --text-heading: 1.4rem;
   --line-height: 1.55;
 
   /* Shape and spacing */

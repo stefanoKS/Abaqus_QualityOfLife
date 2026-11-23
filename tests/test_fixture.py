@@ -178,9 +178,10 @@ def test_motion_and_friction_edits_reuse_the_mesh_but_stale_decks_cannot_submit(
     deck, _ = deck_and_text(client, revision, mesh)
 
     setup = revision["setup"]
-    setup["motion"]["travel"] = -5.0
+    setup["motion"]["stroke"] = 5.0
+    setup["motion"]["angle"] = -90.0
     setup["motion"]["duration"] = 0.7
-    setup["contact"]["friction"] = 0.45
+    setup["contact"]["door_seal"] = 0.45
     edited = client.put(
         "/api/projects/" + revision["project"], json={"base": revision["id"], "setup": setup}
     ).raise_for_status().json()
@@ -204,7 +205,7 @@ def test_motion_and_friction_edits_reuse_the_mesh_but_stale_decks_cannot_submit(
     # Reusing the same mesh for the edited revision works and reuses its digest.
     fresh, text = deck_and_text(client, edited, mesh)
     assert fresh["mesh_digest"] == mesh["mesh_digest"]
-    assert "Prescribed Y travel: -5 mm" in text
+    assert "Prescribed motion: 5 mm at -90 deg" in text
 
     run = post(
         client,

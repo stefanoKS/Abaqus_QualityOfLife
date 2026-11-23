@@ -36,44 +36,50 @@
 .seal-vtk-overlay {
   pointer-events: none;
 }
+/* Three separate icon buttons, stacked at the right edge like the reference.
+   Each has a 44 px hit target and a visible focus ring on the white field. */
 .seal-vtk-tools {
   position: absolute;
-  right: 14px;
-  top: 14px;
+  right: 16px;
+  top: 16px;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  border: 1px solid #bdcbd0;
-  border-radius: 6px;
-  background: #fcfdfd;
-  overflow: hidden;
+  gap: 9px;
+  border: 0;
+  background: transparent;
+  overflow: visible;
 }
 .seal-vtk-tools button {
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 33px;
+  width: 44px;
+  height: 44px;
   padding: 0;
   margin: 0;
-  border: 0;
-  border-radius: 0;
-  color: #39515b;
-  background: transparent;
+  border: 1px solid #b7c4d4;
+  border-radius: 11px;
+  color: #10233f;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 35, 63, 0.14);
   cursor: pointer;
 }
-.seal-vtk-tools button + button {
-  border-left: 1px solid #d8e0e2;
+.seal-vtk-tools button svg {
+  width: 21px;
+  height: 21px;
 }
-.seal-vtk-tools button:hover {
-  background: #e4eff0;
+.seal-vtk-tools button:hover:not(:disabled) {
+  background: #eef3ff;
+  border-color: #2454d8;
+  color: #10233f;
 }
 .seal-vtk-tools button:focus-visible {
-  outline: 2px solid #338388;
-  outline-offset: -2px;
+  outline: 3px solid #2454d8;
+  outline-offset: 2px;
 }
 .seal-vtk-orientation,
 .seal-vtk-tip,
-.seal-vtk-legend,
-.seal-vtk-assembly {
+.seal-vtk-legend {
   position: absolute;
   font:
     500 12px/1.5 ui-monospace,
@@ -85,21 +91,6 @@
   top: 18px;
   left: 17px;
   color: #536975;
-}
-.seal-vtk-assembly {
-  top: 18px;
-  right: 17px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  color: #536975;
-}
-.seal-vtk-assembly strong {
-  font-size: 11px;
-  font-weight: 600;
-}
-.seal-vtk-assembly span {
-  white-space: nowrap;
 }
 .seal-vtk-tip {
   bottom: 9px;

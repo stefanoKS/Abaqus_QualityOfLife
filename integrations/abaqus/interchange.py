@@ -79,7 +79,20 @@ def align_histories(series, metadata, start_time=0, step=None, motion=None, step
     component the projection actually needs is missing.
     """
     series = {name: dict(values) for name, values in series.items() if values}
-    divisor = metadata["thickness"] if metadata["force_normalization"] == "per_mm" else 1.0
+    thickness = float(metadata.get("thickness_mm", metadata.get("thickness", 1.0)) or 1.0)
+    if thickness <= 0:
+        thickness = 1.0
+    per_length = metadata["force_normalization"] == "per_mm"
+    width = float(metadata.get("reporting_width_mm", thickness) or thickness)
+    basis = metadata.get("force_basis", "legacy_unscaled")
+    if basis == "total_width":
+        # (RF . d) * W / t_s, scaled once from the raw measured global reaction.
+        scale = 1.0 if per_length else width / thickness
+    elif basis == "per_mm":
+        scale = 1.0 / thickness
+    else:
+        # Legacy evidence: preserve its original basis; never imply the new W.
+        scale = 1.0 / thickness if per_length else 1.0
     closing = motion or metadata.get("closing") or {}
     direction = closing.get("direction") or [0.0, -1.0]
     dx, dy = float(direction[0]), float(direction[1])
@@ -135,7 +148,7 @@ def align_histories(series, metadata, start_time=0, step=None, motion=None, step
                 "step_id": identifier,
                 "role": closing.get("role"),
                 "displacement": travel,
-                "force": total / divisor,
+                "force": total * scale,
                 "total_force_N": total,
                 "u1": values["U1"],
                 "u2": values["U2"],
@@ -149,6 +162,8 @@ def align_histories(series, metadata, start_time=0, step=None, motion=None, step
 def result_header(metadata, mode, instances):
     per_length = metadata["force_normalization"] == "per_mm"
     return {
+        # Version 1 remains readable by the installed Abaqus-Python extractor;
+        # the reporting-width and contact fields are additive.
         "version": 1,
         "mode": mode,
         "notice": DEMO_NOTICE if mode == "DEMO" else "ABAQUS",
@@ -157,8 +172,18 @@ def result_header(metadata, mode, instances):
         "placement": metadata["placement"],
         "sets": metadata["sets"],
         "thickness": metadata["thickness"],
+        # Solver thickness and the represented reporting width are separate
+        # quantities. The deck still solves a plane-stress section of thickness
+        # t_s; total displayed force uses W/t_s.
+        "thickness_mm": metadata.get("thickness_mm", metadata["thickness"]),
+        "reporting_width_mm": metadata.get("reporting_width_mm", 1.0),
+        "reporting_width_basis": metadata.get("reporting_width_basis", "legacy_thickness"),
+        "force_basis": metadata.get(
+            "force_basis", "legacy_unscaled" if metadata.get("schema_version", 3) < 4 else "total_width"
+        ),
         "force_normalization": metadata["force_normalization"],
         "force_unit": "N/mm" if per_length else "N",
+        "schema_version": metadata.get("schema_version", 3),
         "closing": metadata.get("closing"),
         "steps": metadata.get("steps"),
         "body": metadata.get("body"),

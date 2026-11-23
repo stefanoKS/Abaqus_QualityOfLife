@@ -163,7 +163,10 @@ def test_hollow_seal_meshes_with_an_empty_cavity():
     mesh = generate_mesh(project)
     assert mesh["counts"]["CPS4R"] > 50
     assert mesh["counts"]["R2D2"] > 0
-    assert mesh["excluded"] and "not analysed" in mesh["excluded"][0]["reason"]
+    # A component assigned the vehicle-body role now participates: the role-derived
+    # sequence is body-then-door, so nothing is silently excluded from the mesh.
+    assert mesh["excluded"] == []
+    assert project.analysis.mode == "body_then_door"
     samples = sample_edges(project)
     cavity_edge = [edge for edge in project.edges if edge.component == region.component][-1]
     ring = samples[cavity_edge.id]
@@ -226,9 +229,20 @@ def _import_without_regions(entities):
         module.assemble = original
 
 
-def test_declared_units_must_be_millimetres():
-    with pytest.raises(ValueError, match="millimetres"):
-        import_inventory(inventory(hollow_section(), units=1), "Inches")
+def test_declared_inches_are_converted_once():
+    project, report = import_inventory(inventory(hollow_section(), units=1), "Inches")
+    assert project.source.unit_basis == "converted_to_mm"
+    assert project.source.unit_factor == pytest.approx(25.4)
+    assert report["unitDeclaration"] == "inches"
+    mm_project, _ = import_inventory(inventory(hollow_section(), units=4), "Ref")
+    assert max(v.xyz[0] for v in project.vertices) == pytest.approx(
+        25.4 * max(v.xyz[0] for v in mm_project.vertices), rel=1e-9
+    )
+    reopened = type(project).model_validate(project.model_dump(mode="json"))
+    assert reopened.source.unit_factor == pytest.approx(25.4)
+    assert max(v.xyz[0] for v in reopened.vertices) == pytest.approx(
+        max(v.xyz[0] for v in project.vertices), abs=1e-9
+    )
 
 
 def test_corrupt_and_foreign_files_fail_actionably(tmp_path):
@@ -333,11 +347,14 @@ def test_original_drawing_reaches_a_deck_without_any_converter(monkeypatch, tmp_
             json={"setup": setup, "base": revision["id"]},
         ).raise_for_status().json()
         mesh = prepare_mesh(api, saved, "dwg")
+        mesh_data = json.loads((store.job_dir(mesh["id"]) / "mesh.json").read_text())
+        seal_edges = {
+            edge["id"] for edge in setup["edges"] if edge["component"] == seal
+        }
         labels = [
             f"WS-1:{node}"
-            for edge_id, nodes in json.loads(
-                (store.job_dir(mesh["id"]) / "mesh.json").read_text()
-            )["edge_nodes"].items()
+            for edge_id, nodes in mesh_data["edge_nodes"].items()
+            if edge_id in seal_edges
             for node in nodes
         ]
         labels = sorted(set(labels))[:12]

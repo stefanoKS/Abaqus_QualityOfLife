@@ -38,21 +38,55 @@ test('partition a seal in the browser, remesh, prepare a deck and replay the pre
   const editor = page.getByTestId('partition-editor')
   await expect(editor).toBeVisible()
 
-  // Preview after pan/zoom, cancel once, then preview and apply.
+  // Real viewport clicks after a pan and a zoom. No XY form entry.
   const viewport = page.getByRole('application')
   const box = (await viewport.boundingBox())!
+  const projectPoint = async (x: number, y: number) => {
+    const camera = (await page.locator('.seal-vtk-host').getAttribute('data-camera'))!
+      .split(',')
+      .map(Number)
+    const [fx, fy, , , , , scale] = [camera[3], camera[4], 0, 0, 0, 0, camera[6]]
+    const aspect = box.width / box.height
+    return {
+      x: box.x + box.width / 2 + ((x - fx) / (scale * aspect)) * (box.width / 2),
+      y: box.y + box.height / 2 - ((y - fy) / scale) * (box.height / 2),
+    }
+  }
+  // Pan a little with the middle button, then zoom, then acquire both points.
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
-  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 20, { steps: 4 })
+  await page.mouse.down({ button: 'middle' })
+  await page.mouse.move(box.x + box.width / 2 + 26, box.y + box.height / 2 + 12, { steps: 4 })
+  await page.mouse.up({ button: 'middle' })
   await page.getByRole('button', { name: 'Zoom in' }).click()
-  await page.getByLabel('Cut start X (mm)').fill('0')
-  await page.getByLabel('Cut start Y (mm)').fill('0')
-  await page.getByLabel('Cut end X (mm)').fill('0')
-  await page.getByLabel('Cut end Y (mm)').fill('3.2')
-  await page.getByRole('button', { name: 'Preview cut' }).click()
+
+  const partitionWrites: string[] = []
+  page.on('request', (req) => {
+    if (req.url().includes('/partition')) partitionWrites.push(req.method() + ' ' + req.url())
+  })
+
+  await page.getByRole('button', { name: 'Cut region' }).click()
+  const a = await projectPoint(0, 0)
+  await page.mouse.move(a.x, a.y, { steps: 3 })
+  await page.mouse.click(a.x, a.y)
+  const b = await projectPoint(0, 3.2)
+  await page.mouse.move(b.x, b.y, { steps: 5 })
+  await page.mouse.click(b.x, b.y)
   await expect(page.getByTestId('partition-plan')).toContainText('Boundary edges intersected')
+  // Snapped canonical coordinates, not raw pixels.
+  const snapped = await page.getByTestId('partition-plan').innerText()
+  expect(snapped).toContain('Cut preview ready')
   await page.getByRole('button', { name: 'Cancel cut' }).click()
   await expect(page.getByTestId('partition-plan')).toHaveCount(0)
-  await page.getByRole('button', { name: 'Preview cut' }).click()
+  expect(partitionWrites.filter((write) => write.includes('/partition') && !write.includes('preview'))).toHaveLength(0)
+
+  // Re-pick the start point, then preview and apply once.
+  await page.getByRole('button', { name: 'Cut region' }).click()
+  await page.mouse.click(a.x, a.y)
+  await page.getByRole('button', { name: 'Back one point' }).click()
+  await expect(page.getByTestId('cut-status')).toHaveAttribute('data-phase', 'start')
+  await page.mouse.click(a.x, a.y)
+  await page.mouse.move(b.x, b.y, { steps: 3 })
+  await page.mouse.click(b.x, b.y)
   await expect(page.getByTestId('partition-plan')).toBeVisible()
   await page.getByRole('button', { name: 'Apply partition' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 02')

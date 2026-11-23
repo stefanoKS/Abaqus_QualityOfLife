@@ -46,14 +46,14 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
 
   const workflow = page.getByRole('navigation', { name: 'Workflow' })
   await workflow.getByRole('button', { name: 'Motion' }).click()
-  const body = page.getByLabel('Body panel travel (mm, signed)')
+  const body = page.getByLabel('Body panel stroke (mm)')
   await body.fill('0')
   await body.press('Tab')
   await expect(page.getByTestId('motion-zero-hold')).toBeVisible()
   await expect(page.getByText('No visible geometry')).toHaveCount(0)
 
   // A temporarily blank field is a local error and the drawing stays visible.
-  const travel = page.getByLabel('Prescribed Y travel (mm)')
+  const travel = page.getByLabel('Door panel stroke (mm)')
   await travel.fill('')
   await travel.press('Tab')
   await expect(page.getByText('This numeric field is required.')).toBeVisible()
@@ -61,7 +61,7 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
   await expect(page.getByText('No visible geometry')).toHaveCount(0)
   await travel.focus()
   await travel.press('Escape')
-  await expect(travel).toHaveValue('-10')
+  await expect(travel).toHaveValue('10')
 
   // Save the zero-body hold, navigate away, reopen.
   await body.fill('0')
@@ -73,7 +73,7 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
   await page.goto('/#workspace/' + savedId)
   await expect.poll(() => actors(page)).toBeGreaterThan(0)
   await workflow.getByRole('button', { name: 'Motion' }).click()
-  await expect(page.getByLabel('Body panel travel (mm, signed)')).toHaveValue('0')
+  await expect(page.getByLabel('Body panel stroke (mm)')).toHaveValue('0')
 
   // Language switching keeps the geometry and the hold explanation.
   await page.locator('.lang-button').click()
@@ -92,8 +92,8 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
 
   // Hold-only: both steps preserve their assembled positions.
   await workflow.getByRole('button', { name: 'Motion' }).click()
-  await page.getByLabel('Prescribed Y travel (mm)').fill('0')
-  await page.getByLabel('Prescribed Y travel (mm)').press('Tab')
+  await page.getByLabel('Door panel stroke (mm)').fill('0')
+  await page.getByLabel('Door panel stroke (mm)').press('Tab')
   await page.getByRole('button', { name: 'Save revision' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 03')
   revision = await (

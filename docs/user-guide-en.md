@@ -26,7 +26,7 @@ actions out of view.
 | Left work area | Workflow (with per-step configuration state) and the assembly tree, immediately left of the property editor |
 | Property editor | Editor for the selected workflow stage or CAD entity; scrolls on its own |
 | Drawing field | White geometry, mesh and result viewport with zoom / fit tools on the right |
-| Review dock | **Prepare input deck** then **Submit Abaqus analysis**, anchored to the upper-right of the work area; run name, CPU count, deck state and the deck-inspection link stay there while the property editor scrolls |
+| Property editor | **Prepare input deck** then **Submit Abaqus analysis** are its first group on Review / Run; run name, CPU count, deck state and the deck-inspection link stay with them above the review details |
 | Footer | Save state, validation message, worker phase |
 
 On a narrow window or at high browser zoom the panes stack in the page flow and a **Workflow &
@@ -51,15 +51,20 @@ The header shows one language button labelled with the destination language (`En
 
 1. **Dashboard → Create project**. This creates a *project group* and its first model in one step. A
    group is a container ("5q45"); a model is one analysed configuration inside it. Leave *Model name*
-   blank to reuse the project name. **A new model starts empty**: it opens at Import with “No drawing
-   imported”. Tick *Start from the public example section* only if you want the fictional demonstration
-   geometry. A clean installation therefore shows an empty dashboard, not a seeded model.
+   blank to reuse the project name. **Every new model starts empty**: it opens at Import with “No drawing
+   imported”. There is no example checkbox; synthetic example models created earlier or through the test
+   API stay readable. A clean installation therefore shows an empty dashboard, not a seeded model.
 2. **Add more models** with **New model** inside the group header. Each model keeps its own revision
    history and runs; **Revisions** lists them and **Duplicate model** creates an independent copy in the
    same group.
-3. **Import** a DXF/DWG directly — there is no unit checkbox. The drawing's own header decides:
-   millimetres import directly; a unitless drawing is interpreted as project millimetres and recorded
-   as such; a drawing declaring another unit is rejected with that unit named. DWG files are read
+3. **Import** a DXF/DWG directly — there is no unit checkbox or dialog. The drawing's own header decides
+   and the decision is recorded on the revision: millimetres import directly; every other recognised CAD
+   length unit (inches, feet, centimetres, metres, US survey units and the rest of the DXF/DWG
+   enumeration) is converted to project millimetres **once**, with the original declaration, numeric
+   factor and provenance; a unitless header is interpreted as mm and a missing header is recorded
+   separately. Unreadable codes, contradictory `$MEASUREMENT` metadata and converted coordinates outside
+   ±1e6 mm are reported by name; scale is never guessed or silently clamped. Reopening, saving or
+   duplicating never converts twice. DWG files are read
    **natively** — no CAD converter, no ODA configuration, no upload to a third party. The import runs in
    the background and creates a new revision when it finishes. `LINE`, `ARC`, `CIRCLE`, closed
    `LWPOLYLINE` and `SPLINE` entities are supported. A spline is kept as an exact B-spline
@@ -71,13 +76,20 @@ The header shows one language button labelled with the destination language (`En
 5. **Materials** — assign a material card to each region and edit card properties as needed. The
    library supports linear elastic, hyperfoam test data and a **compressible neo-Hookean** solid
    rubber card (C10 in MPa, D1 in MPa⁻¹).
-6. **Motion** — set the initial Y offset, the signed Y travel and the step duration. A travel of
-   **0 mm is a valid hold**: the panel keeps its assembled position for the whole step (positive
-   duration). New models default to **−10 mm** door panel travel (Y-positive is upward) and 1.0 s;
-   saved older models retain their travel. This is a prescribed movement, not an automatically
-   calculated gap or a safe compression recommendation: review initial clearance and deformation;
-   reaching the gap does not guarantee valid contact. **Contact** sets the contact law and the
-   dimensionless friction coefficient (0–5 inclusive). Motion edits preserve contact settings. Press
+6. **Motion** — the step sequence is **derived from the assigned roles** and shown as a readable summary:
+   one seal plus one door panel is a single Closing step; one participating body panel as well gives
+   Body seating then Closing. There is no manual mode selector. Set a nonnegative **stroke** and an
+   in-plane **direction angle** (0° = +X, 90° = +Y, positive counterclockwise); the Δ vector is shown for
+   both the door and body. A stroke of **0 mm is a valid hold** and reports the assembled role direction.
+   New doors default to 10 mm at −90° (downward) over 1.0 s; a held body is 0 mm. This is a prescribed
+   movement, not an automatically calculated gap or a safe compression recommendation: review initial
+   clearance and deformation; reaching the gap does not guarantee valid contact. **Preview door** and
+   **Preview body** animate the profile along its vector and back to the exact assembled pose before a
+   mesh exists; it is a display-only preview, not a solver animation, and writes nothing. New models are
+   placed as drawn; a retained legacy offset is shown read-only. **Contact** sets hard normal behaviour
+   and three independent dimensionless Coulomb coefficients — door ↔ seal, body ↔ seal and seal ↔ self —
+   each 0–5 inclusive and default 0.7 for new models. Old revisions keep their single historical
+   coefficient, including zero and explicit non-defaults. Motion edits preserve contact settings. Press
    **Save revision**; unsaved changes are flagged in the footer.
 7. **Mesh → Generate mesh** meshes the section. A new model defaults to 0.5 mm. Rubber
    quadrilaterals always use reduced integration (CPS4R); the enforced setting and the CPS4R/CPS3/R2D2
@@ -88,8 +100,11 @@ The header shows one language button labelled with the destination language (`En
    the node count. Press **Save fixed nodes**. Only the nodes you selected are fixed; a rectangle never
    expands to a whole CAD edge. Editable legacy models can use **Resolve N old mounting edges to
    nodes**, inspect the highlighted result, and save it as the reviewed fixture.
-9. **Review / Run → Prepare input deck** (blue, first) is anchored in the upper-right review dock and writes an `.inp` from the reviewed mesh,
-   fixed nodes, materials, contact and motion. It never enqueues a mesh job.
+9. **Review / Run → Prepare input deck** (blue, first) is the first actionable group of the Properties
+   pane and writes an `.inp` from the reviewed mesh, fixed nodes, materials, contact and motion. It never
+   enqueues a mesh job. Review shows the represented reporting width **W** (default 100 mm) next to the
+   solver thickness **t** (1 mm for new setups); the deck still solves a 1 mm plane-stress section, and
+   changing W alone does not change the mesh or the deck.
 10. **Submit Abaqus analysis** (green, second) runs that reviewed deck; preparation and execution are
     separate. Set the run name and CPU count. If disabled, follow the displayed reason: save the
     revision, correct invalid input, generate a compatible mesh, review fixed nodes, configure the
@@ -105,7 +120,7 @@ The header shows one language button labelled with the destination language (`En
 ### Operator workflows
 
 **Create an empty model and import its drawing.** Dashboard → New project → name the project and its
-first model (leave the example checkbox clear) → Create project. The model opens at Import with no
+first model → Create project. The model opens at Import with no
 drawing. Choose the DXF or DWG directly (no unit confirmation); a unitless drawing is interpreted as
 mm and the basis is shown in the import summary. The viewport shows
 the returned geometry, and that revision's original drawing stays downloadable.
@@ -237,14 +252,16 @@ selectable child regions that share one bonded, conforming interface. This is a 
 not a physical gap.
 
 1. Select the seal region (Components opens its Materials editor).
-2. Under **Partition this seal region**, enter the cut start and end as model XY in millimetres. The
-   straight cut snaps to the canonical boundary within **0.05 mm**. Both endpoints must lie on the
-   region exterior; a cut may not cross a cavity, leave the material, meet the boundary tangentially,
-   or leave a sliver.
-3. **Preview cut** draws the proposed line on the white drawing field and reports the intersected
-   boundary edges and child areas. **Cancel cut** removes the preview without saving.
-4. **Apply partition** saves a new revision. Each child inherits the parent material and a stable CAD
-   ID; assign a different card to either child and **Save revision**.
+2. Click **Cut region**, then click near the region boundary on the white drawing field. Point A is
+   acquired at the clicked position, snapped to the nearest canonical boundary point; the 12 px
+   acquisition band is only for finding the boundary and never widens the server's **0.05 mm** snap.
+   Move along the boundary to see the rubber-band line and the candidate point, then click point B.
+   Both endpoints must lie on the region exterior; a cut may not cross a cavity, leave the material,
+   meet the boundary tangentially, or leave a sliver. **Back one point** re-picks, and **Esc** cancels.
+3. The second click previews both children and their shared edge automatically and reports the
+   intersected boundary edges and child areas. **Cancel cut** removes the preview without saving.
+4. **Apply partition** saves a new revision exactly once. Each child inherits the parent material and a
+   stable CAD ID; assign a different card to either child and **Save revision**.
 5. The topology change produces a new mesh digest. Review the new revision in Mesh, regenerate the
    mesh, and re-review the fixed nodes; a prepared deck and its FE-node fixture are not transferred
    by coincidence. A child can be partitioned again.
@@ -290,18 +307,26 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   automatically; use **Fit and reset view** (F) to return explicitly. Stepping, scrubbing, playback,
   component changes and the deformed/undeformed toggle keep the camera. Each quantity's colour scale
   and legend come from measured run-wide values and do not change between frames.
-- **Play frames** starts paused. **Loop** is on by default: after the last displayed frame is held for
-  one playback interval, playback wraps to the first frame and repeats. Turn **Loop** off to stop on
-  the final frame. Pause and scrub work at any time; a failed frame leaves the last valid scene visible
-  and names the frame. Zero- and one-frame runs show a static frame and never start a timer.
+- **Mesh edges** are on by default in Results and remain an independent toggle. **Play frames** starts
+  paused. **Loop** is on by default: after the last displayed frame is held for one playback interval,
+  playback wraps to the first frame and repeats. Turn **Loop** off to stop on the final frame. Pause
+  and scrub work at any time; a failed frame leaves the last valid scene visible and names the frame.
+  The slider keeps its own stable track, while frame count, time, load/error status and Loop occupy a
+  fixed status row, so a pending frame cannot reflow the controls. Zero- and one-frame runs show a
+  static frame and never start a timer.
 - **Door panel response** plots the panel reaction projected onto the closing direction against the
   closing travel, measured from the start of the closing step. A resisting seal gives a rising positive
   curve. The effective direction is shown under the chart.
 - **Displayed signs** reverses the X and/or Y sign for reading. It changes the chart and the exported
   displayed curve only; the stored results are never rewritten.
-- **Export displayed curve** downloads a CSV of exactly what is plotted, with panel, step, direction,
-  units, signs, normalization and DEMO/ABAQUS provenance in `#` header lines plus the raw signed
-  components. **Download history CSV** gives the unmodified artifact.
+- **Export displayed curve** downloads a spreadsheet-ready CSV with exactly **two numeric rows** and
+  one column per aligned sample in the selected step: row 1 is the step-relative measured displacement
+  magnitude √((U1−U1₀)²+(U2−U2₀)²) in mm; row 2 is the signed projected force in the selected reporting
+  basis — (RF·d)·W/t in N for total, (RF·d)/t in N/mm for per-length. There is no preamble, header,
+  index or time column. Missing measurements are empty cells; a measured zero is `0`. The filename and
+  the text beside the button state panel, step, unit, width and sign. Flipping the displayed force
+  flips row 2 too. **Download history CSV** keeps the raw signed components and original artifacts
+  unchanged.
 - Results produced before the projected door panel response existed still open: the chart shows their
   original signed U2/RF2 and says so.
 
@@ -323,7 +348,9 @@ output for design decisions or material-model validation.
 | Abaqus launcher not configured | Set the launcher environment variable and restart the application. |
 | DWG reader unavailable | Restore `integrations/dwg/bin` from the repository. No CAD converter is required. |
 | This DWG version is not supported by the installed reader | Export the drawing as DXF, or open and re-save it in a supported AutoCAD version. |
-| The drawing declares … instead of millimetres | Set `$INSUNITS` to millimetres in the CAD file, or scale the drawing to mm before importing. |
+| Unreadable drawing unit code | Set a recognised unit in the CAD header; the importer never guesses. |
+| Converted coordinate is outside the ±1e6 mm range | Check the declared unit instead of rescaling the drawing. |
+| Drawing metadata is inconsistent | Correct `$INSUNITS`/`$MEASUREMENT`; the unit header is authoritative and the conflict is recorded. |
 | Unsupported DXF entities | Explode blocks and export `LINE`, `ARC`, `CIRCLE`, `SPLINE` or closed `LWPOLYLINE`. |
 | Spline knot vector length must equal control points + degree + 1 | Re-export the curve; the file stores an inconsistent B-spline definition. |
 | Spline endpoints disagree with its vertices | Re-export the drawing so the spline ends meet the adjoining curves exactly. |
@@ -342,8 +369,8 @@ output for design decisions or material-model validation.
 
 - Analysis is 2D plane stress only. 3D is preview only.
 - Supported elements are CPS3 / CPS4R with a single R2D2 rigid panel.
-- Contact is hard, one door panel, closing along Y only. Body-then-door two-step closing, oblique
-  travel and per-pair friction overrides are not available yet.
+- Contact is hard. Door ↔ seal, body ↔ seal and seal ↔ self coefficients are independent; the interior
+  bonded partition seam is not exposed and rigid-to-rigid contact is excluded.
 - Partitioning supports one straight two-point cut per operation, only on a material-bearing seal
   region. Line and circular-arc boundaries and clamped control-point splines are split exactly;
   fit-point, closed or periodic splines and tangent, cavity-crossing, sliver or multi-interval cuts are

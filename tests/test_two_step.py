@@ -55,10 +55,12 @@ def two_step_project(
     )
     project.analysis.mode = "body_then_door"
     project.motion.body.offset = body_offset
-    project.motion.body.travel = body_travel
+    project.motion.body.stroke = abs(body_travel)
+    project.motion.body.angle = -90.0 if body_travel <= 0 else 90.0
     project.motion.body.duration = 1.0
     project.motion.offset = door_offset
-    project.motion.travel = door_travel
+    project.motion.stroke = abs(door_travel)
+    project.motion.angle = -90.0 if door_travel <= 0 else 90.0
     project.motion.duration = 1.3
     return project
 
@@ -118,7 +120,7 @@ def test_two_step_deck_sequence_and_boundaries(built):
     body_block, door_block = ("\n".join(block) for block in blocks)
     # Step 1 moves the body and holds the door at its initial position.
     assert "BODY_RP, 2, 2, -3" in body_block
-    assert "PANEL_RP, 2, 2, 0." in body_block
+    assert "PANEL_RP, 1, 1, 0" in body_block and "PANEL_RP, 2, 2, 0" in body_block
     # Step 2 holds the body at the attained position and closes the door.
     assert "BODY_RP, 2, 2, -3" in door_block
     assert "PANEL_RP, 2, 2, -5.5" in door_block
@@ -135,7 +137,13 @@ def test_two_step_deck_sequence_and_boundaries(built):
     assert body_block.count("nset=PANEL_RP") == 1
     assert door_block.count("nset=BODY_RP") == 1
     assert door_block.count("nset=PANEL_RP") == 1
-    assert "*Contact Inclusions, all exterior" in inp
+    assert "*Contact Inclusions" in inp
+    assert "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_PANEL-1_PANEL_FACE" in inp
+    assert "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_BODY-1_BODY_FACE" in inp
+    assert "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_WS-1_SEAL_EXTERIOR" in inp
+    assert "*Surface Interaction, name=DOOR_SEAL" in inp
+    assert "*Surface Interaction, name=BODY_SEAL" in inp
+    assert "*Surface Interaction, name=SEAL_SELF" in inp
     assert "BODY_FACE" in inp and "PANEL_FACE" in inp
     # The body starts above the seal; the reported clearance is physical.
     assert "Initial body clearance" in inp
@@ -155,7 +163,8 @@ def test_metadata_names_both_steps_and_references(built):
 
 def test_legacy_door_only_deck_is_unchanged():
     project = engineering.synthetic("Door only")
-    project.motion.travel = -5.5
+    project.motion.stroke = 5.5
+    project.motion.angle = -90.0
     mesh = generate_mesh(project)
     labels = fixture_labels(project, mesh)
     inp = deck.write_inp(project, mesh, labels)
@@ -177,8 +186,10 @@ def test_legacy_door_only_deck_is_unchanged():
 def test_mode_changes_mesh_identity_but_motion_does_not():
     project = two_step_project()
     before = engineering.mesh_compat(project)
-    project.motion.travel = -6.5
-    project.motion.body.travel = -4.0
+    project.motion.stroke = 6.5
+    project.motion.angle = -90.0
+    project.motion.body.stroke = 4.0
+    project.motion.body.angle = -90.0
     assert engineering.mesh_compat(project) == before
     project.analysis.mode = "door_only"
     assert engineering.mesh_compat(project) != before
@@ -186,7 +197,7 @@ def test_mode_changes_mesh_identity_but_motion_does_not():
 
 def test_two_step_validation_accepts_a_zero_body_hold_and_requires_a_body():
     project = two_step_project()
-    project.motion.body.travel = 0
+    project.motion.body.stroke = 0.0
     validated = type(project).model_validate(project.model_dump(mode="json"))
     assert validated.motion.body.travel == 0
     # A true zero is distinct from an invalid duration.
@@ -194,11 +205,15 @@ def test_two_step_validation_accepts_a_zero_body_hold_and_requires_a_body():
     with pytest.raises(ValueError, match="duration"):
         type(project).model_validate(project.model_dump(mode="json"))
 
+    # A missing body no longer makes the setup unsavable: the step sequence is
+    # derived from participating roles, stays door-only, and readiness reports
+    # the missing body instead of silently omitting it.
     project = engineering.synthetic("No body")
     project.analysis.mode = "body_then_door"
-    project.motion.body.travel = -1
-    with pytest.raises(ValueError, match="one door panel and one body panel"):
-        type(project).model_validate(project.model_dump(mode="json"))
+    project.motion.body.stroke = 1.0
+    project.motion.body.angle = -90.0
+    validated = type(project).model_validate(project.model_dump(mode="json"))
+    assert validated.analysis.mode == "door_only"
 
 
 def test_history_projection_is_per_motion():
@@ -324,11 +339,12 @@ def test_b_body_below_moves_up_toward_the_seal(bottom_body):
     nodes, ws, panel, body = deck._mesh_parts(project, mesh)
     boundary = deck.exterior(ws)
     door = deck.motion_assessment(
-        nodes, boundary, panel, project.motion, role="door", instance="PANEL-1", label="door"
+        nodes, boundary, panel, project.motion, role="door", instance="PANEL-1", label="door",
+        schema_version=project.schema_version,
     )
     seated = deck.motion_assessment(
         nodes, boundary, body, project.motion.body, role="body", instance="BODY-1",
-        label="body",
+        label="body", schema_version=project.schema_version,
     )
     assert door["side"] == "above" and door["direction"] == [0.0, -1.0]
     assert door["clearance_mm"] == pytest.approx(1.8, abs=1e-6)
@@ -549,7 +565,8 @@ def test_l_projection_follows_each_motion_and_keeps_raw_signs():
 def test_m_legacy_door_only_clearance_and_projection_are_unchanged():
     """M. The door-only template keeps its 1.80 mm gap and signed projection."""
     project = engineering.synthetic("Door only regression")
-    project.motion.travel = -5.5
+    project.motion.stroke = 5.5
+    project.motion.angle = -90.0
     mesh = generate_mesh(project)
     labels = fixture_labels(project, mesh)
     nodes, ws, panel = deck.mesh_parts(project, mesh)
@@ -636,7 +653,7 @@ def test_user_bottom_body_upward_scenario_prepares_a_complete_deck(bottom_body):
     body_step, door_step = ("\n".join(block) for block in blocks)
     assert "*Dynamic\n0.0001, 1, 1e-13" in body_step
     assert "BODY_RP, 2, 2, 5" in body_step
-    assert "PANEL_RP, 2, 2, 0." in body_step
+    assert "PANEL_RP, 1, 1, 0" in body_step and "PANEL_RP, 2, 2, 0" in body_step
     assert "*Dynamic\n0.0001, 1.3, 1e-13" in door_step
     assert "BODY_RP, 2, 2, 5" in door_step
     assert "PANEL_RP, 2, 2, -5.5" in door_step
@@ -723,7 +740,13 @@ def test_new_default_closing_travel_in_two_step_deck(bottom_body, body_travel):
     assert "PANEL_RP, 2, 2, 0" in body_step
     assert "PANEL_RP, 2, 2, -10" in door_step
     assert "*Dynamic\n0.0001, 1, 1e-13" in door_step
-    assert "*Contact Inclusions, all exterior" in inp
+    assert "*Contact Inclusions" in inp
+    assert "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_PANEL-1_PANEL_FACE" in inp
+    assert "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_BODY-1_BODY_FACE" in inp
+    assert "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_WS-1_SEAL_EXTERIOR" in inp
+    assert "*Surface Interaction, name=DOOR_SEAL" in inp
+    assert "*Surface Interaction, name=BODY_SEAL" in inp
+    assert "*Surface Interaction, name=SEAL_SELF" in inp
     assert "*Nset, nset=WSFIX" in inp
 
 
@@ -734,7 +757,7 @@ def test_zero_body_travel_seats_only_the_door_in_step_two(bottom_body):
     inp = deck.write_inp(project, mesh, labels)
     body_step, door_step = ("\n".join(block) for block in steps_of(inp))
     assert "BODY_RP, 2, 2, 0" in body_step
-    assert "PANEL_RP, 2, 2, 0." in body_step
+    assert "PANEL_RP, 1, 1, 0" in body_step and "PANEL_RP, 2, 2, 0" in body_step
     # The body stays at its assembled position while the door closes.
     assert "BODY_RP, 2, 2, 0" in door_step
     assert "PANEL_RP, 2, 2, -5.5" in door_step
@@ -752,7 +775,7 @@ def test_zero_door_travel_holds_the_attained_assembly(bottom_body):
     inp = deck.write_inp(project, mesh, labels)
     body_step, door_step = ("\n".join(block) for block in steps_of(inp))
     assert "BODY_RP, 2, 2, 5" in body_step
-    assert "PANEL_RP, 2, 2, 0." in body_step
+    assert "PANEL_RP, 1, 1, 0" in body_step and "PANEL_RP, 2, 2, 0" in body_step
     assert "BODY_RP, 2, 2, 5" in door_step
     assert "PANEL_RP, 2, 2, 0" in door_step
     metadata = metadata_for(project, mesh, labels)
@@ -785,7 +808,7 @@ def test_zero_travel_on_both_steps_is_a_hold_only_analysis(bottom_body):
 
 def test_door_only_zero_travel_is_an_explicit_hold():
     project = engineering.synthetic("Door hold")
-    project.motion.travel = 0.0
+    project.motion.stroke = 0.0
     project.motion.duration = 1.0
     mesh = generate_mesh(project)
     labels = fixture_labels(project, mesh)
