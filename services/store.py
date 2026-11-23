@@ -239,6 +239,9 @@ def append_revision(db, setup, project=None, base=None, source_id=None, group=No
     if project is None:
         project = new_id()
         number = 1
+        # A group deleted while this writer waited must not leave an orphan model.
+        if group and not db.execute("SELECT 1 FROM groups WHERE id=?", (str(group),)).fetchone():
+            raise KeyError("Project group not found")
         db.execute(
             "INSERT INTO projects(id, head, group_id) VALUES (?,?,?)",
             (project, rid, group or legacy_group(db)),
@@ -509,7 +512,7 @@ def project_deletion_info(pid):
         "revisions": revisions,
         "jobs": jobs,
         "active_jobs": [job["name"] for job in unsafe],
-        "deletable": bool(row["archived"]) and not unsafe,
+        "deletable": not unsafe,
     }
 
 
@@ -555,7 +558,7 @@ def group_deletion_info(gid):
         "revisions": revisions,
         "jobs": jobs,
         "active_jobs": [job["name"] for job in unsafe],
-        "deletable": bool(group["archived"]) and models == 0 and not unsafe,
+        "deletable": not unsafe,
     }
 
 
@@ -583,6 +586,15 @@ def projects(include_archived=False):
             continue
         result.append(row)
     return result
+
+
+def head_revision(project):
+    """The revision a model's head currently points at."""
+    with connection() as db:
+        row = db.execute("SELECT head FROM projects WHERE id=?", (str(project),)).fetchone()
+    if row is None:
+        raise KeyError("Project not found")
+    return row["head"]
 
 
 def revision_history(project):
@@ -782,6 +794,11 @@ def submit(
             "Historical DEMO evidence remains readable."
         )
     with connection(True) as db:
+        # The caller read the revision outside this transaction. A permanent
+        # deletion may have won in between; fail with a clear 404 instead of a
+        # foreign-key error, and never resurrect work for a deleted model.
+        if not db.execute("SELECT 1 FROM revisions WHERE id=?", (str(rev),)).fetchone():
+            raise KeyError("Revision not found")
         existing = db.execute("SELECT * FROM jobs WHERE token=?", (token,)).fetchone()
         if existing:
             params = (rev, mode, name, scenario, cpus, deck, mesh, compat)
@@ -1109,33 +1126,87 @@ def recover_deletions():
     return complete
 
 
-def purge_project(pid, confirm=None):
-    info = project_deletion_info(pid)
-    if not info["archived"]:
-        raise Conflict("Archive the model before permanently deleting it.")
-    if info["active_jobs"]:
-        raise Conflict(
-            "The model still has active or unresolved work: "
-            + ", ".join(info["active_jobs"])
-            + ". Wait for it to finish before deleting."
+def _expected_mismatch(expected, actual):
+    """True when the caller previewed a different deletion impact."""
+    if not expected:
+        return False
+    for key, value in expected.items():
+        if value is None or key not in actual:
+            continue
+        if int(value) != int(actual[key]):
+            return True
+    return False
+
+
+def _unsafe_rows(db, project_ids):
+    if not project_ids:
+        return []
+    placeholders = ",".join("?" * len(project_ids))
+    rows = [
+        dict(row)
+        for row in db.execute(
+            JOB_SELECT + f" WHERE r.project IN ({placeholders})", tuple(project_ids)
         )
-    if confirm is not None and confirm.strip() != info["name"]:
-        raise Conflict("Type the exact model name to confirm permanent deletion.")
-    with connection() as db:
-        job_ids = [
-            row["id"] for row in db.execute("SELECT j.id FROM jobs j JOIN revisions r ON r.id=j.revision WHERE r.project=?", (str(pid),))
-        ]
+    ]
+    unsafe = []
+    for row in rows:
+        public_row = public(row)
+        if activity.classify(public_row) != activity.TERMINAL:
+            unsafe.append(public_row)
+    return rows, unsafe
+
+
+def purge_project(pid, confirm=None, expected=None):
+    """Permanently delete one model and its owned rows, without archiving it.
+
+    The activity decision, the affected-ID enumeration and the row deletes all
+    happen under one ``BEGIN IMMEDIATE`` transaction. A job queued or claimed
+    before this writer wins is therefore visible to the decision; a writer that
+    arrives afterwards either sees the model gone or waits until it is gone.
+    The journal row is committed in the same transaction as the deletes, so a
+    crash before the commit leaves neither deleted rows nor a cleanup journal.
+    """
+    token = new_id()
+    with connection(True) as db:
+        row = db.execute(
+            "SELECT p.id, json_extract(r.setup,'$.name') AS name FROM projects p "
+            "JOIN revisions r ON p.head=r.id WHERE p.id=?",
+            (str(pid),),
+        ).fetchone()
+        if row is None:
+            raise KeyError("Project not found")
+        name = row["name"]
+        job_rows, unsafe = _unsafe_rows(db, [str(pid)])
+        if unsafe:
+            raise Conflict(
+                "The model still has active or unresolved work: "
+                + ", ".join(job["name"] for job in unsafe)
+                + ". Wait for it to finish before deleting."
+            )
+        if confirm is not None and confirm.strip() != name:
+            raise Conflict("Type the exact model name to confirm permanent deletion.")
+        job_ids = [job["id"] for job in job_rows]
         sources = [
-            row["source_id"]
-            for row in db.execute(
+            source["source_id"]
+            for source in db.execute(
                 "SELECT DISTINCT source_id FROM revisions WHERE project=? AND source_id IS NOT NULL",
                 (str(pid),),
             )
         ]
-    token = new_id()
-    payload = {"kind": "model", "id": str(pid), "jobs": job_ids, "sources": sources}
-    _write_journal(token, "model", pid, payload, "pending")
-    with connection(True) as db:
+        revisions = db.execute(
+            "SELECT COUNT(*) FROM revisions WHERE project=?", (str(pid),)
+        ).fetchone()[0]
+        if _expected_mismatch(expected, {"revisions": revisions, "jobs": len(job_ids)}):
+            raise Conflict(
+                "The deletion impact changed after it was previewed. "
+                "Review the revised counts and confirm again."
+            )
+        payload = {"kind": "model", "id": str(pid), "jobs": job_ids, "sources": sources}
+        now = time.time()
+        db.execute(
+            "INSERT INTO deletions VALUES (?,?,?,?,?,?,?)",
+            (token, "model", str(pid), encoded(payload), "pending", now, now),
+        )
         placeholders = ",".join("?" * len(job_ids)) if job_ids else "''"
         db.execute(f"DELETE FROM fixtures WHERE job IN ({placeholders})", tuple(job_ids))
         db.execute(f"DELETE FROM jobs WHERE id IN ({placeholders})", tuple(job_ids))
@@ -1145,47 +1216,44 @@ def purge_project(pid, confirm=None):
     cleaned = recover_deletions()
     return {
         "id": str(pid),
-        "name": info["name"],
+        "name": name,
         "removed_jobs": len(job_ids),
         "cleanup": "done" if cleaned else "pending",
     }
 
 
-def purge_group(gid, confirm=None):
-    info = group_deletion_info(gid)
-    if not info["archived"]:
-        raise Conflict("Archive the project before permanently deleting it.")
-    if info["unarchived_models"]:
-        raise Conflict(
-            f"{info['unarchived_models']} model(s) are not archived. Archive every model first."
-        )
-    if info["active_jobs"]:
-        raise Conflict(
-            "The project still has active or unresolved work: "
-            + ", ".join(info["active_jobs"])
-            + ". Wait for it to finish before deleting."
-        )
-    if confirm is not None and confirm.strip() != info["name"]:
-        raise Conflict("Type the exact project name to confirm permanent deletion.")
-    with connection() as db:
+def purge_group(gid, confirm=None, expected=None):
+    """Permanently delete a whole project group, archived or not.
+
+    Group membership is captured under the same write transaction that deletes
+    it, so a model added after the preview is either part of the decision or
+    cannot be inserted at all.
+    """
+    token = new_id()
+    with connection(True) as db:
+        group = db.execute("SELECT * FROM groups WHERE id=?", (str(gid),)).fetchone()
+        if group is None:
+            raise KeyError("Project group not found")
+        name = group["name"]
         projects_ = [
-            row["id"] for row in db.execute("SELECT id FROM projects WHERE group_id=?", (str(gid),))
+            row["id"]
+            for row in db.execute("SELECT id FROM projects WHERE group_id=?", (str(gid),))
         ]
+        job_rows, unsafe = _unsafe_rows(db, projects_)
+        if unsafe:
+            raise Conflict(
+                "The project still has active or unresolved work: "
+                + ", ".join(job["name"] for job in unsafe)
+                + ". Wait for it to finish before deleting."
+            )
+        if confirm is not None and confirm.strip() != name:
+            raise Conflict("Type the exact project name to confirm permanent deletion.")
+        job_ids = [job["id"] for job in job_rows]
         placeholders = ",".join("?" * len(projects_)) if projects_ else "''"
-        job_ids = (
-            [
-                row["id"]
-                for row in db.execute(
-                    f"SELECT j.id FROM jobs j JOIN revisions r ON r.id=j.revision WHERE r.project IN ({placeholders})", tuple(projects_)
-                )
-            ]
-            if projects_
-            else []
-        )
         sources = (
             [
-                row["source_id"]
-                for row in db.execute(
+                source["source_id"]
+                for source in db.execute(
                     f"SELECT DISTINCT source_id FROM revisions WHERE project IN ({placeholders}) "
                     "AND source_id IS NOT NULL",
                     tuple(projects_),
@@ -1194,16 +1262,34 @@ def purge_group(gid, confirm=None):
             if projects_
             else []
         )
-    token = new_id()
-    payload = {
-        "kind": "group",
-        "id": str(gid),
-        "projects": projects_,
-        "jobs": job_ids,
-        "sources": sources,
-    }
-    _write_journal(token, "group", gid, payload, "pending")
-    with connection(True) as db:
+        revisions = (
+            db.execute(
+                f"SELECT COUNT(*) FROM revisions WHERE project IN ({placeholders})",
+                tuple(projects_),
+            ).fetchone()[0]
+            if projects_
+            else 0
+        )
+        if _expected_mismatch(
+            expected,
+            {"models": len(projects_), "revisions": revisions, "jobs": len(job_ids)},
+        ):
+            raise Conflict(
+                "The deletion impact changed after it was previewed. "
+                "Review the revised counts and confirm again."
+            )
+        payload = {
+            "kind": "group",
+            "id": str(gid),
+            "projects": projects_,
+            "jobs": job_ids,
+            "sources": sources,
+        }
+        now = time.time()
+        db.execute(
+            "INSERT INTO deletions VALUES (?,?,?,?,?,?,?)",
+            (token, "group", str(gid), encoded(payload), "pending", now, now),
+        )
         placeholders_jobs = ",".join("?" * len(job_ids)) if job_ids else "''"
         db.execute(
             f"DELETE FROM fixtures WHERE job IN ({placeholders_jobs})", tuple(job_ids)
@@ -1224,7 +1310,7 @@ def purge_group(gid, confirm=None):
     cleaned = recover_deletions()
     return {
         "id": str(gid),
-        "name": info["name"],
+        "name": name,
         "removed_models": len(projects_),
         "removed_jobs": len(job_ids),
         "cleanup": "done" if cleaned else "pending",

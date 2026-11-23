@@ -393,7 +393,7 @@ class Project(Model):
             roles = [c.role for c in self.components]
             if roles.count("moving_panel") != 1 or roles.count("vehicle_body") != 1:
                 raise ValueError(
-                    "Body-then-door analysis needs exactly one moving door and one moving body."
+                    "Body-then-door analysis needs exactly one door panel and one body panel."
                 )
             if not any(not face.cavity for face in self.faces):
                 raise ValueError("Body-then-door analysis needs at least one seal region.")

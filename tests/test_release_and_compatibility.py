@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from services import release, store
+from services.api import main as api_main
 from services.api.main import app
 from support import create_model, legacy_fixture, prepare_mesh, prepared, save_fixture
 
@@ -65,14 +66,54 @@ def test_release_without_a_manifest_reports_itself_legacy(tmp_path):
     assert found.directory == dist
 
 
+def pin_release(monkeypatch, tmp_path, release_id: str = "abcdef123456", entry: str = "index-FIXTURE.js"):
+    """Point the API at an isolated release fixture.
+
+    CI runs pytest before the frontend build, so a test that reads the ambient
+    checkout would pass only on a developer machine that happens to have a
+    ``dist`` directory. The health contract is tested here against an explicit
+    fixture; the missing-build state has its own test below.
+    """
+    web = tmp_path / "web"
+    publish(web, release_id, entry)
+    pinned = release.resolve(web)
+    assert pinned.valid and not pinned.legacy
+    monkeypatch.setattr(api_main, "RELEASE", pinned)
+    return pinned
+
+
 def test_health_reports_the_pinned_release_and_api_generation(monkeypatch, tmp_path):
-    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path / "data"))
+    pinned = pin_release(monkeypatch, tmp_path)
     with TestClient(app, base_url="http://127.0.0.1") as api:
         payload = api.get("/api/health").json()
     assert payload["api"] == 3
-    assert payload["release"]
-    assert payload["frontend"]
+    assert payload["release"] == pinned.id == "abcdef123456"
+    assert payload["frontend"] == pinned.entry == "index-FIXTURE.js"
+    assert payload["releaseLegacy"] is False
     assert payload["data"] == store.data_identity()
+    assert payload["status"] == "ready"
+
+
+def test_health_reports_the_supported_missing_build_state(monkeypatch, tmp_path):
+    """No frontend build is a supported state: legacy, empty entry, still ready.
+
+    The launcher serves the API without a browser bundle (for example on a clean
+    checkout after ``pytest`` runs), so health must describe that state rather
+    than invent a release.
+    """
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path / "data"))
+    web = tmp_path / "web"
+    (web / "dist").mkdir(parents=True)
+    missing = release.resolve(web)
+    assert missing.legacy is True
+    assert missing.entry == ""
+    monkeypatch.setattr(api_main, "RELEASE", missing)
+    with TestClient(app, base_url="http://127.0.0.1") as api:
+        payload = api.get("/api/health").json()
+    assert payload["release"] == "legacy"
+    assert payload["frontend"] == ""
+    assert payload["releaseLegacy"] is True
     assert payload["status"] == "ready"
 
 

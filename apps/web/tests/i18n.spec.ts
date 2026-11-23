@@ -219,6 +219,6 @@ test('Japanese Create, Import, Mesh, Mounting, Review and Results labels are rea
     .toBe('Completed')
   await page.goto('/#results/' + run.id)
   await expect(page.getByRole('heading', { name: '荷重－変位' })).toBeVisible()
-  await expect(page.getByText('ドア応答').first()).toBeVisible()
+  await expect(page.getByText('ドアパネル応答').first()).toBeVisible()
   await expect(page.locator('.lang-button')).toHaveText('English')
 })

@@ -64,6 +64,38 @@ import { MeshReview } from './features/mesh/MeshReview'
 type Mesh = ViewMesh & MeshFile
 type Props = { initial: Revision; locked?: Job; notify: (msg: string) => void }
 
+type PartitionPlan = {
+  line: number[][]
+  child_a: string
+  child_b: string
+  area_a: number
+  area_b: number
+  split_edges: string[]
+  start: number[]
+  end: number[]
+}
+
+const PARTITION_CODES = [
+  'face_missing',
+  'face_cavity',
+  'face_not_seal',
+  'bad_request',
+  'endpoint_off_boundary',
+  'endpoint_on_hole',
+  'degenerate_cut',
+  'cut_outside_face',
+  'cut_crosses_hole',
+  'cut_disjoint',
+  'sliver_cut',
+  'tangent_cut',
+  'ambiguous_loop',
+  'ambiguous_hole',
+  'area_mismatch',
+  'overlapping_children',
+  'invalid_result',
+  'unsupported_curve',
+]
+
 export default function Workspace({ initial, locked, notify }: Props) {
   const { t } = useI18n()
   const compatibility = useCompatibility()
@@ -123,6 +155,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
     [readiness, setReadiness] = useState<Readiness | null>(null)
   const [runName, setRunName] = useState(() => t('review.defaultRunName')),
     [cpus, setCpus] = useState(1)
+  // Narrow and zoomed layouts can collapse the workflow/properties panes so the
+  // canvas and the primary actions remain reachable without clipping.
+  const [panesOpen, setPanesOpen] = useState(true)
+  // Straight two-point material partition, entered as model-space XY in mm.
+  const [cutStart, setCutStart] = useState({ x: 0, y: 0 })
+  const [cutEnd, setCutEnd] = useState({ x: 0, y: 0 })
+  const [cutPlan, setCutPlan] = useState<PartitionPlan | null>(null)
+  const [cutError, setCutError] = useState('')
   // Regeneration supersedes a reviewed fixture, so it is a deliberate choice.
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
   // A submitted setup replays its own archived mesh, never the newest one.
@@ -426,6 +466,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
   const chosen = pick?.source ?? pick?.entity ?? pick?.id
   const face = p.faces.find((f) => f.id === chosen),
     edge = p.edges.find((e) => e.id === chosen)
+  // A pending cut belongs to one face; changing selection invalidates it.
+  useEffect(() => {
+    setCutPlan(null)
+    setCutError('')
+  }, [face?.id])
   const component = p.components.find(
     (c) => c.id === (pick?.component ?? face?.component ?? edge?.component ?? pick?.id),
   )
@@ -561,6 +606,84 @@ export default function Workspace({ initial, locked, notify }: Props) {
     // The mesh is not cleared: its identity decides whether it is still reusable.
     message(t('status.revisionSaved', { number: saved.number }))
     return saved
+  }
+  function cutPoints(): number[] {
+    return [cutStart.x, cutStart.y, cutEnd.x, cutEnd.y]
+  }
+  function cutDraftValid() {
+    if (invalidField || hasInvalidField()) {
+      setCutError(t('validation.invalidDraft'))
+      return false
+    }
+    return true
+  }
+  function partitionMessage(message: string) {
+    const code = message.split(':')[0].trim()
+    return PARTITION_CODES.includes(code)
+      ? t(('partition.error.' + code) as TranslationKey)
+      : message
+  }
+  async function previewCut() {
+    if (!face) return
+    if (!cutDraftValid()) {
+      setCutPlan(null)
+      return
+    }
+    const values = cutPoints()
+    try {
+      const result = await request<{ plan: PartitionPlan }>('/api/partition/preview', 'POST', {
+        setup: p,
+        cut: {
+          face: face.id,
+          start: [values[0], values[1]],
+          end: [values[2], values[3]],
+        },
+      })
+      setCutError('')
+      setCutPlan(result.plan)
+    } catch (e) {
+      setCutPlan(null)
+      setCutError(partitionMessage(err(e)))
+    }
+  }
+  async function applyCut() {
+    if (!face || !cutPlan) return
+    if (!cutDraftValid()) return
+    const values = cutPoints()
+    const plan = cutPlan
+    try {
+      const saved = await request<Revision>(
+        '/api/projects/' + rev.project + '/partition',
+        'POST',
+        {
+          base: rev.id,
+          cut: {
+            face: face.id,
+            start: [values[0], values[1]],
+            end: [values[2], values[3]],
+          },
+        },
+      )
+      replaceRoute('workspace/' + saved.id)
+      setRev(saved)
+      setP(saved.setup)
+      setCutPlan(null)
+      setCutError('')
+      select({
+        kind: 'face',
+        id: plan.child_a,
+        entity: plan.child_a,
+        component: face.component,
+      })
+      message(t('partition.applied', { number: saved.number }))
+      refresh((g) => g + 1)
+    } catch (e) {
+      setCutError(partitionMessage(err(e)))
+    }
+  }
+  function cancelCut() {
+    setCutPlan(null)
+    setCutError('')
   }
   async function execute(fn: () => Promise<unknown>) {
     if (busy) return
@@ -854,51 +977,68 @@ export default function Workspace({ initial, locked, notify }: Props) {
           </button>
         </div>
       )}
-      {stage === STAGE.review && !locked && (
-        <div className="review-actions" data-testid="review-actions">
-          <section className="review-action card">
-            <h2>{t('mesh.prepareDeck')}</h2>
-            <p>{pendingDeck || reviewAction === 'prepare' ? t('mesh.preparingDeck') : prepareReason || (deckReady ? t('mesh.inputReady') : t('actions.readyPrepare'))}</p>
-            <small>{t('review.prepareNeverMesh')}</small>
-            <button className="review-prepare" disabled={busy || !!prepareReason || !!pendingDeck}
-              title={prepareReason || undefined} onClick={() => execute(async () => {
-                setReviewAction('prepare')
-                try { await prepareDeck() } finally { setReviewAction(null) }
-              })}>
-              <FileText /> {t('mesh.prepareDeck')}
-            </button>
-            {deck && (
-              <div className="build-info" data-testid="deck-status">
-                <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
-                {deckReady ? (
-                  <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
-                    <FileText /> {t('mesh.inspectDeck')}
-                  </a>
-                ) : <small>{t('mesh.deckStaleHint')}</small>}
-              </div>
-            )}
-          </section>
-          <section className="review-action card">
-            <h2>{t('review.submitLicensed')}</h2>
-            <p>{reviewAction === 'submit' ? t('actions.submitting') : submitReason || t('actions.readySubmit')}</p>
-            {activeRun && <small>{t('actions.activeRun', { state: labelFrom(t, 'state', activeRun.status) })}</small>}
-            <label>{t('review.runName')}
-              <input maxLength={100} value={runName} onChange={(e) => setRunName(e.target.value)} />
-            </label>
-            <NumberInput label={t('review.cpus')} value={cpus} min={1} max={32} step="1"
-              rangeHint="1 – 32" onChange={setCpus} />
-            <small>{cap.abaqus}</small>
-            <button className="review-submit" disabled={busy || !!submitReason || !!pendingDeck}
-              title={submitReason || undefined} onClick={() => execute(async () => {
-                setReviewAction('submit')
-                try { await submit() } finally { setReviewAction(null) }
-              })}>
-              <Play /> {t('review.submitLicensed')}
-            </button>
-          </section>
-        </div>
-      )}
-      <div className="workgrid">
+      <button
+        type="button"
+        className="pane-toggle"
+        aria-expanded={panesOpen}
+        aria-controls="workbench-panes"
+        onClick={() => setPanesOpen((open) => !open)}
+      >
+        <SlidersHorizontal />
+        {t('workspace.panes')}
+      </button>
+      <div
+        id="workbench-panes"
+        className={
+          'workgrid' +
+          (stage === STAGE.review && !locked ? ' has-review' : '') +
+          (panesOpen ? '' : ' panes-closed')
+        }
+      >
+        {stage === STAGE.review && !locked && (
+          <div className="review-actions" data-testid="review-actions">
+            <section className="review-action card">
+              <h2>{t('mesh.prepareDeck')}</h2>
+              <p>{pendingDeck || reviewAction === 'prepare' ? t('mesh.preparingDeck') : prepareReason || (deckReady ? t('mesh.inputReady') : t('actions.readyPrepare'))}</p>
+              <small>{t('review.prepareNeverMesh')}</small>
+              <button className="review-prepare" disabled={busy || !!prepareReason || !!pendingDeck}
+                title={prepareReason || undefined} onClick={() => execute(async () => {
+                  setReviewAction('prepare')
+                  try { await prepareDeck() } finally { setReviewAction(null) }
+                })}>
+                <FileText /> {t('mesh.prepareDeck')}
+              </button>
+              {deck && (
+                <div className="build-info" data-testid="deck-status">
+                  <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
+                  {deckReady ? (
+                    <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
+                      <FileText /> {t('mesh.inspectDeck')}
+                    </a>
+                  ) : <small>{t('mesh.deckStaleHint')}</small>}
+                </div>
+              )}
+            </section>
+            <section className="review-action card">
+              <h2>{t('review.submitLicensed')}</h2>
+              <p>{reviewAction === 'submit' ? t('actions.submitting') : submitReason || t('actions.readySubmit')}</p>
+              {activeRun && <small>{t('actions.activeRun', { state: labelFrom(t, 'state', activeRun.status) })}</small>}
+              <label>{t('review.runName')}
+                <input maxLength={100} value={runName} onChange={(e) => setRunName(e.target.value)} />
+              </label>
+              <NumberInput label={t('review.cpus')} value={cpus} min={1} max={32} step="1"
+                rangeHint="1 – 32" onChange={setCpus} />
+              <small>{cap.abaqus}</small>
+              <button className="review-submit" disabled={busy || !!submitReason || !!pendingDeck}
+                title={submitReason || undefined} onClick={() => execute(async () => {
+                  setReviewAction('submit')
+                  try { await submit() } finally { setReviewAction(null) }
+                })}>
+                <Play /> {t('review.submitLicensed')}
+              </button>
+            </section>
+          </div>
+        )}
         <aside className="left card">
           <div className="panel-title">
             <Waypoints />
@@ -1033,10 +1173,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
               selectedNodes={shownFixture}
               nodeInstances={['WS-1']}
               onBoxSelect={boxSelect}
-              emptyActionLabel={t('import.action')}
-              onEmptyAction={
-                p.source.kind === 'empty' ? () => changeStage(STAGE.import) : undefined
-              }
+              guide={stage === STAGE.materials ? (cutPlan?.line ?? null) : null}
             />
           </div>
           <div className="legend">
@@ -1140,7 +1277,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
               )}
               {stage === STAGE.components && (
                 <>
-                  <h2>{component?.name ?? t('components.select')}</h2>
+                  <h2>{component ? componentLabel(component) : t('components.select')}</h2>
+                  {component && (
+                    <span className="role-tag" data-testid="component-role">
+                      {t(('role.' + component.role) as TranslationKey)}
+                    </span>
+                  )}
                   {component && (
                     <>
                       <span className="kind-tag">
@@ -1232,6 +1374,87 @@ export default function Workspace({ initial, locked, notify }: Props) {
                           ))}
                         </select>
                       </label>
+                      {!face.cavity && !locked && !dimension && (
+                        <section className="partition-block" data-testid="partition-editor">
+                          <h3>{t('partition.title')}</h3>
+                          <p>{t('partition.help')}</p>
+                          <div className="cut-points">
+                            <NumberInput
+                              label={t('partition.startX')}
+                              unit="mm"
+                              value={cutStart.x}
+                              onChange={(x) => setCutStart((v) => ({ ...v, x }))}
+                            />
+                            <NumberInput
+                              label={t('partition.startY')}
+                              unit="mm"
+                              value={cutStart.y}
+                              onChange={(y) => setCutStart((v) => ({ ...v, y }))}
+                            />
+                            <NumberInput
+                              label={t('partition.endX')}
+                              unit="mm"
+                              value={cutEnd.x}
+                              onChange={(x) => setCutEnd((v) => ({ ...v, x }))}
+                            />
+                            <NumberInput
+                              label={t('partition.endY')}
+                              unit="mm"
+                              value={cutEnd.y}
+                              onChange={(y) => setCutEnd((v) => ({ ...v, y }))}
+                            />
+                          </div>
+                          <div className="actions">
+                            <button
+                              type="button"
+                              onClick={() => execute(previewCut)}
+                              disabled={busy}
+                            >
+                              {t('partition.preview')}
+                            </button>
+                            <button
+                              type="button"
+                              className="primary"
+                              onClick={() => execute(applyCut)}
+                              disabled={busy || !cutPlan}
+                            >
+                              {t('partition.apply')}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelCut}
+                              disabled={!cutPlan && !cutError}
+                            >
+                              {t('partition.cancel')}
+                            </button>
+                          </div>
+                          {cutError && (
+                            <p
+                              className="error-text"
+                              role="alert"
+                              data-testid="partition-error"
+                            >
+                              {cutError}
+                            </p>
+                          )}
+                          {cutPlan && (
+                            <div className="build-info" data-testid="partition-plan">
+                              <strong>{t('partition.previewReady')}</strong>
+                              <small>
+                                {t('partition.areas', {
+                                  a: cutPlan.area_a.toFixed(3),
+                                  b: cutPlan.area_b.toFixed(3),
+                                })}
+                              </small>
+                              <small>
+                                {t('partition.intersections', {
+                                  count: cutPlan.split_edges.length,
+                                })}
+                              </small>
+                            </div>
+                          )}
+                        </section>
+                      )}
                       {mat && (
                         <>
                           <h3>{t('materials.assigned')}</h3>

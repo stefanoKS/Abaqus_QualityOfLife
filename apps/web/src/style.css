@@ -1661,3 +1661,538 @@ input[type='color'] {
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+
+/* ------------------------------------------------ engineering workstation */
+/* Fixed shell: the top bar, compatibility banner and workspace header keep
+   their size; only the named panes scroll. The viewport never leaves the
+   screen while a long property form or workflow list is being used. */
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.workspace.page {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 11px 1.6vw 10px;
+}
+.workspace .crumb {
+  font-size: 0.76rem;
+  flex: 0 0 auto;
+}
+.workspace .page-heading {
+  margin: 0;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+.workspace .page-heading h1 {
+  font-size: clamp(1.22rem, 1.55vw, 1.62rem);
+  margin: 0 0 3px;
+  letter-spacing: -0.035em;
+}
+.workspace .subtitle {
+  font-size: 0.78rem;
+  gap: 8px;
+}
+.workspace .actions {
+  gap: 7px;
+}
+.workspace .blocked-banner,
+.workspace .readiness-banner {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.workspace .statusbar {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 7px 12px;
+  font-size: 0.76rem;
+}
+.workgrid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(174px, 198px) minmax(286px, 320px) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 10px;
+  height: auto;
+  max-height: none;
+}
+.workgrid.has-review {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+.workgrid > .left {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+.workgrid > .right {
+  grid-column: 2;
+  grid-row: 1 / -1;
+}
+.workgrid > .canvas-card {
+  grid-column: 3;
+  grid-row: 1 / -1;
+}
+.workgrid.has-review > .review-actions {
+  grid-column: 3;
+  grid-row: 1;
+}
+.workgrid.has-review > .canvas-card {
+  grid-row: 2;
+}
+.workgrid > .left,
+.workgrid > .right,
+.workgrid > .canvas-card {
+  min-height: 0;
+}
+.left,
+.right {
+  overflow: hidden;
+}
+.left {
+  display: flex;
+  flex-direction: column;
+}
+.left .steps {
+  flex: 0 1 auto;
+  overflow: auto;
+  max-height: 56%;
+}
+.left .tree {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.right {
+  overflow: auto;
+}
+.canvas-card {
+  display: flex;
+  flex-direction: column;
+}
+.viewport-wrap {
+  min-height: 0;
+}
+.review-actions {
+  justify-self: end;
+  align-self: start;
+  width: min(780px, 100%);
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+.review-action {
+  padding: 10px 13px;
+  gap: 5px;
+}
+.review-action h2 {
+  font-size: 0.96rem;
+  margin: 0;
+}
+.review-action p {
+  margin: 0;
+  font-size: 0.77rem;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+.review-action small {
+  margin: 0;
+  font-size: 0.71rem;
+}
+.review-action label {
+  gap: 3px;
+  font-size: 0.75rem;
+}
+.review-action input {
+  min-height: 30px;
+  padding: 4px 8px;
+}
+.review-action .number-field {
+  gap: 4px;
+}
+.review-action .build-info {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 0.75rem;
+}
+.review-action button {
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
+.pane-toggle {
+  display: none;
+}
+td,
+th,
+dd,
+input,
+.statusbar,
+.playback,
+.legend,
+.build-info,
+.range-summary {
+  font-variant-numeric: tabular-nums;
+}
+.range-summary {
+  color: var(--color-text-muted);
+  font-size: var(--text-meta);
+  align-self: center;
+}
+.loop-toggle {
+  white-space: nowrap;
+}
+.dashboard.page,
+.materials-page.page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+@media (min-width: 1101px) {
+  #root {
+    height: 100dvh;
+    overflow: hidden;
+  }
+}
+@media (max-width: 1100px) {
+  #root {
+    height: auto;
+    overflow: visible;
+  }
+  .workspace.page {
+    height: auto;
+    min-height: 100dvh;
+    overflow: visible;
+  }
+  .workgrid,
+  .workgrid.has-review {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+  }
+  .workgrid > .left,
+  .workgrid > .right,
+  .workgrid > .canvas-card,
+  .workgrid.has-review > .review-actions,
+  .workgrid.has-review > .canvas-card {
+    grid-column: 1;
+    grid-row: auto;
+  }
+  .workgrid > .canvas-card {
+    min-height: 440px;
+  }
+  .pane-toggle {
+    display: inline-flex;
+    align-self: flex-start;
+  }
+  .workgrid.panes-closed > .left,
+  .workgrid.panes-closed > .right {
+    display: none;
+  }
+  .review-actions {
+    width: 100%;
+    justify-self: stretch;
+  }
+  .left .steps {
+    max-height: none;
+  }
+}
+@media (max-width: 740px) {
+  .review-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workspace .page-heading {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .workspace .page-heading h1 {
+    font-size: 1.2rem;
+  }
+  .workgrid > .canvas-card {
+    min-height: 380px;
+  }
+}
+
+/* ------------------------------------------------------------- results shell */
+.run-view.page {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 10px;
+}
+.run-view .crumb,
+.run-view .page-heading,
+.run-view .run-banner {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.run-view .page-heading h1 {
+  font-size: clamp(1.25rem, 1.6vw, 1.7rem);
+  margin-bottom: 3px;
+}
+.run-view .result-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.run-view .result-grid > .card {
+  min-height: 0;
+}
+.run-view .result-grid > section.card {
+  display: flex;
+  flex-direction: column;
+}
+.run-view .result-viewport {
+  flex: 1 1 auto;
+  min-height: 220px;
+  height: auto;
+}
+.run-view .result-grid > aside.card {
+  overflow: auto;
+}
+@media (min-width: 1101px) {
+  .run-view.page {
+    height: calc(100dvh - 62px);
+    overflow: hidden;
+  }
+}
+@media (max-width: 1100px) {
+  .run-view.page {
+    height: auto;
+    overflow: visible;
+  }
+  .run-view .result-grid {
+    flex: none;
+  }
+  .run-view .result-viewport {
+    height: clamp(300px, 46vh, 520px);
+  }
+}
+
+/* ------------------------------------------------------------ delete dialog */
+button.destructive {
+  color: var(--color-danger);
+}
+button.destructive:hover:not(:disabled) {
+  background: var(--color-danger-surface);
+  border-color: var(--color-danger);
+}
+button.destructive.solid {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: #fff;
+}
+button.destructive.solid:hover:not(:disabled) {
+  background: #8f1b12;
+}
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #142c3966;
+}
+.dialog {
+  width: min(540px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  box-shadow: 0 12px 40px #142c3840;
+}
+.dialog h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+}
+.dialog-target {
+  margin: 0;
+  font-weight: 600;
+}
+.dialog-impact {
+  display: flex;
+  gap: 22px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+}
+.dialog-impact div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dialog-impact dt {
+  font-size: var(--text-micro);
+  color: var(--color-text-muted);
+}
+.dialog-impact dd {
+  margin: 0;
+  font-weight: 650;
+}
+.dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Role labels sit beside user/drawing names; identifiers stay unchanged. */
+.role-tag {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  font-size: var(--text-micro);
+  font-weight: 600;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border-radius: 999px;
+  padding: 2px 8px;
+  margin: 0 0 6px;
+}
+.tree-role {
+  margin-left: auto;
+  padding-left: 6px;
+  font-size: 0.66rem;
+  font-weight: 550;
+  color: var(--color-text-faint);
+  white-space: nowrap;
+}
+.tree-row .tree-item {
+  min-width: 0;
+}
+
+/* ---------------------------------------------------------- partition editor */
+.partition-block {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-divider);
+}
+.partition-block h3 {
+  margin: 0 0 4px;
+  font-size: 0.92rem;
+}
+.partition-block p {
+  margin: 0 0 8px;
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+}
+.cut-points {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 10px;
+  margin: 8px 0 10px;
+}
+.cut-points label {
+  font-size: var(--text-meta);
+}
+.cut-points input {
+  min-height: 30px;
+}
+.partition-block .actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.partition-block .build-info {
+  margin-top: 8px;
+}
+
+/* Results: the plot card is a named scrolling region, so the viewport and its
+   playback row never sit under a clipped, unreachable control. */
+.run-view .result-grid > section.card {
+  overflow: auto;
+}
+.run-view .result-grid > section.card .result-viewport {
+  flex: 0 0 clamp(260px, 42vh, 460px);
+  height: auto;
+}
+
+/* Narrow workspace: controls wrap instead of forcing horizontal overflow. */
+@media (max-width: 740px) {
+  .canvas-toolbar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .canvas-toolbar .spacer {
+    display: none;
+  }
+  .workgrid > * {
+    min-width: 0;
+  }
+  .seal-vtk-tools {
+    right: 8px;
+  }
+  .topbar {
+    min-width: 0;
+  }
+  .topbar nav button {
+    font-size: 0.78rem;
+  }
+  .brand-logo {
+    height: 34px;
+  }
+}
+
+/* Narrow navigation: two rows instead of forcing the language control off-screen. */
+@media (max-width: 740px) {
+  .topbar {
+    height: auto;
+    flex-wrap: wrap;
+    padding: 7px 10px;
+    row-gap: 5px;
+  }
+  .topbar nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    min-height: 36px;
+  }
+  .topbar .local,
+  .nav-separator,
+  .topbar .spacer {
+    display: none;
+  }
+  .lang-button {
+    margin-left: auto;
+  }
+}
+
+/* Flex-column shells: auto margins would shrink a page to its content width. */
+#root > main.page {
+  width: 100%;
+  margin-left: 0;
+  margin-right: 0;
+}
+.tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tree-row .tree-item {
+  gap: 6px;
+  overflow: hidden;
+}
+.tree-role {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-row .tree-rename-open,
+.tree-row > button:last-child {
+  flex: none;
+}

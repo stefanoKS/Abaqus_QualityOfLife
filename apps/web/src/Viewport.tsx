@@ -76,6 +76,11 @@ export function Viewport(props: ViewportProps) {
     props.resetKey ?? 0,
   ].join('|')
   const lastFit = useRef<string | null>(null)
+  // Until the user moves the camera, a container resize (including the first
+  // layout settle after CSS loads) re-fits the scene. Otherwise the initial
+  // projection would keep the size it was mounted at and screen picking would
+  // no longer agree with the drawn geometry.
+  const userMoved = useRef(false)
 
   useEffect(() => {
     const el = host.current!
@@ -88,7 +93,11 @@ export function Viewport(props: ViewportProps) {
       view = new ViewportRenderer(el, overlay.current!)
       controller.current = view
       view.resize()
-      resize = new ResizeObserver(() => view?.resize())
+      resize = new ResizeObserver(() => {
+        view?.resize()
+        if (!userMoved.current) view?.fit()
+        if (host.current && view) host.current.dataset.camera = view.cameraSignature()
+      })
       resize.observe(el)
       let drag: {
         pointer: number
@@ -176,6 +185,7 @@ export function Viewport(props: ViewportProps) {
                 })
               } else view!.drag(e.clientX - drag.x, e.clientY - drag.y, drag.pan)
             }
+            if (drag.moved && !drag.box) userMoved.current = true
             drag.x = e.clientX
             drag.y = e.clientY
           } else {
@@ -247,6 +257,7 @@ export function Viewport(props: ViewportProps) {
           e.preventDefault()
           const delta = e.deltaMode === 1 ? 16 * e.deltaY : e.deltaY
           view!.zoom(Math.exp(Math.max(-1, Math.min(1, delta * 0.0015))))
+          userMoved.current = true
           el.dataset.camera = view!.cameraSignature()
           setHover(null)
         },
@@ -255,9 +266,18 @@ export function Viewport(props: ViewportProps) {
       el.addEventListener(
         'keydown',
         (e) => {
-          if (e.key.toLowerCase() === 'f') view!.fit()
-          else if (e.key === '+' || e.key === '=') view!.zoom(0.8)
-          else if (e.key === '-') view!.zoom(1.25)
+          if (e.key.toLowerCase() === 'f') {
+            userMoved.current = false
+            view!.fit()
+          }
+          else if (e.key === '+' || e.key === '=') {
+            userMoved.current = true
+            view!.zoom(0.8)
+          }
+          else if (e.key === '-') {
+            userMoved.current = true
+            view!.zoom(1.25)
+          }
           else if (e.key === 'Escape') latest.current.onSelect(null)
         },
         { signal },
@@ -279,6 +299,7 @@ export function Viewport(props: ViewportProps) {
     if (!controller.current) return
     controller.current.lengthUnit = props.lengthUnit ?? 'mm'
     controller.current.plain = !!props.plain
+    if (lastFit.current !== fitKey) userMoved.current = false
     try {
       controller.current.setScene(scene, props.dimension, lastFit.current !== fitKey)
       lastFit.current = fitKey
@@ -291,6 +312,11 @@ export function Viewport(props: ViewportProps) {
       setError(translate.current('viewport.displayError') + ' ' + String(e))
     }
   }, [scene, props.dimension, fitKey, props.lengthUnit, props.plain])
+  // The partition guide is an overlay in model space; it never becomes a
+  // pickable CAD primitive and never enters the saved model.
+  useEffect(() => {
+    controller.current?.setGuide(props.guide ?? [])
+  }, [props.guide])
 
   useEffect(() => {
     hover.current = null
@@ -341,6 +367,7 @@ export function Viewport(props: ViewportProps) {
           title={t('viewport.zoomIn') + ' (+)'}
           aria-label={t('viewport.zoomIn')}
           onClick={() => {
+            userMoved.current = true
             controller.current?.zoom(0.8)
             recordCamera()
           }}
@@ -352,6 +379,7 @@ export function Viewport(props: ViewportProps) {
           title={t('viewport.zoomOut') + ' (−)'}
           aria-label={t('viewport.zoomOut')}
           onClick={() => {
+            userMoved.current = true
             controller.current?.zoom(1.25)
             recordCamera()
           }}
@@ -363,6 +391,7 @@ export function Viewport(props: ViewportProps) {
           title={t('viewport.fit') + ' (F)'}
           aria-label={t('viewport.fit')}
           onClick={() => {
+            userMoved.current = false
             controller.current?.fit()
             recordCamera()
           }}
@@ -385,21 +414,10 @@ export function Viewport(props: ViewportProps) {
           ))}
         </div>
       )}
-      {error ? (
+      {error && (
         <div role="alert" className="seal-vtk-empty">
           {error}
         </div>
-      ) : (
-        scene.surfaces.length === 0 && (
-          <div className="seal-vtk-empty">
-            <span>{t('viewport.noGeometry')}</span>
-            {props.onEmptyAction && (
-              <button type="button" onClick={props.onEmptyAction}>
-                {props.emptyActionLabel ?? t('import.action')}
-              </button>
-            )}
-          </div>
-        )
       )}
       {props.results && (
         <div className="seal-vtk-legend">
@@ -417,7 +435,9 @@ export function Viewport(props: ViewportProps) {
                 }}
               />
               <span data-testid="legend-limits">
-                <b>{formatNumber(props.resultMin ?? 0)}</b>
+                <b>
+                  {formatNumber(props.resultMin ?? 0)} {props.resultUnit ?? props.lengthUnit ?? 'mm'}
+                </b>
                 <b>
                   {Number(scene.range.toPrecision(4))} {props.resultUnit ?? props.lengthUnit ?? 'mm'}
                 </b>
@@ -425,6 +445,11 @@ export function Viewport(props: ViewportProps) {
               {props.resultSaturated && (
                 <span className="legend-saturated" data-testid="legend-saturated">
                   {t('viewport.saturated')}
+                </span>
+              )}
+              {props.resultUnderflow && (
+                <span className="legend-saturated" data-testid="legend-underflow">
+                  {t('viewport.underflow')}
                 </span>
               )}
               {scene.surfaces.some((s) => !s.contour) && (

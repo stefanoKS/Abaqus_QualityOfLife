@@ -106,7 +106,7 @@ test('an assembly-tree rename is persisted without changing CAD identity', async
   await input.fill('Seal renamed')
   await input.press('Enter')
   await expect(
-    tree.getByRole('button', { name: 'Seal renamed', exact: true }),
+    tree.getByRole('button', { name: /^Seal renamed/ }),
   ).toBeVisible()
 
   // Cancel on another component keeps its name.
@@ -115,7 +115,7 @@ test('an assembly-tree rename is persisted without changing CAD identity', async
   await panelInput.fill('Should not persist')
   await panelInput.press('Escape')
   await expect(
-    tree.getByRole('button', { name: 'Closing panel', exact: true }),
+    tree.getByRole('button', { name: /^Closing panel/ }),
   ).toBeVisible()
 
   await page.getByRole('button', { name: 'Save revision' }).click()
@@ -133,8 +133,8 @@ test('an assembly-tree rename is persisted without changing CAD identity', async
 
   await page.reload()
   await expect(
-    tree.getByRole('button', { name: 'Seal renamed', exact: true }),
+    tree.getByRole('button', { name: /^Seal renamed/ }),
   ).toBeVisible()
-  await tree.getByRole('button', { name: 'Seal renamed', exact: true }).click()
+  await tree.getByRole('button', { name: /^Seal renamed/ }).click()
   await expect(page.locator('.statusbar')).toContainText('Seal renamed')
 })

@@ -197,7 +197,7 @@ def test_two_step_validation_accepts_a_zero_body_hold_and_requires_a_body():
     project = engineering.synthetic("No body")
     project.analysis.mode = "body_then_door"
     project.motion.body.travel = -1
-    with pytest.raises(ValueError, match="moving door and one moving body"):
+    with pytest.raises(ValueError, match="one door panel and one body panel"):
         type(project).model_validate(project.model_dump(mode="json"))
 
 

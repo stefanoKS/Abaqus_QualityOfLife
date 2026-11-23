@@ -15,13 +15,24 @@ application, a message says exactly what to do. No login is required.
 
 ## 1. Layout
 
+The workspace is a fixed engineering shell: the navigation, model header and work area stay on one
+screen, and only the named panes scroll. Long forms never push the drawing field or the primary
+actions out of view.
+
 | Area | Contents |
 |---|---|
 | Header | Product logo and name, Workspace / Dashboard switch, session indicator, language selector |
-| Left panel | Workflow (with per-step configuration state) and the assembly tree |
-| Centre | Geometry, mesh and result viewport |
-| Right panel | Property editor for the current selection |
+| Model header | Model name, revision, dimension, unit system, readiness notice; **Save revision**, **Review / Run** |
+| Left work area | Workflow (with per-step configuration state) and the assembly tree, immediately left of the property editor |
+| Property editor | Editor for the selected workflow stage or CAD entity; scrolls on its own |
+| Drawing field | White geometry, mesh and result viewport with zoom / fit tools on the right |
+| Review dock | **Prepare input deck** then **Submit Abaqus analysis**, anchored to the upper-right of the work area; run name, CPU count, deck state and the deck-inspection link stay there while the property editor scrolls |
 | Footer | Save state, validation message, worker phase |
+
+On a narrow window or at high browser zoom the panes stack in the page flow and a **Workflow &
+properties** button collapses them, so the drawing field and the stage actions remain reachable. The
+empty drawing field is white and has no import button: the Import stage owns the file picker and its
+onboarding text.
 
 Each workflow step shows its configuration state:
 
@@ -56,13 +67,13 @@ The header shows one language button labelled with the destination language (`En
    through its fit points, so display and meshing follow the drawn curve rather than a chord.
    A failed import leaves the last good drawing usable; a first failed import leaves the model empty
    with an error you can act on.
-4. **Components** — assign each component a role: weatherstrip seal, moving panel, and so on.
+4. **Components** — assign each component a role: weatherstrip seal, door panel, and so on.
 5. **Materials** — assign a material card to each region and edit card properties as needed. The
    library supports linear elastic, hyperfoam test data and a **compressible neo-Hookean** solid
    rubber card (C10 in MPa, D1 in MPa⁻¹).
 6. **Motion** — set the initial Y offset, the signed Y travel and the step duration. A travel of
    **0 mm is a valid hold**: the panel keeps its assembled position for the whole step (positive
-   duration). New models default to **−10 mm** door travel (Y-positive is upward) and 1.0 s;
+   duration). New models default to **−10 mm** door panel travel (Y-positive is upward) and 1.0 s;
    saved older models retain their travel. This is a prescribed movement, not an automatically
    calculated gap or a safe compression recommendation: review initial clearance and deformation;
    reaching the gap does not guarantee valid contact. **Contact** sets the contact law and the
@@ -77,18 +88,18 @@ The header shows one language button labelled with the destination language (`En
    the node count. Press **Save fixed nodes**. Only the nodes you selected are fixed; a rectangle never
    expands to a whole CAD edge. Editable legacy models can use **Resolve N old mounting edges to
    nodes**, inspect the highlighted result, and save it as the reviewed fixture.
-9. **Review / Run → Prepare input deck** (blue, left) writes an `.inp` from the reviewed mesh,
+9. **Review / Run → Prepare input deck** (blue, first) is anchored in the upper-right review dock and writes an `.inp` from the reviewed mesh,
    fixed nodes, materials, contact and motion. It never enqueues a mesh job.
-10. **Submit Abaqus analysis** (green, right) runs the prepared deck; preparation and execution are
+10. **Submit Abaqus analysis** (green, second) runs that reviewed deck; preparation and execution are
     separate. Set the run name and CPU count. If disabled, follow the displayed reason: save the
     revision, correct invalid input, generate a compatible mesh, review fixed nodes, configure the
     Abaqus launcher or prepare a current deck. A motion edit needs a new revision and deck, not
     necessarily a new mesh.
 11. **Results** — opens on **von Mises** and element probing when the run contains stress (otherwise
-    on displacement magnitude and node probing). Switch the **Field**, set the stress range
-    (fixed 0.00–0.50 MPa by default, run-wide automatic, or editable limits), toggle mesh edges and
+    on displacement magnitude and node probing). Switch the **Field**, set the displacement (0–5 mm) or stress (0–0.50 MPa) range
+    (fixed default, run-wide auto, or editable limits), toggle mesh edges and
     node markers independently, scale the deformation, and probe cells or nodes. The canvas is solid
-    white. Play frames, read the door-response curve, export the displayed curve, and download the
+    white. Play frames (Loop is on by default), read the door panel response curve, export the displayed curve, and download the
     raw history CSV (missing measurements stay empty, not zero).
 
 ### Operator workflows
@@ -101,9 +112,9 @@ the returned geometry, and that revision's original drawing stays downloadable.
 
 **Archive or delete a model/project.** The dashboard has **Show archived** and an Archive/Restore
 action on every model and project. Archived models are hidden by default and open read-only; their
-revisions, runs and downloads remain available. Permanent deletion is offered only for an archived
-item: it shows the dependent revision and job counts, asks for confirmation, and then requires typing
-the exact name. Deletion is refused while work is queued, running or unresolved. Shared drawings used
+revisions, runs and downloads remain available. Permanent deletion is offered directly from the ordinary listing:
+it shows the dependent model, revision and job counts, the artifacts to be removed, and any active or unresolved work, then requires typing
+the exact name. Cancel or Escape makes no change; a changed impact is re-confirmed. Deletion is refused while work is queued, running or unresolved. Shared drawings used
 by a duplicate and the material library are not removed.
 
 **Reopen another model or an earlier revision.** Dashboard → open the model card for its saved head, or
@@ -119,12 +130,12 @@ step highlighted. 100% appears only after both the solver and result extraction 
 extraction is running or failed the bar stays below 100% and says why. A stale worker heartbeat and a
 license wait are shown explicitly.
 
-**Run a two-step body-seating analysis.** In Motion, choose **Body seating, then door closing** and
-assign exactly one moving body and one moving door in Components. Set the body offset, signed travel
-and seating duration, then the door travel and duration. Step 1 moves the body and holds the door;
-step 2 holds the body at its seated position and closes the door, carrying the seal and contact state
+**Run a two-step body panel seating analysis.** In Motion, choose **Body panel seating, then door panel closing** and
+assign exactly one body panel and one door panel in Components. Set the body panel offset, signed travel
+and seating duration, then the door panel travel and duration. Step 1 moves the body panel and holds the door panel;
+step 2 holds the body panel at its seated position and closes the door panel, carrying the seal and contact state
 forward. The mesh includes both rigid profiles as R2D2 elements. Results offer a curve-step selector
-so the body and door travel/force curves are read separately. This template is generated and
+so the body panel and door panel travel/force curves are read separately. This template is generated and
 integration-tested but has **not** been validated with a licensed solve yet; treat it as unqualified
 until that evidence exists.
 
@@ -149,7 +160,7 @@ viewport; the page does not scroll while you pan, and the wheel still zooms. In 
 choose the pencil next to a component to give it a display name: Enter saves, Escape cancels, and the
 name persists when you save the revision. The original drawing name and all geometry/FE identities
 stay unchanged, so a rename does not force a remesh. Component rows in the mesh review show the
-display name, role, inclusion, element type and count; an intentionally excluded rigid body is marked
+display name, role, inclusion, element type and count; an intentionally excluded body panel is marked
 “Excluded from analysis”, not “no elements”.
 
 **Paste laboratory data.** In a hyperfoam card, **Paste table data** parses the clipboard into a review.
@@ -219,10 +230,59 @@ non-monotonic axial strain) are shown but do not block saving.
 The card version increments only when the data actually changes. Historical revisions keep the
 material values they were saved with. A card that no region uses is not written to the input deck.
 
+### Partition one seal region into materials
+
+The workspace **Materials** stage can split one material-bearing seal region into independently
+selectable child regions that share one bonded, conforming interface. This is a material partition,
+not a physical gap.
+
+1. Select the seal region (Components opens its Materials editor).
+2. Under **Partition this seal region**, enter the cut start and end as model XY in millimetres. The
+   straight cut snaps to the canonical boundary within **0.05 mm**. Both endpoints must lie on the
+   region exterior; a cut may not cross a cavity, leave the material, meet the boundary tangentially,
+   or leave a sliver.
+3. **Preview cut** draws the proposed line on the white drawing field and reports the intersected
+   boundary edges and child areas. **Cancel cut** removes the preview without saving.
+4. **Apply partition** saves a new revision. Each child inherits the parent material and a stable CAD
+   ID; assign a different card to either child and **Save revision**.
+5. The topology change produces a new mesh digest. Review the new revision in Mesh, regenerate the
+   mesh, and re-review the fixed nodes; a prepared deck and its FE-node fixture are not transferred
+   by coincidence. A child can be partitioned again.
+
+A rejected cut leaves the revision count, setup and source drawing digest unchanged. Straight cuts
+across existing line and circular-arc boundaries, and clamped control-point splines, are supported;
+other curve variants are rejected by name rather than approximated. Partitioning is disabled on
+submitted (locked) snapshots and 3D previews.
+
+### Permanent deletion
+
+Every model card and project-group header in **Dashboard** has a destructive **Delete … permanently**
+action, available without archiving first; Archive / Restore remain separate. One accessible dialog
+shows the exact target, type, child-model count, revisions and jobs, the artifacts that will be
+removed, and any active or unresolved work. Type the current name to enable **Delete permanently**;
+Cancel or Escape makes no change and returns focus. If the impact changed after preview — for example
+someone added a model or queued work — the dialog shows the revised counts and asks for confirmation
+again. Shared drawing sources are removed only with their last reference; material-library cards,
+sibling models and unrelated groups are kept. If file cleanup cannot finish, the result says
+`cleanup pending` and the journal finishes it at the next startup.
+
 ## 4. Reading results
 
 - **Variable** is U (displacement). **Component** selects the magnitude or |U1| / |U2| / |U3|. Component
   contours use the absolute value; the probe field reports the signed value.
+- **Colour range** applies independently to displacement and stress. Displacement magnitude and U
+  components start at a fixed **0–5 mm**; von Mises and the stress components start at **0–0.50 MPa**.
+  `Fixed` is a display default, `Auto` uses the measured run-wide maximum for that quantity, and
+  `Manual` accepts an editable minimum and maximum with the displayed unit. **Reset range** restores
+  the default. A blank, non-finite or inverted pair is rejected locally and the last valid render
+  stays on screen; zero is a valid minimum. The range never rewrites solver values.
+- The legend shows both endpoints with units and marks values clipped above the maximum or below a
+  positive minimum. Probe readings, the chart and the exported CSV are never clipped.
+- The contour palette is one saturated blue–cyan–green–yellow–red scale shared by the viewport,
+  actor colours and legend. Material colours and chart axes are separate.
+- A rigid panel has no integration-point stress but still moves with its measured nodal U; its
+  stress-free surface keeps a neutral stroke and a contour is not invented for it. A node without a
+  measured U stays at its base position and the probe says the value is unavailable.
 - Probes are labelled `instance · kind number`. Labels are never mixed across instances.
 - **Unavailable outputs** lists variables that were not requested or could not be extracted. A missing
   value is never shown as zero.
@@ -230,15 +290,19 @@ material values they were saved with. A card that no region uses is not written 
   automatically; use **Fit and reset view** (F) to return explicitly. Stepping, scrubbing, playback,
   component changes and the deformed/undeformed toggle keep the camera. Each quantity's colour scale
   and legend come from measured run-wide values and do not change between frames.
-- **Door response** plots the panel reaction projected onto the closing direction against the closing
-  travel, measured from the start of the closing step. A resisting seal gives a rising positive curve.
-  The effective direction is shown under the chart.
+- **Play frames** starts paused. **Loop** is on by default: after the last displayed frame is held for
+  one playback interval, playback wraps to the first frame and repeats. Turn **Loop** off to stop on
+  the final frame. Pause and scrub work at any time; a failed frame leaves the last valid scene visible
+  and names the frame. Zero- and one-frame runs show a static frame and never start a timer.
+- **Door panel response** plots the panel reaction projected onto the closing direction against the
+  closing travel, measured from the start of the closing step. A resisting seal gives a rising positive
+  curve. The effective direction is shown under the chart.
 - **Displayed signs** reverses the X and/or Y sign for reading. It changes the chart and the exported
   displayed curve only; the stored results are never rewritten.
 - **Export displayed curve** downloads a CSV of exactly what is plotted, with panel, step, direction,
   units, signs, normalization and DEMO/ABAQUS provenance in `#` header lines plus the raw signed
   components. **Download history CSV** gives the unmodified artifact.
-- Results produced before the projected door response existed still open: the chart shows their
+- Results produced before the projected door panel response existed still open: the chart shows their
   original signed U2/RF2 and says so.
 
 ## 5. Abaqus only, with identifiable history
@@ -268,14 +332,24 @@ output for design decisions or material-model validation.
 | Requested mesh exceeds the pilot mesh budget | Increase the global element size. |
 | The active mesh file is missing or unreadable | Generate the mesh again in Mesh, then review and save the fixed nodes; Review never remeshes automatically. Completed runs stay readable. |
 | Degenerate or inverted element | Change the element size or repair the boundary. |
+| An endpoint is more than 0.05 mm from the region boundary | Enter a point on the material boundary, or move the cut inward. |
+| The cut crosses a cavity | Use separate cuts that stay inside the material. |
+| This boundary curve cannot be split safely | Use a line or circular-arc boundary; other spline variants are not approximated. |
+| The deletion impact changed after it was previewed | Review the revised counts in the dialog and type the name again. |
 | Unknown / worker disconnected | Inspect the run directory logs and processes; see the recovery document. |
 
 ## 7. Known limitations
 
 - Analysis is 2D plane stress only. 3D is preview only.
 - Supported elements are CPS3 / CPS4R with a single R2D2 rigid panel.
-- Contact is hard, one moving panel, closing along Y only. Body-then-door two-step closing, oblique
+- Contact is hard, one door panel, closing along Y only. Body-then-door two-step closing, oblique
   travel and per-pair friction overrides are not available yet.
+- Partitioning supports one straight two-point cut per operation, only on a material-bearing seal
+  region. Line and circular-arc boundaries and clamped control-point splines are split exactly;
+  fit-point, closed or periodic splines and tangent, cavity-crossing, sliver or multi-interval cuts are
+  rejected and leave the revision unchanged. A cut cannot be undone; delete the new revision only
+  through the normal deletion rules, or continue from the earlier revision.
+- Fragments created by a cut have no FE-node fixture transfer: remesh and re-review the fixed nodes.
 - The fixed nodes are a mesh-node selection; a mesh-changing edit still requires a new mesh and a
   reviewed fixture, because coincident node numbers are not proof that an old selection is right.
 - Splines are imported exactly, but a spline is meshed through its declared chord tolerance when OCC
@@ -283,7 +357,7 @@ output for design decisions or material-model validation.
 - A DWG is read by the packaged native reader. If the helper is incomplete the import names the missing
   packaged component and asks you to restore `integrations/dwg/bin`; no ODA installation is required.
 - Physical validity (contact onset, reaction magnitude, mesh convergence) is **not validated** against a
-  trusted reference. One licensed door-only closing case has been executed and is recorded in
+  trusted reference. One licensed door-panel-only closing case has been executed and is recorded in
   [engineering-validation.md](engineering-validation.md).
 
 ## 8. Where data lives

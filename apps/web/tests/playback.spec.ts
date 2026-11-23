@@ -49,6 +49,9 @@ test('a delayed frame never blanks the view and the camera and scale stay fixed'
 
   await page.goto('/#results/' + run.id)
   await expect(page.getByRole('heading', { name: 'Force–displacement' })).toBeVisible()
+  // Displacement now opens on the fixed 0–5 mm default. The run-wide scale is
+  // an explicit Auto choice, not an implicit entry state.
+  await page.getByLabel('Range mode').selectOption('auto')
   const viewport = page.locator('.result-viewport')
   const slider = page.getByRole('slider')
 

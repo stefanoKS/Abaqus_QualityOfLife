@@ -94,6 +94,17 @@ type Component = 'magnitude' | 'U1' | 'U2' | 'U3'
 
 const COMPONENTS: Component[] = ['magnitude', 'U1', 'U2', 'U3']
 
+type RangeMode = 'fixed' | 'auto' | 'manual'
+type RangeKind = 'stress' | 'displacement'
+const DEFAULT_RANGE: Record<RangeKind, { min: number; max: number }> = {
+  stress: { min: 0, max: 0.5 },
+  displacement: { min: 0, max: 5 },
+}
+const DEFAULT_DRAFT: Record<RangeKind, { min: string; max: string }> = {
+  stress: { min: '0', max: '0.5' },
+  displacement: { min: '0', max: '5' },
+}
+
 const STRESS_FIELDS: FieldId[] = ['mises', 'S11', 'S22', 'S33', 'S12']
 const DISPLACEMENT_FIELDS: FieldId[] = ['Umag', 'U1', 'U2']
 const isStressField = (field: FieldId) => STRESS_FIELDS.includes(field)
@@ -117,6 +128,11 @@ function sourceLog(job: Job) {
 function csvCell(value: unknown) {
   const text = value === undefined || value === null ? '' : String(value)
   return /[",\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text
+}
+
+/** Display-only range endpoint, never a rewrite of a solver value. */
+function formatRange(value: number) {
+  return Number.isFinite(value) ? String(Number(value.toPrecision(4))) : '—'
 }
 
 function download(name: string, text: string) {
@@ -174,9 +190,17 @@ export function RunView({
     [mode, setMode] = useState<'node' | 'element'>('node'),
     [deformed, deform] = useState(true)
   const [field, setField] = useState<FieldId>('Umag')
-  const [rangeMode, setRangeMode] = useState<'fixed' | 'auto' | 'manual'>('fixed')
-  const [limits, setLimits] = useState({ min: 0, max: 0.5 })
-  const [manual, setManual] = useState({ min: '0', max: '0.5' })
+  // Displacement and stress keep independent range state: a display choice for
+  // one quantity must not rewrite the other's limits.
+  const [rangeModes, setRangeModes] = useState<Record<RangeKind, RangeMode>>({
+    stress: 'fixed',
+    displacement: 'fixed',
+  })
+  const [rangeDrafts, setRangeDrafts] =
+    useState<Record<RangeKind, { min: string; max: string }>>(DEFAULT_DRAFT)
+  const [rangeLimits, setRangeLimits] =
+    useState<Record<RangeKind, { min: number; max: number }>>(DEFAULT_RANGE)
+  const [loop, setLoop] = useState(true)
   // Independent display toggles. They never touch the solver artifacts.
   const [edges, setEdges] = useState(false)
   const [markers, setMarkers] = useState(false)
@@ -306,18 +330,25 @@ export function RunView({
       })
     return () => ac.abort()
   }, [index, n, id, notify])
-  // Advance only after the requested frame is actually displayed, so a slow
-  // response is never abandoned mid-flight during ordinary playback.
+  // Advance only after the requested frame is actually displayed. At the final
+  // frame, hold it for one cadence and then wrap to the first frame when Loop is
+  // on; with Loop off playback stops exactly as before. A zero/one-frame run
+  // never starts a timer.
   useEffect(() => {
-    if (!play || !index) return
+    if (!play || !index || index.frames.length <= 1) return
     if (displayedFrame !== n) return
-    if (n + 1 >= index.frames.length) {
-      playing(false)
-      return
+    const last = index.frames.length - 1
+    if (n >= last) {
+      if (!loop) {
+        playing(false)
+        return
+      }
+      const t2 = setTimeout(() => setN(0), 220)
+      return () => clearTimeout(t2)
     }
-    const t2 = setTimeout(() => setN((value) => Math.min(value + 1, index.frames.length - 1)), 220)
+    const t2 = setTimeout(() => setN((value) => Math.min(value + 1, last)), 220)
     return () => clearTimeout(t2)
-  }, [play, n, index, displayedFrame])
+  }, [play, n, index, displayedFrame, loop])
   const hasLog = job?.manifest.includes(logFile)
   useEffect(() => {
     if (resultView || !hasLog) {
@@ -428,37 +459,63 @@ export function RunView({
       : (field as 'S11' | 'S22' | 'S33' | 'S12')
     : displacementKey
   const autoRange = displayMeta ? (displayMeta.ranges[rangeKey] ?? null) : undefined
-  const effectiveMax = fieldIsStress
-    ? rangeMode === 'fixed'
-      ? 0.5
+  const rangeKind: RangeKind = fieldIsStress ? 'stress' : 'displacement'
+  const rangeMode = rangeModes[rangeKind]
+  const manual = rangeDrafts[rangeKind]
+  const limits = rangeLimits[rangeKind]
+  const fallback = DEFAULT_RANGE[rangeKind]
+  // A fixed range is a display choice. Auto follows the run-wide measured
+  // maximum for the selected quantity; manual uses the last valid applied pair.
+  const effectiveMax =
+    rangeMode === 'fixed'
+      ? fallback.max
       : rangeMode === 'auto'
-        ? (autoRange ?? 0.5)
+        ? (autoRange ?? fallback.max)
         : limits.max
-    : autoRange
-  const effectiveMin = fieldIsStress && rangeMode === 'manual' ? limits.min : 0
+  const effectiveMin = rangeMode === 'manual' ? limits.min : fallback.min
   const resultRange = effectiveMax
-  const rangeUnavailable = resultRange === null || resultRange === undefined
+  // A quantity recorded as absent must stay visibly unavailable: a manual range
+  // cannot invent solver evidence.
+  const rangeUnavailable =
+    displayMeta !== null && displayMeta.ranges[rangeKey] === undefined
   const unit = fieldIsStress
     ? index?.units === 'N-mm-s-tonne'
       ? 'MPa'
       : t('run.unitUnknown')
     : 'mm'
   const fieldLabel = t(('run.field.' + field) as TranslationKey)
-  const frameMax = fieldIsStress
-    ? Math.max(
-        0,
-        ...Object.values(elementValues ?? {}).flatMap((values) => Object.values(values)),
-      )
-    : 0
+  // Scalar values actually drawn: magnitudes for displacement, max-IP values
+  // for stress. Probe and CSV readings stay unclipped.
+  const displayValues = useMemo(() => {
+    if (fieldIsStress)
+      return Object.values(elementValues ?? {}).flatMap((values) => Object.values(values))
+    if (!frame) return []
+    const axis = displacementKey === 'U1' ? 0 : displacementKey === 'U2' ? 1 : -1
+    const values: number[] = []
+    for (const rows of Object.values(frame.displacements ?? {}))
+      for (const row of rows) {
+        const u = row.slice(1)
+        const value = axis < 0 ? Math.hypot(...u) : Math.abs(u[axis] ?? 0)
+        if (Number.isFinite(value)) values.push(value)
+      }
+    return values
+  }, [fieldIsStress, elementValues, frame, displacementKey])
+  let frameMax = 0
+  let frameMin = 0
+  for (const value of displayValues) {
+    if (value > frameMax) frameMax = value
+    if (value < frameMin) frameMin = value
+  }
   const saturated =
-    fieldIsStress && resultRange != null && frameMax > resultRange + 1e-12
+    !rangeUnavailable && resultRange != null && frameMax > resultRange + 1e-12
+  const underflow =
+    !rangeUnavailable && effectiveMin > 0 && frameMin < effectiveMin - 1e-12
   const manualMin = Number(manual.min),
     manualMax = Number(manual.max)
+  const manualBlank = manual.min.trim() === '' || manual.max.trim() === ''
   const manualInvalid =
     rangeMode === 'manual' &&
-    (!Number.isFinite(manualMin) ||
-      !Number.isFinite(manualMax) ||
-      manualMax <= manualMin)
+    (manualBlank || !Number.isFinite(manualMin) || !Number.isFinite(manualMax) || manualMax <= manualMin)
   const stressOptions = STRESS_FIELDS.filter((option) => {
     const key = (option === 'mises' ? 'mises' : option) as
       | 'mises'
@@ -472,10 +529,27 @@ export function RunView({
     ? [...stressOptions, ...DISPLACEMENT_FIELDS]
     : DISPLACEMENT_FIELDS
   function applyManual(next: { min: string; max: string }) {
-    setManual(next)
+    setRangeDrafts((old) => ({ ...old, [rangeKind]: next }))
     const min = Number(next.min),
       max = Number(next.max)
-    if (Number.isFinite(min) && Number.isFinite(max) && max > min) setLimits({ min, max })
+    // Keep the last valid render while a draft is blank, non-finite or inverted.
+    if (
+      next.min.trim() !== '' &&
+      next.max.trim() !== '' &&
+      Number.isFinite(min) &&
+      Number.isFinite(max) &&
+      max > min
+    )
+      setRangeLimits((old) => ({ ...old, [rangeKind]: { min, max } }))
+  }
+  function changeRangeMode(next: RangeMode) {
+    setRangeModes((old) => ({ ...old, [rangeKind]: next }))
+    if (next === 'manual') applyManual(rangeDrafts[rangeKind])
+  }
+  function resetRange() {
+    setRangeModes((old) => ({ ...old, [rangeKind]: 'fixed' }))
+    setRangeDrafts((old) => ({ ...old, [rangeKind]: DEFAULT_DRAFT[rangeKind] }))
+    setRangeLimits((old) => ({ ...old, [rangeKind]: DEFAULT_RANGE[rangeKind] }))
   }
   const plotPick = useCallback(
     (i: number) => {
@@ -711,6 +785,7 @@ export function RunView({
                 resultMin={effectiveMin}
                 resultUnit={unit}
                 resultSaturated={saturated}
+                resultUnderflow={underflow}
                 resultLabel={legendLabel}
                 showMeshEdges={edges}
                 nodeMarkers={markers}
@@ -742,6 +817,15 @@ export function RunView({
                 />
               </label>
               <span>{shownEntry ? shownEntry.time.toFixed(3) + ' s' : '—'}</span>
+              <label className="check loop-toggle">
+                <input
+                  type="checkbox"
+                  checked={loop}
+                  aria-label={t('run.loop')}
+                  onChange={(e) => setLoop(e.target.checked)}
+                />
+                {t('run.loop')}
+              </label>
               {pendingFrame !== null && pendingFrame !== displayedFrame && (
                 <span className="loading-note">{t('run.loadingFrame')}</span>
               )}
@@ -752,54 +836,60 @@ export function RunView({
               )}
             </div>
             <div className="result-controls" data-testid="result-controls">
-              {fieldIsStress && (
-                <fieldset>
-                  <legend>{t('run.range')}</legend>
-                  <label>
-                    {t('run.rangeMode')}
-                    <select
-                      aria-label={t('run.rangeMode')}
-                      value={rangeMode}
-                      onChange={(e) => {
-                        const next = e.target.value as 'fixed' | 'auto' | 'manual'
-                        setRangeMode(next)
-                        if (next === 'manual') applyManual(manual)
-                      }}
-                    >
-                      <option value="fixed">{t('run.rangeFixed')}</option>
-                      <option value="auto">{t('run.rangeAuto')}</option>
-                      <option value="manual">{t('run.rangeManual')}</option>
-                    </select>
-                  </label>
-                  <label>
-                    {t('run.rangeMin')}
-                    <input
-                      type="number"
-                      step="any"
-                      aria-label={t('run.rangeMin')}
-                      value={manual.min}
-                      disabled={rangeMode !== 'manual'}
-                      onChange={(e) => applyManual({ ...manual, min: e.target.value })}
-                    />
-                  </label>
-                  <label>
-                    {t('run.rangeMax')}
-                    <input
-                      type="number"
-                      step="any"
-                      aria-label={t('run.rangeMax')}
-                      value={manual.max}
-                      disabled={rangeMode !== 'manual'}
-                      onChange={(e) => applyManual({ ...manual, max: e.target.value })}
-                    />
-                  </label>
-                  {manualInvalid && (
-                    <small className="error-text" role="alert" data-testid="range-error">
-                      {t('run.rangeInvalid')}
-                    </small>
-                  )}
-                </fieldset>
-              )}
+              <fieldset>
+                <legend>{t('run.range')}</legend>
+                <label>
+                  {t('run.rangeMode')}
+                  <select
+                    aria-label={t('run.rangeMode')}
+                    value={rangeMode}
+                    onChange={(e) => changeRangeMode(e.target.value as RangeMode)}
+                  >
+                    <option value="fixed">
+                      {t('run.rangeFixed', {
+                        min: fallback.min.toFixed(2),
+                        max: fallback.max.toFixed(2),
+                        unit,
+                      })}
+                    </option>
+                    <option value="auto">{t('run.rangeAuto')}</option>
+                    <option value="manual">{t('run.rangeManual')}</option>
+                  </select>
+                </label>
+                <label>
+                  {t('run.rangeMin', { unit })}
+                  <input
+                    type="number"
+                    step="any"
+                    aria-label={t('run.rangeMin', { unit })}
+                    value={manual.min}
+                    disabled={rangeMode !== 'manual'}
+                    onChange={(e) => applyManual({ ...manual, min: e.target.value })}
+                  />
+                </label>
+                <label>
+                  {t('run.rangeMax', { unit })}
+                  <input
+                    type="number"
+                    step="any"
+                    aria-label={t('run.rangeMax', { unit })}
+                    value={manual.max}
+                    disabled={rangeMode !== 'manual'}
+                    onChange={(e) => applyManual({ ...manual, max: e.target.value })}
+                  />
+                </label>
+                <span className="range-summary" data-testid="range-summary">
+                  {formatRange(effectiveMin)} – {formatRange(effectiveMax)} {unit}
+                </span>
+                <button type="button" onClick={resetRange}>
+                  {t('run.rangeReset')}
+                </button>
+                {manualInvalid && (
+                  <small className="error-text" role="alert" data-testid="range-error">
+                    {t('run.rangeInvalid')}
+                  </small>
+                )}
+              </fieldset>
               <div className="control-row">
                 <label className="check">
                   <input

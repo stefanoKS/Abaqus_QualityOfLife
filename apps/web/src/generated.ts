@@ -470,6 +470,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/partition/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Partition Preview
+         * @description Validate a cut from the current draft; nothing is persisted.
+         *
+         *     Preview and commit call the same domain function, so the line the engineer
+         *     reviews is the geometry that will be saved.
+         */
+        post: operations["partition_preview_api_partition_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/partition": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Partition Model
+         * @description Persist one straight material partition as a new revision.
+         *
+         *     The generic ``PUT`` topology guard stays untouched; a partition is its own
+         *     validated operation. The base revision is checked transactionally, and a
+         *     retried request that already produced this exact geometry returns its own
+         *     revision instead of failing or duplicating it.
+         */
+        post: operations["partition_model_api_projects__pid__partition_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/projects/{pid}/drawing": {
         parameters: {
             query?: never;
@@ -997,6 +1045,12 @@ export interface components {
              * @default
              */
             confirm: string;
+            /** Expected Models */
+            expected_models?: number | null;
+            /** Expected Revisions */
+            expected_revisions?: number | null;
+            /** Expected Jobs */
+            expected_jobs?: number | null;
         };
         /** DeletionInfo */
         DeletionInfo: {
@@ -1724,6 +1778,38 @@ export interface components {
              * Format: uuid
              */
             token: string;
+        };
+        /** PartitionApply */
+        PartitionApply: {
+            /**
+             * Base
+             * Format: uuid
+             */
+            base: string;
+            cut: components["schemas"]["PartitionCut"];
+        };
+        /**
+         * PartitionCut
+         * @description Two-point straight cut in model space (mm), not renderer triangles.
+         */
+        PartitionCut: {
+            /** Face */
+            face: string;
+            /** Start */
+            start: [
+                number,
+                number
+            ];
+            /** End */
+            end: [
+                number,
+                number
+            ];
+        };
+        /** PartitionPreview */
+        PartitionPreview: {
+            setup: components["schemas"]["Project-Input"];
+            cut: components["schemas"]["PartitionCut"];
         };
         /** Plane */
         "Plane-Input": {
@@ -3129,6 +3215,74 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["Save"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    partition_preview_api_partition_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartitionPreview"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    partition_model_api_projects__pid__partition_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PartitionApply"];
             };
         };
         responses: {

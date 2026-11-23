@@ -5,6 +5,7 @@ from .identity import mesh_compat, mesh_inputs
 from .mesh import generate_mesh
 from .model import Project
 from . import fixture
+from . import partition
 
 __all__ = [
     "Project",
@@ -16,6 +17,7 @@ __all__ = [
     "import_dxf",
     "mesh_compat",
     "mesh_inputs",
+    "partition",
     "synthetic",
     "two_panel_section",
 ]

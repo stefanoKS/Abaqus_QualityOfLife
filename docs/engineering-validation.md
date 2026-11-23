@@ -1,5 +1,23 @@
 # Engineering validation
 
+## UI redesign, direct deletion and seal partitioning · 2026-11-23
+
+This slice changed the browser/API workflow and added a CAD material partition. **No licensed solver
+was launched, no license was consumed and no retained ODB/INP/history was modified.** The four
+engineering outcomes stay separate:
+
+| Outcome | State |
+|---|---|
+| Software behaviour | Exercised by pytest domain/API/mesh/deck tests and the isolated browser harness (`--test-data` launcher double). A partition of the synthetic foot at x = 0 produces two bonded children that share one conforming interface node set, one `*Solid Section` per region, and an internal seam absent from `SEAL_EXTERIOR`; both door-only and two-step deck writers were inspected. |
+| Licensed execution of the partition | **Not performed.** The partition feature has no licensed ODB, reference run ID or extraction evidence. The manufactured launcher double is not solver evidence. |
+| Extraction/ODB agreement | Not revalidated in this slice. The retained moving-body, held-body and neo-Hookean runs were not replayed read-only here. |
+| Numerical sensitivity (mesh/time) | Not studied for the partition children. A topology change necessarily produces a new mesh; no convergence comparison was executed. |
+| Physical correlation | **BLOCKED** — still no independent reference measurements and no agreed tolerance. A converged run or a shared-interface mesh cannot establish physical accuracy. |
+
+Partition material cards are inherited from the parent. The deck records the same section thickness for
+both children and the unit system N-mm-s-tonne; the internal cut is a bonded interface, not a contact
+surface. Prior licensed runs predate the partition feature and remain comparisons only.
+
 ## New default under verification · 2026-11-23
 
 New models prescribe door U2 = −10 mm (Y-positive upward); this is not a gap

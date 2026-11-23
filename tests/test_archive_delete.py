@@ -6,6 +6,7 @@ shared drawings or library materials.
 """
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -245,3 +246,125 @@ def test_a_pending_journal_without_a_committed_delete_changes_nothing(client):
         assert (
             db.execute("SELECT 1 FROM deletions WHERE token=?", (token,)).fetchone() is None
         )
+
+
+def test_an_unarchived_model_can_be_deleted_directly(client):
+    revision = create_model(client, "Direct delete", example=True)
+    name = revision["setup"]["name"]
+    result = client.post(
+        f"/api/projects/{revision['project']}/delete", json={"confirm": name}
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["cleanup"] == "done"
+    assert client.get(f"/api/revisions/{revision['id']}").status_code == 404
+    assert client.get("/api/projects?include_archived=true").json() == []
+
+
+def test_an_unarchived_mixed_group_deletes_its_children(client):
+    group = create_group(client, "Mixed group")
+    first = create_model(client, "Mixed one", example=True, group=group["id"])
+    second = create_model(client, "Mixed two", example=True, group=group["id"])
+    client.post(f"/api/projects/{first['project']}/archive")
+    info = client.get(f"/api/groups/{group['id']}/deletion-info").json()
+    assert info["models"] == 2
+    assert info["deletable"] is True
+    result = client.post(
+        f"/api/groups/{group['id']}/delete", json={"confirm": "Mixed group"}
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["removed_models"] == 2
+    assert client.get("/api/groups?include_archived=true").json() == []
+    assert client.get("/api/projects?include_archived=true").json() == []
+
+
+def test_revised_deletion_scope_is_refused_before_execution(client):
+    group = create_group(client, "Scope group")
+    create_model(client, "Scope one", example=True, group=group["id"])
+    preview = client.get(f"/api/groups/{group['id']}/deletion-info").json()
+    create_model(client, "Scope two", example=True, group=group["id"])
+    refused = client.post(
+        f"/api/groups/{group['id']}/delete",
+        json={"confirm": "Scope group", "expected_models": preview["models"]},
+    )
+    assert refused.status_code == 409
+    assert "impact changed" in refused.json()["detail"]
+    # Nothing was removed, and the revised scope is still visible.
+    assert len(client.get("/api/groups").json()) == 1
+    assert len(client.get("/api/projects").json()) == 2
+
+
+def test_enqueue_that_loses_the_race_cannot_join_a_deleted_model(client, monkeypatch):
+    revision = create_model(client, "Race delete", example=True)
+    errors = []
+    deleted = []
+    inside = threading.Event()
+    writer_started = threading.Event()
+    original = store._unsafe_rows
+
+    def gate(db, project_ids):
+        # The deleting write transaction is already open. Let the test start a
+        # competing enqueue only now, so that it must block on the write lock.
+        inside.set()
+        writer_started.wait(5)
+        return original(db, project_ids)
+
+    monkeypatch.setattr(store, "_unsafe_rows", gate)
+
+    def enqueue():
+        writer_started.set()
+        try:
+            store.submit(
+                revision["id"], "Racing mesh", "MESH", store.new_id(), compat="racing"
+            )
+        except Exception as error:  # noqa: BLE001 - the failure mode is the assertion
+            errors.append(error)
+
+    def delete():
+        deleted.append(
+            store.purge_project(revision["project"], revision["setup"]["name"])
+        )
+
+    remover = threading.Thread(target=delete)
+    remover.start()
+    assert inside.wait(5), "the deleting transaction never started"
+    writer = threading.Thread(target=enqueue)
+    writer.start()
+    remover.join(10)
+    writer.join(10)
+    assert not remover.is_alive() and not writer.is_alive()
+    assert deleted and deleted[0]["cleanup"] == "done"
+    assert errors, "the competing enqueue must not silently succeed"
+    assert isinstance(errors[0], (KeyError, store.Conflict))
+    with store.connection() as db:
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM jobs WHERE revision=?", (revision["id"],)
+            ).fetchone()[0]
+            == 0
+        )
+        assert (
+            db.execute(
+                "SELECT COUNT(*) FROM projects WHERE id=?", (revision["project"],)
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_a_group_membership_change_after_preview_is_refused(client):
+    group = create_group(client, "Membership group")
+    create_model(client, "Membership one", example=True, group=group["id"])
+    preview = client.get(f"/api/groups/{group['id']}/deletion-info").json()
+    create_model(client, "Membership two", example=True, group=group["id"])
+    refused = client.post(
+        f"/api/groups/{group['id']}/delete",
+        json={
+            "confirm": "Membership group",
+            "expected_models": preview["models"],
+            "expected_revisions": preview["revisions"],
+            "expected_jobs": preview["jobs"],
+        },
+    )
+    assert refused.status_code == 409
+    assert len(client.get("/api/projects").json()) == 2
+    # The group itself is intact and can be deleted once the user re-confirms.
+    assert len(client.get("/api/groups").json()) == 1

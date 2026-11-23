@@ -104,9 +104,12 @@ test('box-select fixed nodes, save, reopen and write exactly that WSFIX', async 
   await page.keyboard.down('Shift')
   await dragBox(page, { x: box.x + 40, y: box.y + 40 }, { x: box.x + 120, y: box.y + 90 })
   await page.keyboard.up('Shift')
+  // Pan is verified above; reset the camera so the rectangle coordinates below
+  // are expressed in the fitted projection rather than a guessed pan offset.
+  await page.getByRole('button', { name: 'Fit and reset view' }).click()
 
-  // Select the mounting-foot band, offset by the pan applied above.
-  const PAN = { dx: 80, dy: 50 }
+  // Select the mounting-foot band.
+  const PAN = { dx: 0, dy: 0 }
   await dragBox(
     page,
     await at(page, -10, -0.6, PAN.dx, PAN.dy),

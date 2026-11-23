@@ -40,6 +40,8 @@ from .contracts import (
     NewGroup,
     NewProject,
     NewProjectGroup,
+    PartitionApply,
+    PartitionPreview,
     Revision,
     RevisionSummary,
     Save,
@@ -323,7 +325,15 @@ def group_deletion_info(gid: UUID):
 
 @app.post("/api/groups/{gid}/delete", response_model=DeletionResult)
 def delete_group(gid: UUID, body: DeleteConfirm = DeleteConfirm()):
-    return store.purge_group(gid, body.confirm)
+    return store.purge_group(
+        gid,
+        body.confirm,
+        {
+            "models": body.expected_models,
+            "revisions": body.expected_revisions,
+            "jobs": body.expected_jobs,
+        },
+    )
 
 
 @app.post("/api/groups", response_model=GroupSummary, status_code=201)
@@ -353,7 +363,11 @@ def model_deletion_info(pid: UUID):
 
 @app.post("/api/projects/{pid}/delete", response_model=DeletionResult)
 def delete_model(pid: UUID, body: DeleteConfirm = DeleteConfirm()):
-    return store.purge_project(pid, body.confirm)
+    return store.purge_project(
+        pid,
+        body.confirm,
+        {"revisions": body.expected_revisions, "jobs": body.expected_jobs},
+    )
 
 
 @app.get("/api/projects/{pid}/revisions", response_model=list[RevisionSummary])
@@ -505,6 +519,48 @@ def save(pid: UUID, body: Save):
             )
             card["version"] = prior["version"] + int(changed)
     return revision_payload(store.save(setup, str(pid), str(body.base), previous["source_id"]))
+
+
+@app.post("/api/partition/preview")
+def partition_preview(body: PartitionPreview):
+    """Validate a cut from the current draft; nothing is persisted.
+
+    Preview and commit call the same domain function, so the line the engineer
+    reviews is the geometry that will be saved.
+    """
+    candidate, plan = engineering.partition.apply(
+        body.setup, body.cut.face, body.cut.start, body.cut.end, seed="preview"
+    )
+    return {"plan": plan, "setup": candidate, "display": engineering.display(candidate)}
+
+
+@app.post("/api/projects/{pid}/partition", response_model=Revision)
+def partition_model(pid: UUID, body: PartitionApply):
+    """Persist one straight material partition as a new revision.
+
+    The generic ``PUT`` topology guard stays untouched; a partition is its own
+    validated operation. The base revision is checked transactionally, and a
+    retried request that already produced this exact geometry returns its own
+    revision instead of failing or duplicating it.
+    """
+    assert_editable(pid)
+    previous = store.revision(body.base)
+    if previous["project"] != str(pid):
+        raise store.Conflict("The base revision belongs to another model.")
+    setup = Project.model_validate(previous["setup"])
+    candidate, _plan = engineering.partition.apply(
+        setup, body.cut.face, body.cut.start, body.cut.end, seed=str(body.base)
+    )
+    payload = candidate.model_dump(mode="json")
+    try:
+        return revision_payload(
+            store.save(payload, str(pid), str(body.base), previous["source_id"])
+        )
+    except store.Conflict:
+        current = store.revision(store.head_revision(pid))
+        if current["setup"] == payload:
+            return revision_payload(current)
+        raise
 
 
 @app.post("/api/projects/{pid}/drawing", response_model=Job, status_code=202)

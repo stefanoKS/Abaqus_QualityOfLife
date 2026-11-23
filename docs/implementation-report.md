@@ -1,5 +1,48 @@
 # Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
+## A8. UI redesign, direct deletion and seal partitioning · 2026-11-23
+
+Baseline `6ace5475ba9f76b21cd2cc915a4c195f6d87fa9b`, matching `origin/main`. Work continued in the
+normal checkout with isolated browser data directories and ports; no operator database, active job or
+retained solver artifact was modified, and no licensed solver was launched.
+
+### Delivered behaviour
+
+| Area | Change |
+|---|---|
+| Shell | Fixed engineering workstation: dark navigation, model/revision header, workflow plus properties side by side on the left, white drawing field on the right. Desktop fits the client area at 1440×900 and 1280×720 (no document scroll); panes scroll independently. Review's prepare-then-submit dock is anchored to the upper-right of the work area. Narrow and 200%-zoom layouts stack in the page flow and can collapse the workflow/properties panes. |
+| Empty viewport | The centred DXF/DWG call to action was removed. Import owns the file picker and its guidance; the drawing field stays white, with WebGL and import errors still visible. |
+| Results geometry | Displayed point coordinates now depend only on instance-qualified base coordinates, that frame's measured nodal U, the deformation toggle and scale. Scalar availability controls colour alone. The y = 4 → y = 2 rigid-panel reproducer moves in Mises and U views; missing U stays at the base position; true zero stress and absent stress are distinguished. |
+| Ranges | Displacement (0–5 mm) and stress (0–0.5 MPa) keep independent Fixed/Auto/Manual state with editable minimum/maximum and units. Invalid, blank, non-finite or inverted drafts are rejected locally while the last valid render stays; clipping cues cover both ends; probes and CSV stay unclipped. |
+| Palette | One saturated blue–cyan–green–yellow–red ramp (#1745E6, #00B9F2, #08B84F, #FFD400, #E32621) is shared by VTK scalar colours, actor updates and the legend. Material colours and chart axes remain independent. |
+| Playback | Loop defaults on; playback holds the final displayed frame for one cadence and wraps to the first frame. Loop off stops on the final frame. Pause, scrub, camera and run-wide scale are preserved; slow and failed frames keep the last valid scene. |
+| Terminology | Japanese uses ボデーパネル / ドアパネル and English Body panel / Door panel for the engineering roles, including readiness, motion, mesh, assembly diagnostics, results, curve steps and both guides. Engineering identifiers, CAD/FE IDs, step names and historical metadata are unchanged. The assembly tree shows the translated role beside the alias-first label. |
+| Deletion | Permanent deletion is available directly from ordinary model and group listings. One accessible dialog shows the target, type, child-model/revision/job counts, removed artifact scope and blockers; exact-name typing enables the destructive action, and Cancel/Escape restores focus. A changed impact is re-presented for confirmation. The archive prerequisite was removed from preflight and execution. |
+| Deletion safety | The final activity decision, affected-ID enumeration and row deletes now run inside one `BEGIN IMMEDIATE` transaction, with the journal committed atomically with the deletes. A competing enqueue either joins before the decision (and blocks deletion) or loses and receives a not-found/conflict; a competing model creation cannot orphan a deleted group. |
+| Partition | New `packages/engineering/partition.py` implements a deterministic straight two-point cut on one material-bearing seal face. It snaps to the canonical boundary within 0.05 mm, splits canonical edges exactly (line, arc, clamped control-point spline), rewrites every incident signed loop including reverse use, preserves cavities, rewrites selections/local sizing, validates area/union/disjointness, and returns localized reason codes. Preview and commit share the same operation; the commit is its own transactional endpoint with base-revision checking and content-idempotent retry. Children keep stable CAD IDs and inherit the parent material. |
+
+### Gate status
+
+| Gate | Result | Evidence |
+|---|---|---|
+| 0 · Trustworthy CI baseline | PASS | Clean worktree reproduced the empty-frontend health failure; the test now provisions an isolated release fixture and separately covers the supported missing-build state. |
+| 1 · Desktop/narrow/zoom shell | PASS | `apps/web/tests/layout.spec.ts`: document/client size, pane adjacency, fixed canvas through property scrolling, Review dock bounds, resize, narrow collapse, 200% width, white canvas, empty-viewport picker count and import isolation. |
+| 2 · Terminology | PASS | Both dictionaries audited; role labels changed without touching identifiers. Browser locale, alias and asset tests plus translation/encoding gates. |
+| 3a · Result geometry | PASS | `apps/web/tests/scene-model.spec.ts`: y=4→y=2 edge and markers in Mises/U, deformation off and scales 1/2, missing U, measured zero vs absent stress, instance-qualified picking, palette values. |
+| 3b · Ranges and playback | PASS | `apps/web/tests/ranges.spec.ts` plus existing playback/curve/result-field coverage: independent defaults, Auto, manual clamping both ends, invalid drafts, unclipped signed probe, reset, loop wraps, Loop off, slow frame across the boundary, camera/scale stability. |
+| 4 · Direct deletion | PASS | `tests/test_archive_delete.py` (direct model/group, revised scope, enqueue race, membership change, recovery) and `apps/web/tests/archive.spec.ts` (dialog focus/cancel/Escape/wrong name, direct model and mixed group). |
+| 5a · Partition domain/API | PASS | `tests/test_partition.py`: area/union/disjointness, child-of-child, deterministic IDs, reverse shared interface, hole-preserving arc cut, invalid/tangent/sliver/hole-crossing rejection with no mutation, selection remap, mesh conformity, door-only and two-step deck sections/seam, preview/apply/retry/stale base/generic PUT guard. |
+| 5b · Partition browser/worker/deck | PASS | `apps/web/tests/partition.spec.ts`: pan/zoom, preview, cancel, apply two cuts, two material cards, save/reload, worker mesh, re-reviewed fixture, prepared INP, shared interface nodes, pre-cut revision digest/deck replay, sibling untouched. |
+| 6 · Regression/evidence | PASS (software) · physical correlation BLOCKED | Full suite counts below. No licensed partition run; no retained ODB replay or independent reference. |
+
+### Verification runs and known gaps
+
+Recorded in [agent.md](../agent.md). The partition has **no licensed execution, extraction or ODB
+agreement**; the launcher double is manufactured evidence. Physical correlation remains blocked on an
+independent reference and agreed tolerance. Straight cuts are the supported delivery; other curve
+variants are rejected rather than approximated, and FE-node fixtures are not transferred across the
+topology change.
+
 ## Usability and CI repair · 2026-11-23
 
 New schema-v3 projects use −10 mm prescribed door travel; older omitted

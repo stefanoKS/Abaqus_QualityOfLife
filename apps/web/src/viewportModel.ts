@@ -96,6 +96,8 @@ export interface ViewportProps {
   resultUnit?: string
   /** True when a measured value exceeds the display maximum. */
   resultSaturated?: boolean
+  /** True when a measured value falls below a positive display minimum. */
+  resultUnderflow?: boolean
   /**
    * Recorded colour maximum for this quantity. ``null`` means the quantity is
    * unavailable for this run and must not be painted with a fabricated zero;
@@ -114,9 +116,8 @@ export interface ViewportProps {
   nodeInstances?: string[]
   /** Receives the instance-qualified labels inside the drawn rectangle. */
   onBoxSelect?: (labels: string[]) => void
-  /** Action offered when there is no geometry yet, e.g. open Import. */
-  emptyActionLabel?: string
-  onEmptyAction?: () => void
+  /** Proposed partition line in model XY, drawn as an overlay only. */
+  guide?: number[][] | null
 }
 
 export interface Surface {
@@ -254,8 +255,11 @@ function instanceSurfaces(
         const index = surface.points.length
         const xyz = coords.get(label)!
         const u = displacement.get(label)
+        // Geometry is decided only by this frame's measured nodal displacement.
+        // Scalar (stress) availability decides colour alone: a rigid line has no
+        // integration-point stress yet still moves with its reference motion.
         surface.points.push(
-          complete && props.deformed && u
+          props.deformed && u
             ? xyz.map((x, i) => x + (u[i] ?? 0) * scale)
             : xyz
         )
@@ -269,8 +273,10 @@ function instanceSurfaces(
         group!.indices.set(label, index)
         const xyz = coords.get(label)!
         const u = displacement.get(label)
+        // A node without a measured U stays at its base position; the missing
+        // measurement is identified by the un-contoured surface and the probe.
         surface.points.push(
-          complete && props.deformed && u
+          props.deformed && u
             ? xyz.map((x, i) => x + (u[i] ?? 0) * scale)
             : xyz
         )
@@ -463,12 +469,17 @@ export function makeScene(props: ViewportProps): Scene {
   return { surfaces, range: null }
 }
 
+/**
+ * One saturated blue–cyan–green–yellow–red display ramp shared by the VTK
+ * scalar colours, actor updates and the legend. Chart axes, engineering values
+ * and material colours are deliberately independent of this palette.
+ */
 export const ramp = [
-  [36, 72, 140],
-  [41, 155, 176],
-  [119, 207, 150],
-  [249, 212, 99],
-  [212, 76, 54],
+  [23, 69, 230], // #1745E6
+  [0, 185, 242], // #00B9F2
+  [8, 184, 79], // #08B84F
+  [255, 212, 0], // #FFD400
+  [227, 38, 33], // #E32621
 ]
 export function colorAt(ratio: number): number[] {
   const x = Math.min(1, Math.max(0, ratio)) * (ramp.length - 1)

@@ -5,6 +5,13 @@ import { useTranslate } from '../../i18n'
 import type { SelectionMode } from '../../viewportModel'
 import { componentLabel } from './componentLabel'
 
+const ROLE_KEYS = {
+  seal: 'role.seal',
+  moving_panel: 'role.moving_panel',
+  vehicle_body: 'role.vehicle_body',
+  unassigned: 'role.unassigned',
+} as const
+
 export function AssemblyTree({
   project,
   currentComponent,
@@ -104,10 +111,14 @@ export function AssemblyTree({
                   <button
                     type="button"
                     className="tree-item"
+                    aria-label={label + ' · ' + t(ROLE_KEYS[component.role] ?? 'role.unassigned')}
                     onClick={() => onPick('component', component.id, component.id)}
                   >
                     <Box />
-                    {label}
+                    <span className="tree-label">{label}</span>
+                    <span className="tree-role">
+                      {t(ROLE_KEYS[component.role] ?? 'role.unassigned')}
+                    </span>
                   </button>
                   <button
                     type="button"

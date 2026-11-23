@@ -31,19 +31,19 @@ def generate_mesh(project):
         )
     if any(c.role not in ("seal", "moving_panel", "vehicle_body") for c in project.components):
         raise ValueError(
-            "The mesh supports a seal, one moving panel and an optional body profile. "
+            "The mesh supports a seal, one door panel and an optional body panel. "
             "Assign a supported component role."
         )
     panels = [c for c in project.components if c.role == "moving_panel"]
     if len(panels) != 1:
-        raise ValueError("Assign exactly one open rigid profile as the moving panel.")
+        raise ValueError("Assign exactly one open rigid profile as the door panel.")
     mode = project.analysis.mode
     body = [c.id for c in project.components if c.role == "vehicle_body"]
     if mode == "body_then_door":
         if len(body) != 1:
-            raise ValueError("Body-then-door analysis needs exactly one moving body profile.")
+            raise ValueError("Body-then-door analysis needs exactly one body panel profile.")
         if not any(edge.component in body for edge in project.edges):
-            raise ValueError("The moving body needs an open rigid profile before meshing.")
+            raise ValueError("The body panel needs an open rigid profile before meshing.")
         excluded = []
     else:
         excluded = [

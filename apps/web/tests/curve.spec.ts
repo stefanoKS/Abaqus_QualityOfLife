@@ -51,13 +51,13 @@ test('door response is projected, sign-reversible and exported as displayed', as
   request,
 }) => {
   const revision: Revision = await (
-    await request.post('/api/projects', { data: { name: 'Door response', example: true } })
+    await request.post('/api/projects', { data: { name: 'Door panel response', example: true } })
   ).json()
-  const run = await completedRun(request, revision, 'Door response run')
+  const run = await completedRun(request, revision, 'Door panel response run')
 
   await page.goto('/#results/' + run.id)
   await expect(page.getByRole('heading', { name: 'Force–displacement' })).toBeVisible()
-  await expect(page.getByText('Door response', { exact: true })).toBeVisible()
+  await expect(page.getByText('Door panel response', { exact: true })).toBeVisible()
   // The closing direction is stated instead of being implied by an axis name.
   await expect(page.locator('.property-body')).toContainText('0.000, -1.000')
 
@@ -102,7 +102,7 @@ test('door response is projected, sign-reversible and exported as displayed', as
   expect(saved.ok()).toBeTruthy()
   await page.goto('/#results/' + run.id)
   await expect(page.getByRole('heading', { name: 'Force–displacement' })).toBeVisible()
-  await expect(page.getByText('Door response', { exact: true })).toBeVisible()
+  await expect(page.getByText('Door panel response', { exact: true })).toBeVisible()
 })
 
 test('reverse axes refit an automatic axis and mirror a zoomed one', async ({ page, request }) => {

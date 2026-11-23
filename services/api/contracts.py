@@ -139,6 +139,24 @@ class Save(Contract):
     setup: Project
 
 
+class PartitionCut(Contract):
+    """Two-point straight cut in model space (mm), not renderer triangles."""
+
+    face: str = Field(min_length=1, max_length=80)
+    start: tuple[float, float]
+    end: tuple[float, float]
+
+
+class PartitionPreview(Contract):
+    setup: Project
+    cut: PartitionCut
+
+
+class PartitionApply(Contract):
+    base: UUID
+    cut: PartitionCut
+
+
 class Revision(Contract):
     id: str
     project: str
@@ -174,6 +192,12 @@ class Summary(Contract):
 
 class DeleteConfirm(Contract):
     confirm: str = Field(default="", max_length=200)
+    # Impact counts the user actually reviewed. They are checked under the same
+    # write transaction as the deletes; a changed scope is refused, not silently
+    # applied. Omitted by older clients, which keeps their contract.
+    expected_models: int | None = Field(default=None, ge=0)
+    expected_revisions: int | None = Field(default=None, ge=0)
+    expected_jobs: int | None = Field(default=None, ge=0)
 
 
 class DeletionInfo(Contract):

@@ -164,6 +164,16 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
   const [openRevisions, revealRevisions] = useState<string | null>(null),
     [history, setHistory] = useState<RevisionSummary[]>([])
   const [busy, setBusy] = useState(false)
+  // One accessible confirmation dialog for permanent deletion. It is opened
+  // from an ordinary (non-archived) listing as well as from an archived one.
+  const [deleteTarget, setDeleteTarget] = useState<{
+    kind: 'model' | 'group'
+    id: string
+    info: DeletionInfo
+  } | null>(null)
+  const [deleteTyped, setDeleteTyped] = useState('')
+  const [deleteChanged, setDeleteChanged] = useState(false)
+  const deleteFocus = useRef<HTMLElement | null>(null)
   // A late response for the previous archive filter must not overwrite the
   // list produced by the current one after the user toggles the checkbox.
   const showArchivedRef = useRef(showArchived)
@@ -276,48 +286,81 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
     }
   }
 
-  async function remove(kind: 'model' | 'group', id: string) {
-    if (!compat.ok) return
+  async function openDelete(kind: 'model' | 'group', id: string) {
+    if (!compat.ok) {
+      notify(t('compat.writesDisabled'))
+      return
+    }
     try {
       const info = await request<DeletionInfo>(
         `/api/${kind === 'model' ? 'projects' : 'groups'}/${id}/deletion-info`,
       )
       const activeJobs = info.active_jobs ?? []
-      if (!info.deletable) {
+      if (!info.deletable || activeJobs.length) {
         notify(
           t('dashboard.deleteBlocked', {
             reason: activeJobs.length
               ? t('dashboard.deleteActive', { jobs: activeJobs.join(', ') })
-              : t('dashboard.deleteArchiveFirst'),
+              : t('dashboard.deleteUnresolved'),
           }),
         )
         return
       }
-      const details =
-        kind === 'model'
-          ? t('dashboard.deleteModelConfirm', {
-              name: info.name,
-              revisions: info.revisions,
-              jobs: info.jobs,
-            })
-          : t('dashboard.deleteGroupConfirm', {
-              name: info.name,
-              models: info.models,
-              revisions: info.revisions,
-              jobs: info.jobs,
-            })
-      if (!window.confirm(details)) return
-      const typed = window.prompt(t('dashboard.deleteTypeName', { name: info.name }))
-      if (typed === null) return
-      if (typed.trim() !== info.name) {
-        notify(t('dashboard.deleteNameMismatch'))
+      deleteFocus.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null
+      setDeleteTyped('')
+      setDeleteChanged(false)
+      setDeleteTarget({ kind, id, info })
+    } catch (e) {
+      notify(err(e))
+    }
+  }
+
+  function closeDelete() {
+    setDeleteTarget(null)
+    setDeleteTyped('')
+    setDeleteChanged(false)
+    // Cancel/Escape restores focus to the control that opened the dialog.
+    window.setTimeout(() => deleteFocus.current?.focus(), 0)
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return
+    const { kind, id, info } = deleteTarget
+    if (deleteTyped.trim() !== info.name) {
+      notify(t('dashboard.deleteNameMismatch'))
+      return
+    }
+    const url = `/api/${kind === 'model' ? 'projects' : 'groups'}/${id}`
+    try {
+      // Refresh the impact immediately before execution. If scope changed, show
+      // the revised impact and require a fresh typed confirmation.
+      const fresh = await request<DeletionInfo>(`${url}/deletion-info`)
+      if (fresh.active_jobs?.length || !fresh.deletable) {
+        setDeleteTarget({ kind, id, info: fresh })
+        setDeleteTyped('')
+        setDeleteChanged(true)
         return
       }
-      const result = await request<{ cleanup: string }>(
-        `/api/${kind === 'model' ? 'projects' : 'groups'}/${id}/delete`,
-        'POST',
-        { confirm: typed },
-      )
+      const changed =
+        fresh.revisions !== info.revisions ||
+        fresh.jobs !== info.jobs ||
+        (kind === 'group' && fresh.models !== info.models)
+      if (changed) {
+        setDeleteTarget({ kind, id, info: fresh })
+        setDeleteTyped('')
+        setDeleteChanged(true)
+        return
+      }
+      const result = await request<{ cleanup: string }>(`${url}/delete`, 'POST', {
+        confirm: deleteTyped,
+        expected_models: fresh.models,
+        expected_revisions: fresh.revisions,
+        expected_jobs: fresh.jobs,
+      })
+      setDeleteTarget(null)
+      setDeleteTyped('')
+      setDeleteChanged(false)
       notify(
         result.cleanup === 'pending'
           ? t('dashboard.deletedPending', { name: info.name })
@@ -325,7 +368,21 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
       )
       await refresh()
     } catch (e) {
-      notify(err(e))
+      const message = err(e)
+      // The server re-checked the impact under its write lock. Re-present the
+      // revised scope instead of forcing the user to guess what changed.
+      if (/impact changed/i.test(message)) {
+        try {
+          const fresh = await request<DeletionInfo>(`${url}/deletion-info`)
+          setDeleteTarget({ kind, id, info: fresh })
+          setDeleteTyped('')
+          setDeleteChanged(true)
+          return
+        } catch {
+          // Fall through to the original message.
+        }
+      }
+      notify(message)
     }
   }
 
@@ -459,17 +516,16 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               >
                 {group.archived ? <ArchiveRestore /> : <Archive />}
               </button>
-              {group.archived && (
-                <button
-                  type="button"
-                  title={t('dashboard.deleteGroup')}
-                  aria-label={t('dashboard.deleteGroup') + ' · ' + group.name}
-                  disabled={!compat.ok}
-                  onClick={() => remove('group', group.id)}
-                >
-                  <Trash2 />
-                </button>
-              )}
+              <button
+                type="button"
+                className="destructive"
+                title={t('dashboard.deleteGroup')}
+                aria-label={t('dashboard.deleteGroup') + ' · ' + group.name}
+                disabled={!compat.ok}
+                onClick={() => openDelete('group', group.id)}
+              >
+                <Trash2 />
+              </button>
               <button
                 onClick={() => setModelGroup(modelGroup === group.id ? null : group.id)}
                 disabled={group.archived}
@@ -560,17 +616,16 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       >
                         {p.archived ? <ArchiveRestore /> : <Archive />}
                       </button>
-                      {p.archived && (
-                        <button
-                          type="button"
-                          title={t('dashboard.deleteModel')}
-                          aria-label={t('dashboard.deleteModel') + ' · ' + p.name}
-                          disabled={!compat.ok}
-                          onClick={() => remove('model', p.id)}
-                        >
-                          <Trash2 />
-                        </button>
-                      )}
+                      <button
+                        type="button"
+                        className="destructive"
+                        title={t('dashboard.deleteModel')}
+                        aria-label={t('dashboard.deleteModel') + ' · ' + p.name}
+                        disabled={!compat.ok}
+                        onClick={() => openDelete('model', p.id)}
+                      >
+                        <Trash2 />
+                      </button>
                     </div>
                     {openRevisions === p.id && (
                       <div className="revision-list">
@@ -700,6 +755,90 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           </div>
         )}
       </section>
+      {deleteTarget && (
+        <div
+          className="dialog-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeDelete()
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-dialog-title"
+            className="dialog card"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.stopPropagation()
+                closeDelete()
+              }
+            }}
+          >
+            <h2 id="delete-dialog-title">
+              {t(
+                deleteTarget.kind === 'model'
+                  ? 'dashboard.deleteModelTitle'
+                  : 'dashboard.deleteGroupTitle',
+              )}
+            </h2>
+            <p className="dialog-target">
+              {t('dashboard.deleteTarget', {
+                kind: t(
+                  deleteTarget.kind === 'model'
+                    ? 'dashboard.targetModel'
+                    : 'dashboard.targetGroup',
+                ),
+                name: deleteTarget.info.name,
+              })}
+            </p>
+            <dl className="dialog-impact">
+              {deleteTarget.kind === 'group' && (
+                <div>
+                  <dt>{t('dashboard.deleteModels')}</dt>
+                  <dd>{deleteTarget.info.models}</dd>
+                </div>
+              )}
+              <div>
+                <dt>{t('dashboard.deleteRevisions')}</dt>
+                <dd>{deleteTarget.info.revisions}</dd>
+              </div>
+              <div>
+                <dt>{t('dashboard.deleteJobs')}</dt>
+                <dd>{deleteTarget.info.jobs}</dd>
+              </div>
+            </dl>
+            <p className="notice">{t('dashboard.deleteArtifacts')}</p>
+            {deleteChanged && (
+              <p className="error-text" role="alert" data-testid="delete-impact-changed">
+                {t('dashboard.deleteImpactChanged')}
+              </p>
+            )}
+            <label>
+              {t('dashboard.deleteTypeNameShort', { name: deleteTarget.info.name })}
+              <input
+                autoFocus
+                value={deleteTyped}
+                maxLength={200}
+                onChange={(event) => setDeleteTyped(event.target.value)}
+              />
+            </label>
+            <div className="dialog-actions">
+              <button type="button" onClick={closeDelete}>
+                {t('common.cancel')}
+              </button>
+              <button
+                type="button"
+                className="destructive solid"
+                disabled={deleteTyped.trim() !== deleteTarget.info.name}
+                onClick={confirmDelete}
+              >
+                <Trash2 />
+                {t('dashboard.deletePermanent')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

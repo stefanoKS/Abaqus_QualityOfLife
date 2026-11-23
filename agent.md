@@ -1,5 +1,93 @@
 # Abaqus QOL implementation handoff
 
+## UI redesign, direct deletion and seal partitioning — delivered · 2026-11-23
+
+Baseline `6ace5475ba9f76b21cd2cc915a4c195f6d87fa9b`, matching `origin/main`. The working tree held
+only the execution brief (untracked) and this handoff entry before work began. All verification used
+isolated `--test-data` browser data and disposable projects; the operator database, active jobs,
+retained licensed runs and original drawings were not modified. **No licensed solver was launched and
+no license was consumed.**
+
+### Request status
+
+| # | Request | Status | Evidence |
+|---|---|---|---|
+| 1 | Redesign shell / move workspace controls | PASS | Fixed workstation at 1440×900 and 1280×720, pane adjacency, fixed canvas during property scroll, Review dock top-right, narrow collapse, 200% width: `apps/web/tests/layout.spec.ts`. |
+| 2 | Body panel / Door panel terminology | PASS | 757 keys both languages; role/alias audit; assembly tree shows translated role; identifiers unchanged; `i18n.spec.ts`, `phase1.spec.ts`, encoding gate. |
+| 3 | Result geometry (rigid panel with U, no stress) | PASS | `tests/scene-model.spec.ts` asserts the y=4→y=2 edge and markers in Mises/U, scales 1/2, missing U, measured zero vs absent stress, instance-qualified picking. |
+| 4 | Independent displacement/stress ranges | PASS | `apps/web/tests/ranges.spec.ts`: 0–5 mm / 0–0.5 MPa defaults, Auto, manual both-end clipping, invalid drafts, reset, unclipped signed probe. |
+| 5 | Shared saturated palette | PASS | `viewportModel.ramp` exact stops; legend and actors use it; scene test. |
+| 6 | Loop playback | PASS | `ranges.spec.ts`: default loop, repeated wraps, Loop off, hold-last, slow boundary, camera/scale stable; existing playback/curve tests. |
+| 7 | Prepare/submit controls and state near Review | PASS | `review-actions` dock in the upper-right work area; run name, CPU, readiness reasons, deck state/link retained; `layout.spec.ts`, `review.spec.ts`, `workflow.spec.ts`. |
+| 8 | White field, no centred import; Import owns picker | PASS | `viewport.css`/renderer white; overlay removed; `layout.spec.ts` empty-viewport and one-chooser/cancel tests. |
+| 9 | Narrow/zoom reachability and scrolling regions | PASS | Collapsible workflow/properties, stacked flow, internal pane scrolling; `layout.spec.ts` 390×844 and 720×450. |
+| 10 | Direct permanent deletion | PASS | `tests/test_archive_delete.py` (direct model/group, enqueue race, revised scope, membership change) and `apps/web/tests/archive.spec.ts` (accessible dialog, focus/Escape, wrong name, mixed group). |
+| 11 | 2D seal material partition | PASS (software) · **licensed evidence BLOCKED** | `tests/test_partition.py` (18 tests: area/union, child-of-child, arc/hole, rejection, mesh conformity, both deck paths, API idempotency/staleness) and `apps/web/tests/partition.spec.ts` (browser+worker+INP+replay). No licensed partition run or ODB exists. |
+
+### Delivered summary
+
+- **Gate 0.** The clean checkout reproduced the CI failure (`/api/health` returned an empty frontend
+  before the build). `tests/test_release_and_compatibility.py` now provisions an isolated release
+  fixture and separately covers the supported missing-build state; both pass without a `dist/`.
+- **Shell.** Workflow and properties are adjacent on the left; the white drawing field gets the
+  remaining width. Desktop is a fixed shell with independently scrolling panes; narrow/zoomed layouts
+  stack and can collapse the panes. Review's prepare/submit dock is anchored upper-right.
+- **Results.** Displayed coordinates use base coordinates + measured nodal U + toggle/scale; scalar
+  availability controls colour only. Displacement and stress ranges are independent; Loop wraps after
+  holding the last displayed frame.
+- **Deletion.** The archive prerequisite is gone. The final activity decision, ID enumeration and row
+  deletes run in one `BEGIN IMMEDIATE` transaction, and the journal commits atomically with the
+  deletes. A competing enqueue loses with a 404/conflict; a competing model creation cannot orphan a
+  deleted group.
+- **Partition.** New `packages/engineering/partition.py` performs a deterministic straight two-point
+  cut (0.05 mm boundary snap), splits canonical line/arc/clamped-spline edges, rewrites every incident
+  signed loop, preserves cavities, remaps selections and local sizing, validates area/union/disjoint
+  interiors, and returns code-bearing rejections. Preview and commit share it; commit is transactional,
+  base-checked and content-idempotent. Children inherit the parent material; the internal seam is a
+  bonded interface excluded from `SEAL_EXTERIOR`.
+
+### Tests actually run (this machine, isolated data)
+
+- `.\.venv\Scripts\python.exe -m pytest -q --junitxml=pytest-results.xml`: **261 passed, 1 skipped**
+  (opt-in Abaqus-Python extractor roundtrip), exit 0.
+- `npm --prefix apps/web run test:i18n`: **757 keys** in both dictionaries.
+- `npm --prefix apps/web run test:encoding`: 41 source files, no known mojibake.
+- `npm --prefix apps/web run typecheck`: pass. `npm --prefix apps/web run build`: release
+  **`07b80dd311ac`** (entry `index-NSGLmlbQ.js`, API 3, 4 files).
+- `npm --prefix apps/web run test:browser`: **86 passed, 3 skipped**. The skips are the two opt-in retained-result replays (their isolated 8891/8892 instances were not running) and the gated screenshot capture; they are not acceptance evidence.
+- `git diff --check`: clean. `scripts/schema.py` regenerated `generated.ts`; a second run produced no
+  further diff.
+
+### Screenshots and evidence
+
+Before/after captures (fictional data, both locales) are under
+`.local/screenshots/before/` and `.local/screenshots/after/`: dashboard, materials, empty import,
+populated workspace, Review and Results. These are local and ignored by Git.
+
+### Blocked and next executable slice
+
+1. **Licensed partition evidence — BLOCKED.** Exact missing inputs: a small local licensed 2D case
+   passed through API → worker → solver → extractor with the retained ODB/revision, plus direct ODB
+   checks of both child regions (one element set/section per child, internal seam not in `SEAL_EXTERIOR`,
+   shared interface nodes, field locations). Nothing was authorized or run in this pass.
+2. **Retained replay — not repeated here.** The opt-in retained-result and two-step replay specs still
+   need their local seeds/ports; they skipped in the final run. Replaying read-only copies with verified
+   provenance remains outstanding.
+3. **Physical correlation — BLOCKED.** Still needs independent reference measurements and agreed
+   tolerances; a converged run or matching screenshot cannot establish it.
+4. **Hosted Windows CI** has not run for the delivered SHA; run it after committing and diagnose any
+   real failure rather than accepting an incomplete report.
+5. Partition follow-ups: straight cuts only (other spline variants rejected by name); FE-node fixtures
+   are not transferred across the topology change; 3D solving remains out of scope.
+
+## Prior planning entry: UI redesign and seal partitioning brief · 2026-11-23
+
+The [execution prompt](docs/ui-redesign-execution-brief.txt) covers the eleven requested changes, the affected code paths and gates 0–6. At inspection, the clean working tree, local main and remote main matched `6ace5475ba9f76b21cd2cc915a4c195f6d87fa9b`. The usability repair described below has been committed. [Hosted Windows CI](https://github.com/stefanoKS/Abaqus_QualityOfLife/actions/runs/45159365244/job/137640449024) reported 1 failed, 234 passed and 3 skipped. The pinned-release health test received an empty frontend identifier before the frontend build step.
+
+One local, license-free Node scene check reproduced the rigid-panel Mises bug. With a PANEL-1 edge at y=4 mm and measured U2=−2 mm at both ends, displacement view drew the edge and markers at y=2 mm. In Mises view the edge stayed at y=4 mm and its markers moved to y=2 mm. The scene builder conditions edge deformation on contour availability. This planning pass inspected source and CI logs and exercised the scene builder. Browser regression, full pytest and solver execution belong to the implementation pass.
+
+**Next executable slice.** Begin with Gate 0 in the execution prompt. Reproduce the CI failure in a clean checkout, capture the baseline layouts and turn the panel-coordinate example into a regression. Gate 3 verifies the viewer, Gate 5 verifies conforming material partitions and Gate 6 covers retained replay. Licensed replay needs local artifacts with verified provenance; physical correlation still needs independent reference measurements and agreed tolerances.
+
 ## Usability and CI repair · 2026-11-23 (hosted CI and physics outstanding)
 
 Baseline and fetched `origin/main`: `0e0c227a0be681ec12326fad6c8f22a236ed0417`;

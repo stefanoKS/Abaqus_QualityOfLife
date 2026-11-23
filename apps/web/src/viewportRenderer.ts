@@ -186,6 +186,8 @@ export class ViewportRenderer {
   private hovered: Picked | null = null
   private fixture: Set<string> = new Set()
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null
+  private guide: number[][] = []
+  private originPoint: ScreenPoint = [0, 0, 0]
   private dimension: '2D' | '3D' = '2D'
   private ctx: CanvasRenderingContext2D
   private width = 1
@@ -362,31 +364,15 @@ export class ViewportRenderer {
       return [p[0] / this.ratio, this.height - p[1] / this.ratio, p[2]]
     }
     const origin = project(0, 0, 0)
+    this.originPoint = origin
     this.axes = [project(1, 0, 0), project(0, 1, 0), project(0, 0, 1)].map(
       (p) => [p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]]
     )
-    // A section grid sits behind the transparent GL canvas. Its spacing and
-    // phase track the model coordinates through zoom and pan. The Results view
-    // asks for a plain white canvas instead, with no texture underneath.
-    if (this.dimension === '2D' && !this.plain) {
-      const pixelsPerUnit =
-        this.height / (2 * this.renderer.getActiveCamera().getParallelScale())
-      const target = 40 / pixelsPerUnit,
-        power = 10 ** Math.floor(Math.log10(target))
-      const step =
-        ([5, 2, 1].find((v) => v * power <= target) ?? 1) *
-        power *
-        pixelsPerUnit
-      this.host.style.backgroundImage =
-        'radial-gradient(circle, #c4cfd3 0.65px, transparent 0.85px)'
-      this.host.style.backgroundSize = step + 'px ' + step + 'px'
-      this.host.style.backgroundPosition =
-        origin[0] - step / 2 + 'px ' + (origin[1] - step / 2) + 'px'
-      this.host.style.backgroundColor = ''
-    } else {
-      this.host.style.backgroundImage = 'none'
-      this.host.style.backgroundColor = this.plain ? '#FFFFFF' : ''
-    }
+    // One white drawing field for the workspace, mesh preview and results. The
+    // former section grid is gone: a white base must read consistently under the
+    // transparent GL canvas and in screenshots.
+    this.host.style.backgroundImage = 'none'
+    this.host.style.backgroundColor = '#FFFFFF'
     this.projected = this.scene.surfaces.map((surface) => ({
       surface,
       points: surface.points.map((p) => {
@@ -427,6 +413,10 @@ export class ViewportRenderer {
     this.box = rect
     this.drawOverlay()
   }
+  setGuide(points: number[][]) {
+    this.guide = points
+    this.drawOverlay()
+  }
   highlight(selection: Picked | null, hover: Picked | null) {
     this.selected = selection
     this.hovered = hover
@@ -445,6 +435,7 @@ export class ViewportRenderer {
       outline(ctx, this.projected, this.hovered, true)
     this.drawFixture(ctx)
     this.drawBox(ctx)
+    this.drawGuide(ctx)
     if (!this.axes.length || !this.scene.surfaces.length) return
     const scale =
       this.height / (2 * this.renderer.getActiveCamera().getParallelScale())
@@ -486,6 +477,39 @@ export class ViewportRenderer {
       bottom - 7
     )
     ctx.textAlign = 'left'
+  }
+  private drawGuide(ctx: CanvasRenderingContext2D) {
+    if (this.guide.length < 2 || !this.axes.length) return
+    const origin = this.originPoint
+    const points = this.guide.map((point) => {
+      const projected: ScreenPoint = [...origin]
+      for (let axis = 0; axis < 2; axis++)
+        for (let k = 0; k < 3; k++) projected[k] += this.axes[axis][k] * (point[axis] ?? 0)
+      return projected
+    })
+    ctx.save()
+    ctx.lineCap = 'round'
+    ctx.strokeStyle = '#ffffff'
+    ctx.lineWidth = 4
+    ctx.beginPath()
+    ctx.moveTo(points[0][0], points[0][1])
+    for (const point of points.slice(1)) ctx.lineTo(point[0], point[1])
+    ctx.stroke()
+    ctx.strokeStyle = '#0f6b57'
+    ctx.lineWidth = 2
+    ctx.setLineDash([7, 4])
+    ctx.stroke()
+    ctx.setLineDash([])
+    for (const point of points) {
+      ctx.beginPath()
+      ctx.arc(point[0], point[1], 4.2, 0, 2 * Math.PI)
+      ctx.fillStyle = '#0f6b57'
+      ctx.fill()
+      ctx.lineWidth = 1.5
+      ctx.strokeStyle = '#ffffff'
+      ctx.stroke()
+    }
+    ctx.restore()
   }
   private drawFixture(ctx: CanvasRenderingContext2D) {
     if (!this.fixture.size) return
