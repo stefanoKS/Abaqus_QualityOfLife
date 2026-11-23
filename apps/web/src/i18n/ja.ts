@@ -416,6 +416,15 @@ export const ja = {
   'contact.domain': '接触領域',
   'contact.allExterior': 'すべての外面',
   'contact.friction': '摩擦係数',
+  'contact.frictionRange': '摩擦係数は無次元です。0以上5以下で入力してください。',
+  'validation.outOfRange': '許容範囲内の値を入力してください。',
+  'actions.checking': '実行条件を確認しています。',
+  'actions.readyPrepare': 'デッキを作成できます。',
+  'actions.readySubmit': '解析を実行できます。',
+  'actions.submitting': '解析を投入しています。',
+  'actions.activeRun': '解析状況: {state}。',
+  'actions.runNameRequired': '解析名を入力してください。',
+  'actions.cpuRequired': 'CPU数は1以上32以下の整数で入力してください。',
 
   'motion.title': 'パネル移動',
   'motion.mode': '解析モード',
@@ -431,7 +440,7 @@ export const ja = {
   'motion.bodyDuration': 'ボディ着座時間 (s)',
   'motion.offset': '初期 Y オフセット (mm)',
   'motion.travel': 'Y 方向の強制移動量 (mm)',
-  'motion.doorTravelHint': '0 以下。0 は組立位置を保持',
+  'motion.doorTravelHint': 'Y正方向は上向きです。−10 mmは指定移動量であり、計算した隙間ではありません。隙間と変形を確認してください。隙間に達しても接触は保証されません。0は位置を保持します。',
   'motion.duration': 'ステップ時間 (s)',
   'motion.help':
     '移動は組み付け状態のパネル位置から開始します。接触開始位置は形状または解析結果で確認してください。',
@@ -613,7 +622,7 @@ export const ja = {
   'review.defaultRunName': '閉じ解析',
   'review.cpus': 'ソルバ CPU 数',
   'review.submit': '解析を投入',
-  'review.submitLicensed': 'ライセンス解析を投入',
+  'review.submitLicensed': 'Abaqus解析を実行',
 
   'results.revisionResults': 'このリビジョンの結果',
   'results.noRuns': 'このリビジョンの実行はまだありません。',

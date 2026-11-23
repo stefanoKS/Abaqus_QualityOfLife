@@ -75,6 +75,7 @@ def assemble(builder, name, source, *, allow_open_profiles=False):
     if any(edge.component == "panel" for edge in builder.edges):
         components.append(Component(id="panel", name="Panel profile", role="unassigned"))
     project = Project(
+        schema_version=3,
         name=name,
         vertices=builder.vertices,
         edges=builder.edges,

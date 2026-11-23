@@ -24,7 +24,8 @@ def legacy_payload():
 
 def test_new_models_use_the_milestone_defaults():
     for project in (engineering.empty("Blank"), engineering.synthetic("Example")):
-        assert project.schema_version == 2
+        assert project.schema_version == 3
+        assert project.motion.travel == -10.0
         assert project.mesh.size == 0.5
         assert project.motion.duration == 1.0
         assert project.motion.body.duration == 1.0
@@ -64,7 +65,8 @@ def test_api_creation_and_duplication_keep_effective_defaults(monkeypatch, tmp_p
             "/api/projects", json={"name": "Default model", "example": False}
         ).json()
         setup = revision["setup"]
-        assert setup["schema_version"] == 2
+        assert setup["schema_version"] == 3
+        assert setup["motion"]["travel"] == -10.0
         assert setup["mesh"]["size"] == 0.5
         assert setup["motion"]["duration"] == 1.0
         assert setup["motion"]["body"]["duration"] == 1.0
@@ -99,10 +101,11 @@ def test_two_panel_template_is_explicit_and_reproducible(monkeypatch, tmp_path):
         ).json()
         setup = revision["setup"]
         assert setup["analysis"]["mode"] == "body_then_door"
-        assert setup["schema_version"] == 2
+        assert setup["schema_version"] == 3
         assert setup["mesh"]["size"] == 0.5
         assert setup["motion"]["body"]["travel"] == 5.0
         assert setup["motion"]["body"]["duration"] == 1.0
+        assert setup["motion"]["travel"] == -10.0
         # The historical two-panel scenario keeps its explicit 1.3 s door step.
         assert setup["motion"]["duration"] == 1.3
         roles = [component["role"] for component in setup["components"]]
@@ -117,3 +120,32 @@ def test_two_panel_template_is_explicit_and_reproducible(monkeypatch, tmp_path):
         assert "vehicle_body" not in [
             component["role"] for component in hollow["setup"]["components"]
         ]
+
+
+def test_legacy_omitted_and_explicit_travel_survive_round_trip():
+    for version in (1, 2):
+        original = {"schema_version": version, "name": "Old empty model",
+                    "source": {"kind": "empty"}, "motion": {}}
+        project = Project.model_validate(original)
+        assert project.motion.travel == -5.5
+        assert project.motion.duration == (1.3 if version == 1 else 1.0)
+        assert project.mesh.size == (1.0 if version == 1 else 0.5)
+    for version in (1, 2):
+        payload = engineering.empty("Historical").model_dump(mode="json")
+        payload["schema_version"] = version
+        payload["motion"].pop("travel")
+        project = Project.model_validate(payload)
+        assert project.motion.travel == -5.5
+        assert Project.model_validate_json(project.model_dump_json()).motion.travel == -5.5
+        for travel in (-5.5, -6.0, 0.0, -12.0):
+            payload["motion"]["travel"] = travel
+            assert Project.model_validate(payload).motion.travel == travel
+        payload.pop("motion")
+        assert Project.model_validate(payload).motion.travel == -5.5
+    payload["schema_version"] = 1
+    payload.pop("mesh")
+    project = Project.model_validate(payload)
+    assert project.mesh.size == 1.0
+    assert project.motion.duration == 1.3
+    payload.pop("schema_version")
+    assert Project.model_validate(payload).schema_version == 1

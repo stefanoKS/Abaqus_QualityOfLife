@@ -33,11 +33,29 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.lock.txt
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r requirements.lock.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify browser server interpreter
+        run: |
+          .\.venv\Scripts\python.exe -c "import sys, uvicorn, fastapi, pydantic, shapely; print('executable:', sys.executable, 'prefix:', sys.prefix); print('uvicorn:', uvicorn.__version__, 'fastapi:', fastapi.__version__, 'pydantic:', pydantic.__version__, 'shapely:', shapely.__version__)"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe -m pip --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Python tests
-        run: python -m pytest -q
+        run: |
+          .\.venv\Scripts\python.exe -m pytest -q --junitxml=pytest-results.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path pytest-results.xml)) { throw "pytest exited without a completed test report" }
+          [xml]$report = Get-Content -Raw pytest-results.xml
+          if (-not $report.testsuites.testsuite) { throw "pytest report contains no completed suite" }
+          if (($report.testsuites.testsuite | Measure-Object -Property failures -Sum).Sum -ne 0 -or
+              ($report.testsuites.testsuite | Measure-Object -Property errors -Sum).Sum -ne 0) {
+            throw "pytest report contains failures or errors"
+          }
+          Write-Host "pytest completed; report verified."
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

@@ -1,5 +1,78 @@
 # Abaqus QOL implementation handoff
 
+## Usability and CI repair · 2026-11-23 (hosted CI and physics outstanding)
+
+Baseline and fetched `origin/main`: `0e0c227a0be681ec12326fad6c8f22a236ed0417`;
+the repair is uncommitted. No live instance, production data or retained solver
+artifacts were altered. Version 3 defaults new door travel to −10 mm; old
+omitted travel remains −5.5 mm. Contact status compares its own draft to its
+saved values. Review actions, bilingual friction guidance, venv CI setup,
+startup cleanup and pytest re-exec test isolation were updated.
+Motion-value edits reuse compatible meshes; changing analysis mode can change
+which rigid body participates and therefore legitimately invalidates the mesh.
+
+Verification on Windows in an isolated worktree and fresh locked Python 3.11
+environment: `python -m pytest -q --junitxml=pytest-final.xml`: **235 passed,
+3 skipped**, complete report and exit 0. The optional Abaqus Python roundtrip
+and two original-DWG checks skipped; the latter drawing is absent from the clean
+worktree. `npm run test:browser`: **72 passed, 2 skipped**; the two skips are
+licensed retained-result replay, not acceptance. That full browser run preceded
+the final saved-readiness banner and active-run status text changes; the final
+build (`c4771994c59f`) passed the 11 selected contact, readiness, compatibility,
+Review and workflow tests. `test:i18n`: 709 keys; `test:encoding`: 41 files;
+typecheck and isolated build passed. Full-suite literal legacy-payload additions
+were subsequently rechecked with `pytest -q tests/test_defaults.py` (6 passed).
+The expanded friction boundary and contact-dirty browser test was then rerun
+separately (1 passed).
+Before/after screenshots use fictional examples and disposable data.
+
+Prior-claim independent software audit:
+
+| Area | Status and evidence |
+|---|---|
+| Drawing units | Implemented/tested: `test_units.py`, `import-units.spec.ts`; original-DWG-specific checks skipped. |
+| New/legacy defaults | Implemented/tested: `test_defaults.py`; real installation upgrade not exercised. |
+| CPS4R policy | Implemented/tested: `test_abaqus.py`, mesh browser tests. |
+| Neo-Hookean deck | Implemented/tested license-free: `test_abaqus.py`, material tests; no new licensed solve. |
+| Zero holds | Implemented/tested: `test_two_step.py`, `zero-travel.spec.ts`. |
+| Position/clearance | Implemented/tested: `test_two_step.py`, `assembly.spec.ts`, `offset-picking.spec.ts`. |
+| Mesh artifact recovery | Implemented/tested: `test_release_and_compatibility.py`; historical retained-run replay not repeated. |
+| Mises and Results defaults | Implemented and synthetic field tests passed; licensed viewer replay skipped. |
+| Canonical steps | Implemented/tested: `test_results_fields.py`, `test_two_step.py`. |
+| Instance-qualified element labels | Implemented/tested: `result-fields.spec.ts`. |
+| Two-step playback | Implemented; licensed replay skipped, so retained-run replay not independently verified. |
+| Windows ownership/startup | Implemented/tested: `test_startup.py`, `test_restart.py`; hosted CI remains unverified. |
+
+Retained input-deck SHA-256 values for the three reported licensed cases match
+the validation record, but ODB/revision linkage, solver/extractor agreement
+and licensed replay were not independently checked. No new solve was authorized.
+Physical correlation remains **BLOCKED**; divergence/cut-back and disconnected
+region warnings remain open. The 10 mm default is not physically validated.
+
+**Next executable slice:** run hosted Windows CI on the eventual commit; if it
+fails, diagnose the actual failure without accepting an incomplete pytest report.
+Separately replay read-only licensed evidence in isolated copied data with
+verified revision/deck/mesh/ODB provenance, then obtain independent engineering
+reference data and tolerances. Verify a real installation upgrade and all
+remaining requested UI edge cases before release sign-off.
+
+## Baseline for requested usability and CI repair · 2026-11-23
+
+The clean working tree and fetched `origin/main` both point to
+`0e0c227a0be681ec12326fad6c8f22a236ed0417`. The preceding milestone's
+uncommitted work was incorporated into this commit. Its removal of `.dwl` and
+`.dwl2` files is consistent with transient AutoCAD drawing locks; intent is not
+documented. No retained data or live service has been changed.
+
+Prior claims A–L (units, defaults, elements, material law, holds, placement,
+mesh recovery, results, steps, instance labels, playback and ownership) are
+implemented in the baseline according to the handoff, but independent
+verification remains outstanding here. CI run 45074445610 independently
+confirms a missing `uvicorn` in Playwright's interpreter and a locked
+temporary `owner.lock` during exception cleanup. The local project venv imports
+uvicorn, FastAPI, Pydantic and Shapely successfully. Licensed-artifact
+agreement and physical correlation are not independently verified.
+
 ## Milestone delivery · 2026-11-23 (Gates A–G PASS with neo-Hookean; physical correlation BLOCKED)
 
 Baseline `5104b99`. All work was done in isolated data roots and on isolated ports; the live

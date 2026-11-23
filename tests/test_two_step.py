@@ -155,6 +155,7 @@ def test_metadata_names_both_steps_and_references(built):
 
 def test_legacy_door_only_deck_is_unchanged():
     project = engineering.synthetic("Door only")
+    project.motion.travel = -5.5
     mesh = generate_mesh(project)
     labels = fixture_labels(project, mesh)
     inp = deck.write_inp(project, mesh, labels)
@@ -548,6 +549,7 @@ def test_l_projection_follows_each_motion_and_keeps_raw_signs():
 def test_m_legacy_door_only_clearance_and_projection_are_unchanged():
     """M. The door-only template keeps its 1.80 mm gap and signed projection."""
     project = engineering.synthetic("Door only regression")
+    project.motion.travel = -5.5
     mesh = generate_mesh(project)
     labels = fixture_labels(project, mesh)
     nodes, ws, panel = deck.mesh_parts(project, mesh)
@@ -707,6 +709,22 @@ def test_readiness_exposes_the_bottom_body_measurement(monkeypatch, tmp_path):
         assert blocked["assembly"]["code"] == "initial_penetration"
         assert blocked["assembly"]["details"]["depth"] == pytest.approx(1.0)
         assert blocked["assembly"]["details"]["label"] == "body"
+
+
+@pytest.mark.parametrize("body_travel", [0.0, 5.0])
+def test_new_default_closing_travel_in_two_step_deck(bottom_body, body_travel):
+    _, mesh, labels = bottom_body
+    project = two_step_project(body_y=-1.0, body_travel=body_travel, door_travel=-10.0)
+    project.motion.duration = 1.0
+    inp = deck.write_inp(project, mesh, labels)
+    body_step, door_step = ("\n".join(block) for block in steps_of(inp))
+    assert f"BODY_RP, 2, 2, {body_travel:g}" in body_step
+    assert f"BODY_RP, 2, 2, {body_travel:g}" in door_step
+    assert "PANEL_RP, 2, 2, 0" in body_step
+    assert "PANEL_RP, 2, 2, -10" in door_step
+    assert "*Dynamic\n0.0001, 1, 1e-13" in door_step
+    assert "*Contact Inclusions, all exterior" in inp
+    assert "*Nset, nset=WSFIX" in inp
 
 
 def test_zero_body_travel_seats_only_the_door_in_step_two(bottom_body):

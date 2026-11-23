@@ -1,5 +1,6 @@
 """Mesh-first fixture workflow: identity, validation, deck binding and history."""
 
+import copy
 import json
 
 import pytest
@@ -134,6 +135,40 @@ def test_partial_mounting_edge_is_written_exactly_and_leaves_neighbours_out(clie
     assert written == set(selected)
     assert written != set(chain)
     assert set(unselected) - written == set(unselected)
+
+
+def test_motion_only_edits_preserve_contact_fixture_and_mesh(client):
+    revision = create_model(client, "Contact and motion")
+    mesh = prepare_mesh(client, revision)
+    fixture = save_fixture(client, mesh["id"], legacy_fixture(client, mesh["id"])["labels"])["fixture"]
+    for friction in (0.0, 0.3, 0.7, 1.2, 5.0):
+        setup = copy.deepcopy(revision["setup"])
+        setup["contact"]["friction"] = friction
+        revision = client.put(
+            "/api/projects/" + revision["project"], json={"base": revision["id"], "setup": setup}
+        ).raise_for_status().json()
+        old_deck, _ = deck_and_text(client, revision, mesh)
+        expected = copy.deepcopy(revision["setup"]["contact"])
+        setup = copy.deepcopy(revision["setup"])
+        setup["motion"]["travel"] = -6.0
+        setup["motion"]["duration"] = 0.8
+        setup["motion"]["offset"] = 0.1
+        edited = client.put(
+            "/api/projects/" + revision["project"], json={"base": revision["id"], "setup": setup}
+        ).raise_for_status().json()
+        loaded = client.get("/api/revisions/" + edited["id"]).raise_for_status().json()
+        assert loaded["setup"]["contact"] == expected
+        assert edited["mesh_compat"] == mesh["mesh_compat"]
+        stale = client.post("/api/runs", json={
+            "revision": edited["id"], "deck": old_deck["id"], "token": store.new_id(),
+            "name": "stale", "mode": "ABAQUS",
+        })
+        assert stale.status_code == 409
+        fresh, text = deck_and_text(client, edited, mesh)
+        assert fresh["mesh_digest"] == mesh["mesh_digest"]
+        assert fresh["fixture_hash"] == fixture["hash"]
+        assert f"*Friction, slip tolerance=0.005\n{friction:g}\n" in text
+        revision = edited
 
 
 def test_motion_and_friction_edits_reuse_the_mesh_but_stale_decks_cannot_submit(client):

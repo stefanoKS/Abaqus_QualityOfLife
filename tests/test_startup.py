@@ -4,6 +4,7 @@ These tests are license-free: discovery only inspects paths, and the instance
 compatibility check works on recorded health payloads.
 """
 
+import builtins
 import importlib.util
 import json
 import multiprocessing
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -37,6 +39,13 @@ ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("serve", ROOT / "scripts" / "serve.py")
 serve = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(serve)
+
+
+@pytest.fixture(autouse=True)
+def prevent_launcher_reexec(monkeypatch):
+    # These are in-process launcher tests, not bootstrap integration tests.
+    # Replacing pytest with the launcher can silently truncate the whole suite.
+    monkeypatch.setattr(serve, "in_project_venv", lambda: True)
 
 
 @pytest.fixture()
@@ -190,6 +199,62 @@ def test_custom_port_has_its_own_lock(monkeypatch, tmp_path):
     record = json.loads((tmp_path / "serve-8897.lock").read_text(encoding="utf-8"))
     assert record["port"] == 8897
     assert not (tmp_path / "serve-8765.lock").exists()
+
+
+def test_test_dependency_preflight_names_interpreter_and_failure(monkeypatch):
+    failure = subprocess.CompletedProcess([], 1, "", "ModuleNotFoundError: No module named 'uvicorn'")
+    monkeypatch.setattr(serve.subprocess, "run", lambda *args, **kwargs: failure)
+    with pytest.raises(SystemExit, match="requirements.lock.txt") as error:
+        serve.check_test_dependencies()
+    assert sys.executable in str(error.value)
+    assert "uvicorn" in str(error.value)
+
+
+def test_failed_worker_spawn_releases_owner_before_temp_cleanup(monkeypatch, tmp_path):
+    monkeypatch.delenv("ABAQUS_QOL_DATA", raising=False)
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    web = tmp_path / "web"
+    (web / "dist").mkdir(parents=True)
+    (web / "dist" / "index.html").write_text("test", encoding="utf-8")
+    monkeypatch.setattr(serve, "WEB", web)
+    from services import release
+    monkeypatch.setattr(release, "resolve", lambda *args: SimpleNamespace(valid=True))
+
+    def fail_spawn(*args, **kwargs):
+        raise OSError("worker spawn failed")
+
+    monkeypatch.setattr(serve.subprocess, "Popen", fail_spawn)
+    with pytest.raises(OSError, match="worker spawn failed"):
+        serve.serve(8899, str(tmp_path), browser=False)
+    assert not ownership.held(tmp_path, ownership.OWNER)
+    assert ownership.read_instance(tmp_path)["pid"] is None
+    store.claim_data_root(os.getpid(), 8900)
+    store.release_data_root(os.getpid())
+
+
+def test_missing_uvicorn_after_claim_releases_owner(monkeypatch, tmp_path):
+    monkeypatch.delenv("ABAQUS_QOL_DATA", raising=False)
+    monkeypatch.setenv("SEAL_DATA", str(tmp_path))
+    web = tmp_path / "web"
+    (web / "dist").mkdir(parents=True)
+    (web / "dist" / "index.html").write_text("test", encoding="utf-8")
+    monkeypatch.setattr(serve, "WEB", web)
+    from services import release
+    monkeypatch.setattr(release, "resolve", lambda *args: SimpleNamespace(valid=True))
+    real_import = builtins.__import__
+
+    def missing_uvicorn(name, *args, **kwargs):
+        if name == "uvicorn":
+            raise ModuleNotFoundError("No module named 'uvicorn'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_uvicorn)
+    with pytest.raises(ModuleNotFoundError, match="uvicorn"):
+        serve.serve(8899, str(tmp_path), browser=False)
+    assert not ownership.held(tmp_path, ownership.OWNER)
+    assert ownership.read_instance(tmp_path)["pid"] is None
+    store.claim_data_root(os.getpid(), 8900)
+    store.release_data_root(os.getpid())
 
 
 def test_stale_instance_is_not_reused_and_explains_why(monkeypatch, capsys):

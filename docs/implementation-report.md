@@ -1,5 +1,16 @@
 # Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
+## Usability and CI repair · 2026-11-23
+
+New schema-v3 projects use −10 mm prescribed door travel; older omitted
+travel retains −5.5 mm. Contact completion compares saved and draft contact
+rather than unrelated edits. Review actions are separated and friction guidance
+is localized. CI uses its repository venv, requires a complete pytest report,
+and startup releases its owner after failed initialization. Independent solver
+and physical validation of the new default has not been performed. Isolated
+tests and remaining limitations are recorded in [agent.md](../agent.md).
+Hosted CI has not yet run for these uncommitted changes.
+
 Date: 2026-11-21
 Baseline commit: `b250789` (branch `main`, clean working tree; only the supplied
 `apps/web/assets/logo.png` was untracked)

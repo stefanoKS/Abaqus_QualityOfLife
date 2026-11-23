@@ -169,6 +169,7 @@ def synthetic(name="Hollow bulb section"):
         ),
     ]
     return Project(
+        schema_version=3,
         name=name,
         vertices=b.vertices,
         edges=b.edges,
@@ -223,6 +224,7 @@ def empty(name="Untitled model", dimension="2D"):
     invented: the absence of geometry is the state the engineer sees at Import.
     """
     return Project(
+        schema_version=3,
         name=name,
         dimension=dimension,
         formulation="plane_stress" if dimension == "2D" else "extrusion_preview",

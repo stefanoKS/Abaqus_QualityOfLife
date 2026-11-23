@@ -115,6 +115,20 @@ def ensure_dependencies():
     )
 
 
+def check_test_dependencies():
+    probe = subprocess.run(
+        [sys.executable, "-c", f"import {REQUIRED_MODULES}"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode:
+        raise SystemExit(
+            f"{PRODUCT}: browser-test dependencies are missing for {sys.executable}.\n"
+            f"Install requirements.lock.txt with this interpreter.\n{probe.stderr.strip()}"
+        )
+
+
 def newest(paths):
     latest = 0.0
     for base in paths:
@@ -428,37 +442,32 @@ def serve(port, test_data=None, browser=True):
         store.claim_data_root(os.getpid(), port)
     except store.Conflict as error:
         raise SystemExit(f"{PRODUCT}: {error}") from None
-    # An API may attach to an existing worker, but a launcher never starts a
-    # second worker beside one. This is the fail-closed check for the orphaned
-    # worker a supervisor crash can leave behind.
-    if not ownership.worker_lock_free(store_root()):
-        store.release_data_root(os.getpid())
-        record = store.read_instance() or {}
-        raise SystemExit(
-            f"{PRODUCT}: a worker (PID {record.get('worker_pid') or 'unknown'}) is still "
-            f"running on data directory {store_root()}. Wait for it to finish or close it "
-            "manually, then start again. Nothing was stopped."
-        )
-    import uvicorn
-
+    worker = None
     stop = store_root() / ("stop-" + uuid4().hex)
-    args = [sys.executable, "-m", "services.worker", "--stop-file", str(stop)]
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
-    worker = subprocess.Popen(args, cwd=ROOT, creationflags=flags)
-    # The worker claims its own OS lock. If it exits immediately (an orphaned
-    # worker or another owner won a race), do not leave an API without a worker.
-    time.sleep(0.4)
-    if worker.poll() is not None:
-        store.release_data_root(os.getpid())
-        raise SystemExit(
-            f"{PRODUCT}: the worker could not take ownership of {store_root()} "
-            f"(exit code {worker.returncode}). Nothing was started."
-        )
-    if browser:
-        threading.Thread(
-            target=open_when_ready, args=(port, "the workbench"), daemon=True
-        ).start()
     try:
+        # Never spawn beside an orphaned worker, even if its owner exited.
+        if not ownership.worker_lock_free(store_root()):
+            record = store.read_instance() or {}
+            raise SystemExit(
+                f"{PRODUCT}: a worker (PID {record.get('worker_pid') or 'unknown'}) is still "
+                f"running on data directory {store_root()}. Wait for it to finish or close it "
+                "manually, then start again. Nothing was stopped."
+            )
+        import uvicorn
+
+        args = [sys.executable, "-m", "services.worker", "--stop-file", str(stop)]
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        worker = subprocess.Popen(args, cwd=ROOT, creationflags=flags)
+        time.sleep(0.4)
+        if worker.poll() is not None:
+            raise SystemExit(
+                f"{PRODUCT}: the worker could not take ownership of {store_root()} "
+                f"(exit code {worker.returncode}). Nothing was started."
+            )
+        if browser:
+            threading.Thread(
+                target=open_when_ready, args=(port, "the workbench"), daemon=True
+            ).start()
         print(
             f"{PRODUCT} http://127.0.0.1:{port} · worker PID {worker.pid}\n"
             f"  interpreter {sys.executable}",
@@ -466,12 +475,11 @@ def serve(port, test_data=None, browser=True):
         )
         uvicorn.run("services.api.main:app", host="127.0.0.1", port=port, log_level="warning")
     finally:
-        stop.touch()
-        print("Waiting for the worker to finish its current operation…", flush=True)
-        worker.wait()
+        if worker is not None and worker.poll() is None:
+            stop.touch()
+            print("Waiting for the worker to finish its current operation…", flush=True)
+            worker.wait()
         stop.unlink(missing_ok=True)
-        # Ownership is released only after the worker has exited, so a fresh
-        # launch cannot take the directory while a solver child may still run.
         store.release_data_root(os.getpid())
 
 
@@ -490,6 +498,7 @@ def main(argv=None):
 
     if args.test_data:
         # Automated tests supply the interpreter and expect no bootstrap side effects.
+        check_test_dependencies()
         with tempfile.TemporaryDirectory(prefix="seal-browser-") as directory:
             serve(args.port, directory, browser=False)
         return 0

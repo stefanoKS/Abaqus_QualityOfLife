@@ -67,7 +67,9 @@ export function NumberInput({
     ? ''
     : draft.trim() === ''
       ? t('validation.required')
-      : t('materials.err.finite')
+      : parse(draft) === null
+        ? t('materials.err.finite')
+        : t('validation.outOfRange')
 
   // An invalid draft stays visible and blocks the write actions until it is
   // corrected or explicitly abandoned with Escape. Registration happens in the

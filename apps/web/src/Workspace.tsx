@@ -23,6 +23,7 @@ import {
   Waypoints,
 } from 'lucide-react'
 import Viewport from './Viewport'
+import { useCompatibility } from './Compat'
 import type { Display, ViewMesh, Picked, SelectionMode } from './viewportModel'
 import {
   artifact,
@@ -65,6 +66,7 @@ type Props = { initial: Revision; locked?: Job; notify: (msg: string) => void }
 
 export default function Workspace({ initial, locked, notify }: Props) {
   const { t } = useI18n()
+  const compatibility = useCompatibility()
   const [rev, setRev] = useState(initial),
     [p, setP] = useState(initial.setup)
   const [stage, setStage] = useState(() => {
@@ -106,6 +108,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // A just-queued deck must become the visible deck before submission, or the
   // server would correctly reject an older deck as superseded.
   const [pendingDeck, setPendingDeck] = useState<string | null>(null)
+  const [reviewAction, setReviewAction] = useState<'prepare' | 'submit' | null>(null)
   // Fixed-node fixture review: a pending selection is shown but not stored until
   // Save, so a rectangle can be corrected before it becomes WSFIX.
   const [fixtureMode, setFixtureMode] = useState(() => stageId(stage) === 'mounting'),
@@ -464,9 +467,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
         fixture,
         deck: deckReady ? deck : null,
         runs: related,
-        dirty,
+        contactChanged: JSON.stringify(p.contact) !== JSON.stringify(rev.setup.contact),
       }),
-    [p, meshJob, compatibleMesh, fixture, deck, deckReady, related, dirty],
+    [p, rev.setup.contact, meshJob, compatibleMesh, fixture, deck, deckReady, related],
   )
   const twoStep = p.analysis.mode === 'body_then_door'
   // A measured motion rejection (penetration, wrong direction, missing X
@@ -738,6 +741,25 @@ export default function Workspace({ initial, locked, notify }: Props) {
     : invalidMaterials.length
       ? invalidMaterials.map((m) => m.name).join(' · ')
       : ''
+  const preparationBlocker = readiness?.findings.find(
+    (finding) => finding.severity === 'blocker' && !finding.code.startsWith('deck.'),
+  )
+  const prepareReason = !compatibility.ok ? t('compat.writesDisabled')
+    : archivedModel ? t('workspace.archivedReadOnly')
+    : dimension ? t('workspace.extrusionPreview')
+      : dirty ? t('status.unsaved')
+        : blockedReason || (fixturePending ? t('hint.fixturePending')
+          : !compatibleMesh ? t('hint.meshRequired')
+            : !fixtureReviewed ? t('hint.fixtureRequired')
+              : !motionValid ? t('hint.motion')
+                : !readiness || readiness.revision !== rev.id ? t('actions.checking')
+                  : preparationBlocker ? t(findingKey(preparationBlocker.code), findingVars(preparationBlocker, t))
+                    : '')
+  const submitReason = prepareReason || (!deckReady ? t('hint.deckRequired')
+    : !runName.trim() ? t('actions.runNameRequired')
+      : !Number.isInteger(cpus) || cpus < 1 || cpus > 32 ? t('actions.cpuRequired')
+      : cap.abaqus !== 'Configured' ? cap.abaqus || t('actions.checking') : '')
+  const activeRun = related.find((run) => anyActive([run]))
   return (
     <main className="workspace page">
       <div className="crumb">
@@ -817,7 +839,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
           {t('materials.err.finite')} — {blockedReason}
         </p>
       )}
-      {!locked && readiness?.first_blocker && (
+      {!locked && !dirty && readiness?.first_blocker && (
         <div className="readiness-banner" aria-live="polite" data-testid="next-action">
           <span>{t(findingKey(readiness.first_blocker.code), findingVars(readiness.first_blocker, t))}</span>
           <button
@@ -830,6 +852,50 @@ export default function Workspace({ initial, locked, notify }: Props) {
           >
             {t('workspace.resolveBlocker')}
           </button>
+        </div>
+      )}
+      {stage === STAGE.review && !locked && (
+        <div className="review-actions" data-testid="review-actions">
+          <section className="review-action card">
+            <h2>{t('mesh.prepareDeck')}</h2>
+            <p>{pendingDeck || reviewAction === 'prepare' ? t('mesh.preparingDeck') : prepareReason || (deckReady ? t('mesh.inputReady') : t('actions.readyPrepare'))}</p>
+            <small>{t('review.prepareNeverMesh')}</small>
+            <button className="review-prepare" disabled={busy || !!prepareReason || !!pendingDeck}
+              title={prepareReason || undefined} onClick={() => execute(async () => {
+                setReviewAction('prepare')
+                try { await prepareDeck() } finally { setReviewAction(null) }
+              })}>
+              <FileText /> {t('mesh.prepareDeck')}
+            </button>
+            {deck && (
+              <div className="build-info" data-testid="deck-status">
+                <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
+                {deckReady ? (
+                  <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
+                    <FileText /> {t('mesh.inspectDeck')}
+                  </a>
+                ) : <small>{t('mesh.deckStaleHint')}</small>}
+              </div>
+            )}
+          </section>
+          <section className="review-action card">
+            <h2>{t('review.submitLicensed')}</h2>
+            <p>{reviewAction === 'submit' ? t('actions.submitting') : submitReason || t('actions.readySubmit')}</p>
+            {activeRun && <small>{t('actions.activeRun', { state: labelFrom(t, 'state', activeRun.status) })}</small>}
+            <label>{t('review.runName')}
+              <input maxLength={100} value={runName} onChange={(e) => setRunName(e.target.value)} />
+            </label>
+            <NumberInput label={t('review.cpus')} value={cpus} min={1} max={32} step="1"
+              rangeHint="1 – 32" onChange={setCpus} />
+            <small>{cap.abaqus}</small>
+            <button className="review-submit" disabled={busy || !!submitReason || !!pendingDeck}
+              title={submitReason || undefined} onClick={() => execute(async () => {
+                setReviewAction('submit')
+                try { await submit() } finally { setReviewAction(null) }
+              })}>
+              <Play /> {t('review.submitLicensed')}
+            </button>
+          </section>
         </div>
       )}
       <div className="workgrid">
@@ -1305,7 +1371,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     value={p.contact.friction}
                     min={0}
                     max={5}
-                    rangeHint="0 ? 5"
+                    rangeHint={t('contact.frictionRange')}
                     onChange={(v) =>
                       edit((n) => {
                         n.contact.friction = v
@@ -1860,99 +1926,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     </button>
                   </>
                 )}
-              {stage === STAGE.review && !dimension && compatibleMesh && !dirty && (
-                <>
-                  <h3>{t('mesh.deckSection')}</h3>
-                  <p>{t('review.prepareHint')}</p>
-                  <p>{t('review.prepareNeverMesh')}</p>
-                  <p>{t('review.deckAfterEdit')}</p>
-                  <button
-                    className="primary wide"
-                    disabled={
-                      busy ||
-                      !fixtureReviewed ||
-                      !motionValid ||
-                      fixturePending ||
-                      !!blockedReason ||
-                      !!pendingDeck
-                    }
-                    title={
-                      fixturePending
-                        ? t('hint.fixturePending')
-                        : !fixtureReviewed
-                          ? t('hint.fixtureRequired')
-                          : !motionValid
-                            ? t('hint.motion')
-                            : undefined
-                    }
-                    onClick={() => execute(prepareDeck)}
-                  >
-                    <FileText />
-                    {t('mesh.prepareDeck')}
-                  </button>
-                  {deck && (
-                    <div className="build-info" data-testid="deck-status">
-                      <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
-                      {deckReady ? (
-                        <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
-                          <FileText />
-                          {t('mesh.inspectDeck')}
-                        </a>
-                      ) : (
-                        <small>{t('mesh.deckStaleHint')}</small>
-                      )}
-                    </div>
-                  )}
-                </>
-              )}
-              {stage === STAGE.review && !dimension && (
-                <>
-                  <h3>{t('review.submit')}</h3>
-                  <label>
-                    {t('review.runName')}
-                    <input
-                      maxLength={100}
-                      value={runName}
-                      onChange={(e) => setRunName(e.target.value)}
-                    />
-                  </label>
-                  <small>{cap.abaqus}</small>
-                  <NumberInput
-                    label={t('review.cpus')}
-                    value={cpus}
-                    min={1}
-                    max={32}
-                    step="1"
-                    rangeHint="1 – 32"
-                    onChange={setCpus}
-                  />
-                  <button
-                    className="primary wide"
-                    disabled={
-                      !deckReady ||
-                      dirty ||
-                      busy ||
-                      fixturePending ||
-                      invalidField ||
-                      !runName.trim() ||
-                      cap.abaqus !== 'Configured'
-                    }
-                    title={
-                      fixturePending
-                        ? t('hint.fixturePending')
-                        : !deckReady
-                          ? t('hint.deckRequired')
-                          : cap.abaqus !== 'Configured'
-                            ? cap.abaqus
-                            : undefined
-                    }
-                    onClick={() => execute(submit)}
-                  >
-                    <Play />
-                    {t('review.submitLicensed')}
-                  </button>
-                </>
-              )}
             </fieldset>
             {stage === STAGE.results && (
               <>

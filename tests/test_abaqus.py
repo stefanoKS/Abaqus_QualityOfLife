@@ -32,7 +32,7 @@ def test_deck_sections_history_mesh_and_motion(model_mesh):
     assert "type=CPS4R" in deck and "type=R2D2" in deck and "CPE" not in deck
     assert "*Node Output, nset=PANEL_RP\nU1, U2, RF1, RF2" in deck
     assert "*Solid Section, elset=REGION_2" in deck
-    assert f"PANEL_RP, 2, 2, {project.motion.travel}" in deck
+    assert f"PANEL_RP, 2, 2, {project.motion.travel:g}" in deck
     assert deck.count("*End Step") == 1
 
 

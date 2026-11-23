@@ -62,7 +62,11 @@ The header shows one language button labelled with the destination language (`En
    rubber card (C10 in MPa, D1 in MPa⁻¹).
 6. **Motion** — set the initial Y offset, the signed Y travel and the step duration. A travel of
    **0 mm is a valid hold**: the panel keeps its assembled position for the whole step (positive
-   duration). A new step defaults to 1.0 s. **Contact** sets the contact law and friction. Press
+   duration). New models default to **−10 mm** door travel (Y-positive is upward) and 1.0 s;
+   saved older models retain their travel. This is a prescribed movement, not an automatically
+   calculated gap or a safe compression recommendation: review initial clearance and deformation;
+   reaching the gap does not guarantee valid contact. **Contact** sets the contact law and the
+   dimensionless friction coefficient (0–5 inclusive). Motion edits preserve contact settings. Press
    **Save revision**; unsaved changes are flagged in the footer.
 7. **Mesh → Generate mesh** meshes the section. A new model defaults to 0.5 mm. Rubber
    quadrilaterals always use reduced integration (CPS4R); the enforced setting and the CPS4R/CPS3/R2D2
@@ -73,10 +77,13 @@ The header shows one language button labelled with the destination language (`En
    the node count. Press **Save fixed nodes**. Only the nodes you selected are fixed; a rectangle never
    expands to a whole CAD edge. Editable legacy models can use **Resolve N old mounting edges to
    nodes**, inspect the highlighted result, and save it as the reviewed fixture.
-9. **Review / Run → Prepare input deck** writes an `.inp` from the reviewed mesh, fixed nodes,
-   materials, contact and motion. It never enqueues a mesh job.
-10. **Review / Run** — check the summary, then submit an **Abaqus** analysis. A missing prerequisite
-    names the stage that owns it instead of leaving a disabled button unexplained.
+9. **Review / Run → Prepare input deck** (blue, left) writes an `.inp` from the reviewed mesh,
+   fixed nodes, materials, contact and motion. It never enqueues a mesh job.
+10. **Submit Abaqus analysis** (green, right) runs the prepared deck; preparation and execution are
+    separate. Set the run name and CPU count. If disabled, follow the displayed reason: save the
+    revision, correct invalid input, generate a compatible mesh, review fixed nodes, configure the
+    Abaqus launcher or prepare a current deck. A motion edit needs a new revision and deck, not
+    necessarily a new mesh.
 11. **Results** — opens on **von Mises** and element probing when the run contains stress (otherwise
     on displacement magnitude and node probing). Switch the **Field**, set the stress range
     (fixed 0.00–0.50 MPa by default, run-wide automatic, or editable limits), toggle mesh edges and

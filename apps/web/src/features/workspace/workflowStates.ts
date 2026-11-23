@@ -26,12 +26,12 @@ export interface WorkflowInput {
   /** Deck prepared for this exact revision from the compatible mesh. */
   deck: Job | null
   runs: Job[]
-  /** True while the open revision has unsaved edits. */
-  dirty?: boolean
+  /** True when contact differs from the saved revision. */
+  contactChanged?: boolean
 }
 
 export function workflowStates(input: WorkflowInput): Record<StageId, StepStatus> {
-  const { project: p, mesh, compatibleMesh, fixture, deck, runs, dirty = false } = input
+  const { project: p, mesh, compatibleMesh, fixture, deck, runs, contactChanged = false } = input
   const roles = p.components.map((c) => c.role)
   const allRolesAssigned = roles.every(
     (role) => role === 'seal' || role === 'moving_panel' || role === 'vehicle_body',
@@ -80,8 +80,8 @@ export function workflowStates(input: WorkflowInput): Record<StageId, StepStatus
     },
     // Contact readiness is deliberately independent of the fixed-node selection.
     contact: {
-      state: contactValid && !dirty ? 'complete' : 'incomplete',
-      hint: !contactValid ? 'hint.contactInvalid' : dirty ? 'hint.contactSave' : undefined,
+      state: contactValid && !contactChanged ? 'complete' : 'incomplete',
+      hint: !contactValid ? 'hint.contactInvalid' : contactChanged ? 'hint.contactSave' : undefined,
     },
     motion: { state: motionValid ? 'complete' : 'incomplete', hint: 'hint.motion' },
     review: {

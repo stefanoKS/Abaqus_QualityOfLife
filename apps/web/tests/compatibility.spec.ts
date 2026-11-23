@@ -58,6 +58,21 @@ test('an API generation mismatch offers restart, not a misleading reload', async
   expect(refused.status()).toBe(409)
 })
 
+test('a mismatched client cannot prepare or submit from Review', async ({ page, request }) => {
+  const revision = await (await request.post('/api/projects', {
+    data: { name: 'Incompatible review', example: true },
+  })).json()
+  await page.route('**/api/health', (route) => route.fulfill({
+    json: { product: 'Abaqus QOL', status: 'ready', api: 2, release: 'legacy', frontend: 'index-OTHER.js' },
+  }))
+  await page.goto('/#workspace/' + revision.id)
+  await page.locator('[data-stage="review"]').click()
+  const actions = page.getByTestId('review-actions')
+  await expect(actions.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await expect(actions.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
+  await expect(actions).toContainText('disabled')
+})
+
 test('a lost create response is retried with the same request identity', async ({
   page,
   request,

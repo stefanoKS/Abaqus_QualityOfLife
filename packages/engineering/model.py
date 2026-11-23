@@ -181,7 +181,7 @@ class Motion(Model):
     # position for the full positive step duration. A nonzero travel must move
     # toward the measured contact side; the deck writer checks that against the
     # geometry. A bottom-mounted profile can use the moving-body role.
-    travel: Annotated[float, Field(ge=-10000, le=10000)] = -5.5
+    travel: Annotated[float, Field(ge=-10000, le=10000)] = -10.0
     offset: Coord = 0
     duration: Positive = 1.0
     # Used only when analysis.mode == "body_then_door".
@@ -231,10 +231,8 @@ class Source(Model):
 
 
 class Project(Model):
-    # Version 2 changed the new-model defaults (0.5 mm mesh, 1.0 s steps).
-    # Version 1 revisions keep their original effective values when a defaulted
-    # field is absent from the stored payload.
-    schema_version: int = 2
+    # Version 3 changes the default door travel; older revisions retain theirs.
+    schema_version: int = 3
     name: Name
     dimension: Literal["2D", "3D"] = "2D"
     formulation: Literal["plane_stress", "extrusion_preview"] = "plane_stress"
@@ -264,31 +262,32 @@ class Project(Model):
     @model_validator(mode="before")
     @classmethod
     def legacy_defaults(cls, data):
-        """Keep version-1 revisions on their original defaulted values.
-
-        Version 2 sets the new-model mesh size to 0.5 mm and a new step to
-        1.0 s. A stored version-1 payload that omitted those fields must still
-        read as 1.0 mm / 1.3 s; explicitly saved values are never rewritten.
-        """
+        """Preserve historical effective defaults when saved fields are absent."""
         if not isinstance(data, dict):
             return data
         try:
             version = int(data.get("schema_version", 1))
         except (TypeError, ValueError):
             return data
-        if version >= 2:
+        if version >= 3:
             return data
         changed = dict(data)
+        changed.setdefault("schema_version", 1)
         mesh = changed.get("mesh")
-        if isinstance(mesh, dict) and "size" not in mesh:
+        if version < 2 and mesh is None:
+            mesh = {}
+        if version < 2 and isinstance(mesh, dict) and "size" not in mesh:
             changed["mesh"] = {**mesh, "size": 1.0}
         motion = changed.get("motion")
+        if motion is None:
+            motion = {}
         if isinstance(motion, dict):
             motion = dict(motion)
-            if "duration" not in motion:
+            motion.setdefault("travel", -5.5)
+            if version < 2 and "duration" not in motion:
                 motion["duration"] = 1.3
             body = motion.get("body")
-            if isinstance(body, dict) and "duration" not in body:
+            if version < 2 and isinstance(body, dict) and "duration" not in body:
                 motion["body"] = {**body, "duration": 1.0}
             changed["motion"] = motion
         return changed

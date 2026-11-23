@@ -29,6 +29,12 @@ Windows-specific process handling. No paid Abaqus license is required or used in
 starts its own API and worker with disposable data and a launcher double at the solver/extractor
 boundary.
 
+CI installs the locked Python requirements into `.venv`, checks imports using
+that exact interpreter, and requires a complete pytest JUnit report. An exit
+code alone is insufficient: a prior launcher test replaced the pytest process
+before its summary. Browser tests may select an isolated interpreter and port
+with `SEAL_TEST_PYTHON` and `SEAL_TEST_PORT`.
+
 ## Supported version matrix
 
 | Component | Version |

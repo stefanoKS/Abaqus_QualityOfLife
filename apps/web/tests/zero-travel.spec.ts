@@ -61,7 +61,7 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
   await expect(page.getByText('No visible geometry')).toHaveCount(0)
   await travel.focus()
   await travel.press('Escape')
-  await expect(travel).toHaveValue('-5.5')
+  await expect(travel).toHaveValue('-10')
 
   // Save the zero-body hold, navigate away, reopen.
   await body.fill('0')

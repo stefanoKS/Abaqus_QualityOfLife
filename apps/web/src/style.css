@@ -228,6 +228,28 @@ button.primary:hover:not(:disabled) {
 .actions {
   gap: 8px;
 }
+.review-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.review-action {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.review-action h2, .review-action p { margin: 0; }
+.review-action label { display: flex; flex-direction: column; }
+button.review-prepare, button.review-submit { color: white; }
+button.review-prepare { background: var(--color-prepare); }
+button.review-submit { background: var(--color-submit); }
+@media (max-width: 740px) {
+  .review-actions { grid-template-columns: 1fr; }
+}
+
 .workgrid {
   display: grid;
   grid-template-columns: clamp(195px, 16vw, 258px) minmax(300px, 1fr) clamp(230px, 21vw, 340px);

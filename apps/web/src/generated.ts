@@ -1614,7 +1614,7 @@ export interface components {
             axis: "Y";
             /**
              * Travel
-             * @default -5.5
+             * @default -10
              */
             travel: number;
             /**
@@ -1639,7 +1639,7 @@ export interface components {
             axis: "Y";
             /**
              * Travel
-             * @default -5.5
+             * @default -10
              */
             travel: number;
             /**
@@ -1825,7 +1825,7 @@ export interface components {
         "Project-Input": {
             /**
              * Schema Version
-             * @default 2
+             * @default 3
              */
             schema_version: number;
             /** Name */
@@ -1873,7 +1873,7 @@ export interface components {
         "Project-Output": {
             /**
              * Schema Version
-             * @default 2
+             * @default 3
              */
             schema_version: number;
             /** Name */

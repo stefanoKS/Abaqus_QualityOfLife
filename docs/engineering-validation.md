@@ -1,5 +1,18 @@
 # Engineering validation
 
+## New default under verification · 2026-11-23
+
+New models prescribe door U2 = −10 mm (Y-positive upward); this is not a gap
+measurement or a safe-compression limit. Earlier licensed cases and their
+recorded commands remain unchanged. No licensed solve or independent physical
+correlation of the new default was performed in this repair.
+
+Read-only `Get-FileHash -Algorithm SHA256` checks of the retained moving-body
+5 mm-gap, held-body and neo-Hookean input decks matched the three hashes in the
+records below. This checks file integrity only; the ODBs, revision linkage,
+extraction agreement and licensed viewer replay were not independently
+revalidated in this repair.
+
 This document states exactly what is supported, what has been executed, and what remains unverified.
 It is deliberately conservative: a solver finishing is **not** evidence of engineering accuracy.
 Three outcomes are kept separate everywhere: solver executed, extraction succeeded, engineering
