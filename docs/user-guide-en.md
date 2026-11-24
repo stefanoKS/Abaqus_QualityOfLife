@@ -17,9 +17,8 @@ No login is required.
 
 ## 1. Layout
 
-The workspace is a fixed engineering shell: the navigation, model header and work area stay on one
-screen, and only the named panes scroll. Long forms never push the drawing field or the primary
-actions out of view.
+On desktop, the drawing field stays fixed while the side panes scroll. In a short window,
+scroll the left pane below the assembly tree to reach the analysis actions.
 
 | Area | Contents |
 |---|---|
@@ -28,7 +27,7 @@ actions out of view.
 | Left work area | Two-column workflow (with per-step configuration state) and the assembly tree |
 | Property editor | Editor for the selected workflow stage or CAD entity; scrolls on its own |
 | Drawing field | White geometry, mesh and result viewport with zoom / fit tools on the right |
-| Analysis actions | Always-visible group under the left workflow: **Prepare input deck** then **Submit Abaqus analysis**, prepared/stale state, deck inspection and download, run name, CPU count, licensed-launcher state and the active-run link |
+| Analysis actions | Below the assembly tree in every setup stage. Includes **Prepare input deck**, **Submit Abaqus analysis**, deck status, inspection and download, run name, CPU count, launcher status and the active-run link |
 | Footer | Save state, validation message, worker phase |
 
 On a narrow window or at high browser zoom the panes stack in the page flow and a **Workflow &

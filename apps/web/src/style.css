@@ -990,19 +990,12 @@ td .mode-label,
     grid-template-columns: minmax(0, 1fr);
     max-height: none;
   }
-  .left {
-    max-height: 210px;
-  }
   .steps {
     display: flex;
     flex-wrap: wrap;
   }
   .steps button {
     width: auto;
-  }
-  .tree-title,
-  .tree {
-    display: none;
   }
   .viewport-wrap {
     height: 360px;
@@ -1809,13 +1802,10 @@ input[type='color'] {
 .workgrid > .canvas-card {
   min-height: 0;
 }
-.left,
-.right {
-  overflow: hidden;
-}
 .left {
   display: flex;
   flex-direction: column;
+  overflow-y: auto;
 }
 .left .steps {
   flex: 0 1 auto;
@@ -1824,11 +1814,10 @@ input[type='color'] {
 }
 .left .tree {
   flex: 1 1 auto;
-  min-height: 0;
   overflow: auto;
 }
-.right {
-  overflow: auto;
+.left .tree:not(:empty) {
+  min-height: 11rem;
 }
 .canvas-card {
   display: flex;
@@ -2010,6 +1999,9 @@ input,
   .workgrid.panes-closed > .right {
     display: none;
   }
+  .left .tree {
+    max-height: 45dvh;
+  }
   .review-actions {
     width: 100%;
     justify-self: stretch;
@@ -2183,8 +2175,6 @@ button.destructive.solid:hover:not(:disabled) {
   margin: 0 0 6px;
 }
 .tree-role {
-  margin-left: auto;
-  padding-left: 6px;
   font-size: 0.8rem;
   font-weight: 550;
   color: var(--color-text-faint);
@@ -2302,11 +2292,18 @@ button.destructive.solid:hover:not(:disabled) {
   min-width: 0;
 }
 .tree-row .tree-item {
-  gap: 6px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 6px;
+  row-gap: 0;
+  text-align: start;
   overflow: hidden;
 }
+.tree-item > svg {
+  grid-row: span 2;
+}
 .tree-role {
-  flex: 0 1 auto;
+  grid-column: 2;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -2324,8 +2321,6 @@ button.destructive.solid:hover:not(:disabled) {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 2px solid var(--color-primary-soft-strong, #f0c9a8);
-  max-height: 74%;
-  overflow: auto;
 }
 .action-group .action-title {
   margin: 0;
@@ -2511,9 +2506,6 @@ button.destructive.solid:hover:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.left .action-group {
-  max-height: 68%;
 }
 .action-subhead .action-license {
   margin-left: auto;

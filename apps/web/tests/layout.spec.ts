@@ -101,6 +101,32 @@ test('desktop shell fits the viewport, keeps panes adjacent and the viewport fix
   await expect(page.getByTestId('vtk-viewport')).toBeVisible()
 })
 
+test('an expanded assembly stays readable above analysis actions on a short desktop', async ({
+  page,
+  request,
+}) => {
+  const revision = await example(request, 'Assembly tree height')
+  for (const face of revision.setup.faces) face.material = null
+  const saved = await request.put('/api/projects/' + revision.project, {
+    data: { base: revision.id, setup: revision.setup },
+  })
+  expect(saved.ok()).toBeTruthy()
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto('/#workspace/' + (await saved.json()).id)
+  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Materials' }).click()
+  const tree = page.locator('.left .tree')
+  await tree.locator('[aria-expanded="false"]').first().click()
+  const thirdChild = tree.locator('.children button').nth(2)
+  await expect(thirdChild).toBeInViewport({ ratio: 1 })
+
+  const canvas = page.getByTestId('vtk-viewport')
+  const before = await canvas.boundingBox()
+  const submit = page.getByTestId('action-group').getByRole('button', { name: 'Submit Abaqus analysis' })
+  await submit.scrollIntoViewIfNeeded()
+  await expect(submit).toBeInViewport({ ratio: 1 })
+  expect(await canvas.boundingBox()).toEqual(before)
+})
+
 test('narrow and zoomed layouts keep every control reachable', async ({ page, request }) => {
   const revision = await example(request, 'Layout narrow')
   await page.setViewportSize({ width: 390, height: 844 })
@@ -115,6 +141,7 @@ test('narrow and zoomed layouts keep every control reachable', async ({ page, re
   await expect(page.getByTestId('vtk-viewport')).toBeVisible()
   await toggle.click()
   await expect(page.locator('.workgrid > .left')).toBeVisible()
+  await expect(page.locator('.left .tree-row').first()).toBeVisible()
   // The action group remains reachable by scrolling, not clipped away.
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   await prepare.scrollIntoViewIfNeeded()

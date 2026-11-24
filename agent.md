@@ -1,5 +1,9 @@
 # Abaqus QOL implementation handoff
 
+## Assembly tree at short window heights · 2026-11-24
+
+Desktop sidebar scrolling keeps the populated tree at least 11 rem tall. Roles appear below component names. The open narrow-screen drawer includes the tree. In Edge at 1280 × 720 with missing materials and an expanded seal, tree height increased from 18 to 176 CSS pixels, revealing four child rows. The new regression failed on the previous release and passed on build `5be20b24e6d0`. The build, all four layout tests, and the bilingual analysis-action reachability test passed. The existing intermittent desktop camera Fit/reset comparison failed once and passed on the layout rerun. The next operator session can use the new build.
+
 ## Hollow lip partition repair · 2026-11-24
 
 The three audited defects were reproduced before production edits and retained as regressions. The
