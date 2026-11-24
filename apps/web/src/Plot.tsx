@@ -13,6 +13,8 @@ export function Plot({
   ylabel,
   active,
   onPick,
+  label,
+  describedBy,
 }: {
   x: number[]
   y: number[]
@@ -20,6 +22,10 @@ export function Plot({
   ylabel: string
   active?: number
   onPick?: (index: number) => void
+  /** Full accessible description; the axis titles stay short enough to fit. */
+  label?: string
+  /** Id of the visible caption that carries the full engineering description. */
+  describedBy?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const pick = useRef(onPick)
@@ -131,7 +137,14 @@ export function Plot({
     if (ready.current && ref.current) restyleCursor(ref.current, x, y, cursor)
   }, [cursor, x, y])
 
-  return <div ref={ref} className="plot" aria-label={ylabel + ' versus ' + xlabel} />
+  return (
+    <div
+      ref={ref}
+      className="plot"
+      aria-label={label ?? ylabel + ' versus ' + xlabel}
+      aria-describedby={describedBy}
+    />
+  )
 }
 
 function restyleCursor(el: HTMLDivElement, x: number[], y: number[], index: number) {

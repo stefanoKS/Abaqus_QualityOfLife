@@ -718,20 +718,51 @@ td small {
 }
 .card-heading {
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
 }
 .filters,
 .run-actions {
   gap: 5px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+/* The filter group is a flex child of the card heading: it must be allowed to
+   shrink to the card instead of pushing its own intrinsic width past the
+   card's clipping edge. */
+.filters {
+  flex: 1 1 auto;
+  max-width: 100%;
 }
 .filters > svg {
   width: 15px;
+  flex: none;
 }
 .filters select {
   font-size: 0.875rem;
+  /* A native select sizes itself to its widest option, so long project and
+     model names used to protrude past the card. Clamp the control instead. */
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 132px;
+  text-overflow: ellipsis;
 }
 .table-scroll {
   overflow: auto;
+  max-width: 100%;
+  min-width: 0;
+  /* The table is a deliberate keyboard-accessible scroller on narrow screens. */
+  overscroll-behavior: contain;
+}
+.table-scroll:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: -3px;
+}
+td strong,
+.group-heading strong,
+.project-card strong {
+  overflow-wrap: anywhere;
 }
 table {
   width: 100%;
@@ -767,6 +798,56 @@ td .mode-label,
 .run-actions button {
   font-size: 0.875rem;
   padding: 5px 7px;
+}
+/* Narrow screens: one deliberate compact row per run (identity, status,
+   submitted, elapsed, actions) instead of a wide table that needed horizontal
+   scrolling. No font is shrunk; the row simply stacks its labelled fields. */
+@media (max-width: 760px) {
+  .run-card .table-scroll {
+    overflow: visible;
+  }
+  .run-card table,
+  .run-card tbody {
+    display: block;
+    width: 100%;
+  }
+  .run-card thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+  .run-card tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--color-border-subtle);
+  }
+  .run-card td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .run-card td[data-label]::before {
+    content: attr(data-label) ' ';
+    font-size: 0.8rem;
+    color: var(--color-text-muted);
+  }
+  .run-card td[data-label] {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .run-card .run-actions {
+    flex-wrap: wrap;
+  }
 }
 .empty {
   text-align: center;
@@ -854,6 +935,22 @@ td .mode-label,
 .plot {
   height: 210px;
   min-width: 0;
+}
+/* The full engineering description sits next to the plot and wraps inside the
+   scrolling property pane; only a concise unit-bearing title is rotated on the
+   axis, where the old long title could not fit the plot height. */
+.plot-caption {
+  margin: 0 0 6px;
+  font-size: 0.82rem;
+  line-height: 1.35;
+  color: var(--color-text-muted, #55686f);
+  overflow-wrap: anywhere;
+}
+.plot-caption span {
+  display: block;
+}
+.plot-caption-x {
+  font-size: 0.78rem;
 }
 /* Playback has two independent tracks: the slider keeps a stable width, and a
    fixed-height status row carries frame count, time, load/error text and Loop.
@@ -1626,6 +1723,55 @@ input[type='color'] {
   width: 100%;
   margin-bottom: 6px;
 }
+/* CAE library exchange: preview, explicit eligibility and unit basis. */
+.cae-panel {
+  margin-top: 14px;
+  border-top: 1px solid var(--color-border-subtle);
+  padding-top: 10px;
+}
+.cae-panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 4px;
+}
+.cae-panel p {
+  font-size: var(--text-meta);
+  color: var(--color-text-muted);
+  margin: 0 0 8px;
+}
+.cae-panel select,
+.cae-panel input[type='text'] {
+  width: 100%;
+}
+.cae-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+.cae-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 6px;
+}
+.cae-card {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-size: var(--text-meta);
+}
+.cae-card.blocked {
+  opacity: 0.72;
+}
+.cae-card small {
+  color: var(--color-text-muted);
+}
 .comparison-card {
   margin-top: 16px;
   padding: 16px;
@@ -1763,6 +1909,16 @@ input[type='color'] {
 }
 .workspace .actions {
   gap: 7px;
+  /* The portable-file controls join the duplicate/autosave actions; a narrow
+     header wraps them instead of forcing horizontal page overflow. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+@media (max-width: 900px) {
+  .workspace .model-file {
+    display: none;
+  }
 }
 .workspace .blocked-banner,
 .workspace .readiness-banner {
@@ -2064,6 +2220,71 @@ input,
 .run-view .result-grid > aside.card {
   overflow: auto;
 }
+/* Live progress keeps its intrinsic height instead of being clipped by the
+   flexible grid below it. A short window scrolls the named detail region and
+   leaves phase, status, progress, the current step and any warning visible. */
+.run-view .run-progress {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: min(340px, 56dvh);
+}
+.run-view .run-progress .progress-detail {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+.run-view .run-progress .progress-detail:focus-visible {
+  outline: 2px solid var(--color-primary, #197968);
+  outline-offset: 2px;
+}
+.progress-current {
+  margin: 4px 0 2px;
+  font-size: var(--text-meta);
+  font-weight: 600;
+}
+/* Completed result: the status/DEMO line stays in the existing banner. */
+.banner-complete {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 600;
+}
+.banner-complete svg {
+  width: 15px;
+}
+.banner-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+/* Recovered height belongs to the geometry viewport and the response pane. */
+.run-view .result-grid.results-layout {
+  grid-template-rows: minmax(0, 1fr);
+}
+.run-view .result-grid.results-layout > section.card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.run-view .result-grid.results-layout > aside.card {
+  overflow: auto;
+  min-height: 0;
+}
+@media (min-width: 1101px) and (max-height: 640px) {
+  .run-view .run-progress {
+    max-height: 44dvh;
+  }
+  /* The current-step line already states the step, so the percentage sentence
+     gives its row to the scrollable detail on a short window. */
+  .run-view .run-progress .progress-caption {
+    display: none;
+  }
+  .run-view .run-progress .progress-detail {
+    min-height: 48px;
+  }
+}
 @media (min-width: 1101px) {
   .run-view.page {
     height: calc(100dvh - 62px);
@@ -2077,6 +2298,13 @@ input,
   }
   .run-view .result-grid {
     flex: none;
+  }
+  .run-view .result-grid.results-layout {
+    grid-template-rows: none;
+  }
+  .run-view .result-grid.results-layout .result-viewport {
+    flex: none;
+    height: clamp(300px, 46vh, 520px);
   }
   .run-view .result-viewport {
     height: clamp(300px, 46vh, 520px);
@@ -2227,6 +2455,13 @@ button.destructive.solid:hover:not(:disabled) {
 .run-view .result-grid > section.card .result-viewport {
   flex: 0 0 clamp(260px, 42vh, 460px);
   height: auto;
+}
+/* A usable completed result has no progress card, so the freed grid height is
+   real: the field pane takes the space playback does not need. The remaining
+   display controls stay reachable by scrolling the named field card. */
+.run-view .result-grid.results-layout > section.card .result-viewport {
+  flex: 0 0 clamp(320px, 45vh, 560px);
+  min-height: 260px;
 }
 
 /* Narrow workspace: controls wrap instead of forcing horizontal overflow. */
@@ -2445,6 +2680,46 @@ button.destructive.solid:hover:not(:disabled) {
 .force-basis p {
   margin: 0;
 }
+/* Compact material swatch legend for the optional outlines overlay. */
+.material-controls {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.material-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 4px 0 10px;
+  font-size: 0.82rem;
+  color: var(--color-text-muted, #55686f);
+}
+.material-legend strong {
+  font-size: 0.85rem;
+  color: var(--color-text, #1c2b31);
+}
+.material-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.material-swatches span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.material-swatches b {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  flex: none;
+}
+.material-legend small {
+  display: block;
+}
 .action-subhead {
   display: flex;
   align-items: center;
@@ -2475,15 +2750,15 @@ button.destructive.solid:hover:not(:disabled) {
   width: 100%;
   min-width: 0;
 }
-/* Compact two-column workflow rail: every stage stays visible while the
-   analysis action group occupies the stable bottom of the left pane. */
+/* One row per stage, in DOM, visual and keyboard order. The rail scrolls on a
+   short window so every stage and a multi-row assembly tree stay reachable. */
 .left .steps {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
-  flex: 0 0 auto;
-  max-height: none;
-  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  flex: 0 1 auto;
+  max-height: 60%;
+  overflow: auto;
   padding: 5px 6px;
 }
 .left .steps button {
@@ -2515,4 +2790,64 @@ button.destructive.solid:hover:not(:disabled) {
 .action-subhead .action-license svg {
   width: 14px;
   height: 14px;
+}
+
+/* ---------------------------------------------------------- portable files */
+.file-bar {
+  margin-bottom: 14px;
+}
+.file-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 15px;
+}
+.file-open {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+}
+.file-open label {
+  flex: 1 1 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-meta);
+}
+.file-open input {
+  width: 100%;
+}
+.file-recent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.file-recent button {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-file {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-muted);
+  font-size: var(--text-meta);
+}
+.action-output {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.action-result-file {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

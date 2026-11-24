@@ -1,5 +1,108 @@
 # Abaqus QOL implementation handoff
 
+## File → New/Open, CAE materials and top-level navigation · 2026-11-25
+
+Use the [execution command and acceptance gates](docs/file-open-materials-navigation-handoff.md). The operator on port 8765 is running release `81fc7a73aa30`, API `f96456e1a763af94`. Its legacy “Imported projects” group is archived. Both File → New and Open Model reproduced the read-only banner and HTTP 409 in a disposable Edge session with that configuration. The same test with an active default group was editable. Repair standalone file ownership at creation and preserve all genuine archives. Then put Dashboard first, implement explicit Close, synchronize disk saves with pending edits and restore compatible embedded mesh/fixtures on Open.
+
+The supplied library has 27 parsed cards. The registration API accepted two and skipped 25 when asked to register all. Eleven are Hyperfoam, including four coupled to Prony viscoelasticity. The handoff gives the source counts, regression cases and CAE reference-deck checks. A local per-card inventory stays under ignored `.local/evidence/2026-11-25-file-material-audit/`. The three actual spline snapshots passed through the import worker, including the previously unavailable open-only sample. No CAE license or solver was used for this audit.
+
+Independent regression run on the unchanged application code: 328 Python tests passed, one skipped. The full browser suite had 161 passes, four skips and two failures (Fit/reset camera state and the material comparison). Both failing tests passed on a fresh service when rerun together. Typecheck, translations (946 keys per language), encoding (47 files), schema-byte comparison and the isolated production build passed. Gates 4 and 6 still require application work and interoperability checks as detailed in the brief.
+
+## Six file-workbench gates · 2026-11-24
+
+Baseline `84ab7a2` plus the uncommitted A–E delivery, which was preserved. All
+tests used disposable `SEAL_DATA` roots, temporary folders and the isolated
+browser service; the operator instance, its database and retained licensed
+artifacts were not modified. **No licensed solver was launched.** One
+Abaqus/CAE 2024 noGUI session was used for material-card verification (see
+Gate 4), which consumed a CAE license token.
+
+### Gate status
+
+| Gate | Status | Measured outcome |
+|---|---|---|
+| 0. Two-tab Save Retry | **PASS** | Retry now rebases only the local delta. The reported 111 mm / 1.25 mm case keeps both values (`analysis.reporting_width=111`, `mesh.size=1.25`); a same-field edit is reported by path with Reload, never overwritten. |
+| 1. Live progress | **PASS** | The card keeps its intrinsic height (`flex: 0 0 auto`, max `min(340px, 56dvh)`) and the named, focusable detail region scrolls. Card `scrollHeight <= clientHeight` at 1874×762, 1440×900, 1280×720 and 390×844 in JA/EN; the 1280×520 window scrolls the detail by keyboard with status, current step and warning visible. |
+| 2. Completed result space | **PASS** | The large card is replaced by a completion line in the existing banner. At 1280×720 the result grid grew from 355 to **458 px** and the viewport from **302 to 324 px**; 46vh is the fixed shell's limit because playback must stay fully visible and the display controls remain reachable by scrolling the field card. Diagnostics still shows the full card. |
+| 3. Spline import | **PASS (software)** | Open-only drawings import as inspectable models: two selectable spline edges, zero faces, `drawing.no_closed_region` blocker. Endpoints join at the existing 1e-6 mm tolerance (`snapped`/`maxGap` reported), real gaps are reported (`nearestGap`) and not bridged, and mixed fit/control loops keep cavities. The current DWG (`b874fa5168`) and the mixed backup (`5a4b114f42`) still import through upload → worker with two splines and one face. The earlier open-only drawing (`b7955ecd1a`) is absent; a manufactured equivalent covers it. |
+| 4. Material library + element family | **PARTIAL (UI/enforcement) · CAE transfer verified** | A data-only protocol-0 reader decodes the supplied 79,592-byte library (27 cards, Japanese decoded, no execution). 2 of 27 cards map exactly (PA6, METAL); 25 are visible with precise ineligibility reasons. Import/export and provenance/fingerprints work; export is byte-identical CAE source. **Abaqus/CAE 2024 noGUI created all 27 cards from the parsed data and reproduced PA6 (2600 MPa, 0.39, 1.13e-9) and METAL (206000 MPa, 0.3, 7.65e-9).** Metal regions now mesh as CPS4 and polymer regions as CPS4R, with explicit per-region ELSETs and sections in the INP; a family change stales the mesh, a coefficient change does not. The model still accepts legacy unregistered demo cards as a warning rather than a hard blocker, and the CAE **GUI Material Library Manager file-open path** was not automated (kernel card creation was). |
+| 5. One vertical workflow | **PASS** | Eight stable stage rows in DOM/visual/keyboard order. `AnalysisActions` moved from under the tree to the top of the Results properties exactly once; it is reachable before a mesh/deck/run exists. Short and zoomed layouts keep every row and action; Submit-only run parameters name CPU/name reasons. |
+| 6. Portable model/result files | **PARTIAL (UI) · container and worker workflow verified** | `.aqmodel` New/Save/Save As with on-disk fingerprint conflict, atomic publish, mesh/fixture inclusion and reopening in a fresh data root. `.aqresult` is published by the worker after extraction with no browser, gives collision-safe distinct names, and opens read-only with frames/history in a fresh installation. Truncated, wrong-kind and unsupported-version files are refused before extraction; failed extraction refuses publication. The Dashboard still shows the project history; the File entry point is added rather than the project UI being fully retired. |
+
+### Tests actually run (this machine, isolated data)
+
+- `.\.venv\Scripts\python.exe -m pytest -q`: **328 passed, 1 skipped** (the opt-in Abaqus-Python roundtrip), exit 0.
+- New Python suites: `test_dwg_open_only.py` (11), `test_material_library_cae.py` (5), `test_portable_files.py` (7).
+- `test:i18n`: **946 keys** both languages. `test:encoding`: 47 files. `typecheck`: pass.
+- Build: release **`81fc7a73aa30`**, entry `index-BdawGA5k.js`, API 3.
+- Browser: full suite on the final release `81fc7a73aa30`: **160 passed, 4 skipped, 3 failed** (167 tests). The three failures are timing-sensitive and pass in isolation: `gate-f` playback cadence (71.7 ms > 50 ms under full-suite load; 2 passed alone), `materials` library validation (7 passed together with motion preview) and `motion-preview` body/door equality (same isolated run). A later 4-file run also saw the rapid-edit coalescing test once (3 revisions instead of ≤2; it then passed 3/3 repeated alone). None reproduces alone; they are suite-load flakiness, not gate evidence.
+- Schema regenerated with `scripts/schema.py`; the generated diff was inspected.
+
+### Blocked or outstanding
+
+1. **Licensed solver evidence, numerical sensitivity, physical correlation and self-contact participation remain BLOCKED.** Nothing in these gates is solver evidence; the manufactured worker runs are software evidence only.
+2. **CAE GUI round-trip remains open.** Card data is verified by the CAE kernel, but the GUI `Material Library Manager` file-open path is not scriptable here. Export is CAE's own bytes, so this is a verification gap, not a container change.
+3. **Registered-only material enforcement is partial.** Legacy/demo model-local cards remain usable with a warning; the gate's stricter "only eligible registered pins" rule is not enforced as a Prepare blocker for those cards.
+4. **Project UI retirement is partial.** File → New/Open/Save/Save As and result packaging exist, but the Dashboard project/history workflow is still present.
+5. **3D solving remains deferred** and 2D plane stress is unchanged.
+
+**Next executable slice.** Finish the registered-only material policy (migrate
+demo defaults to registered entries), automate the CAE GUI library open, and
+retire the project UI after migrating its models to files. Then run hosted
+Windows CI on this tree.
+
+## Independent delivery audit and next execution command · 2026-11-24
+
+**Spline recheck.** The drawing changed since the first audit. The normal import worker accepted the current DWG (`b874fa5168`) and its mixed fit/control-point backup (`5a4b114f42`), persisting two splines and one face in each model. The earlier open-only drawing (`b7955ecd1a`) still failed the closed-region check on the same code. Gate 3 now records all three inputs and their expected outcomes.
+
+Follow the [file-workbench execution handoff](docs/file-workbench-execution-handoff.md). Its six gates cover live progress, completed result space, both native spline representations, CAE material-library exchange and element formulations, vertical setup order, and portable model/result files. Implement the progress layout and protect unrelated edits on conflict before relying on the current save controller. The file extensions and storage workflow in the brief are proposals for implementation.
+
+Verified on `84ab7a2` plus the existing application patch. Both operator health and isolated health reported API `be1bb24c071006c8` and release `4933ae101e08`. Fresh production output matched the published bytes. Reran pytest (305 passed, one skipped), full isolated Playwright (150 passed, four skipped, zero flaky), typecheck, translations (879 keys each), encoding (45 files) and schema generation to a temporary comparison file. An independent Edge test reproduced the 111 → 100 mm overwrite after Retry on an unrelated edit. Active progress at 1280 × 720 showed 124 px for 276 px of content. The retained material overlay matched eight interfaces and 239 perimeter segments in JA/EN. The supplied two-open-spline DWG was decoded then rejected by the import worker; mixed curves joined in the two closed positive controls. Static inspection of the CAE library identified 27 cards. No new licensed solver run. CAE exchange and the proposed file workflow await implementation and verification.
+
+## Workbench edit, readiness, dashboard, force axis and material outlines — delivered · 2026-11-24
+
+Baseline `84ab7a2` on `main`; only the [execution command](docs/model-edit-readiness-results-handoff.txt)
+and the previous handoff entry were uncommitted. All work used the isolated `--test-data` browser
+service (port 8876), disposable `SEAL_DATA` directories and temporary paths. The operator instance on
+8765, its database, drawings and retained licensed artifacts were not modified. **No licensed solver
+was launched.** The five gates are implemented and verified on API build `be1bb24c071006c8`, release
+**`4933ae101e08`** (`index-BZ3wYYIK.js`, API 3): **A PASS, B PASS, C PASS, D PASS, E PASS on
+manufactured evidence** (the operator's retained result was not re-read). Full detail, the 12-row
+transition matrix and the measured clips are in
+[implementation-report.md](docs/implementation-report.md#a13-workbench-model-edit-readiness-dashboard-force-axis-and-material-outlines--2026-11-24).
+
+Delivered: (A) dashboard filters that shrink and wrap inside the run card, a focusable labelled table
+scroller and a compact labelled row layout below 760 px — filter overhang 0 px at 1440/1280/720/390 in
+both languages, down from 166/148 px, with no page overflow; (B) one automatic writer replaces the
+working head for every valid committed edit, with coalescing, serialized writes, retained drafts,
+idempotent lost-response recovery, a recoverable two-tab conflict and a Retry path; the Save revision
+and Save contact actions are gone, **Duplicate setup** is the explicit branch, and every queued
+operation flushes first; (C) role/mesh/mounting/motion/deck prerequisites read as incomplete with a
+reason, the padlock is reserved for the deferred 3D extrusion, and Mounting stays usable across
+unrelated edits; (D) the full force description is a wrapping caption beside the plot with a concise
+unit-bearing axis (Y title 52.5 px for N, 80 px for N/mm, inside the 210 px plot at every width and
+200% zoom, down from ~269 px); (E) optional material outlines from the pinned revision's face→material
+assignment, with perimeters, one interface per distinct-material FE edge, a swatch legend, coverage
+reporting and frame/deformation tracking.
+
+Tests actually run: Python **305 passed, 1 skipped**; translations **879 keys**; encoding 45 files;
+typecheck and build pass; browser suite **150 passed, 4 skipped, 0 failed** (154 tests; the skips are
+the two opt-in retained replays, the gated screenshot capture and the retained native-lip check);
+`scripts/schema.py` reproduced `generated.ts` byte-identically; `git diff --check` clean.
+
+**Next executable slice.** Run hosted Windows CI on this tree; then re-read the operator's retained
+two-material result from a read-only copy to confirm the 8-interface / 4-same-material-seam count with
+the new overlay. Investigate the pre-existing intermittent materials-comparison full-suite failure
+(passes in isolation) and the previously reproduced desktop camera Fit/reset comparison.
+
+**Outstanding dependencies.** No licensed solve: physical correlation, numerical sensitivity and
+self-contact participation remain **BLOCKED**. The operator's 8765 instance still runs release
+`5be20b24e6d0` and was not upgraded. 3D solving remains deferred.
+
+## Dashboard, model editing, readiness and Results handoff · 2026-11-24
+
+The [execution command](docs/model-edit-readiness-results-handoff.txt) covers five requests and defines the setting order and lock transitions explicitly. The three measured failures were narrow dashboard filter overflow, the clipped force-axis title, and a corrected component role retaining a blocked badge until persistence. In an isolated 37-node fixture, a friction-only edit hid the mounting controls; persisting it preserved the fixture and enabled deck preparation. A fresh mesh correctly required a new review. The retained result mapped 783 seal elements to two materials. Three existing readiness tests passed. The delivery above supersedes this paragraph: implementation, Gate A–E verification and the isolated build are complete; the retained operator result recheck is outstanding.
+
 ## Assembly tree at short window heights · 2026-11-24
 
 Desktop sidebar scrolling keeps the populated tree at least 11 rem tall. Roles appear below component names. The open narrow-screen drawer includes the tree. In Edge at 1280 × 720 with missing materials and an expanded seal, tree height increased from 18 to 176 CSS pixels, revealing four child rows. The new regression failed on the previous release and passed on build `5be20b24e6d0`. The build, all four layout tests, and the bilingual analysis-action reachability test passed. The existing intermittent desktop camera Fit/reset comparison failed once and passed on the layout rerun. The next operator session can use the new build.

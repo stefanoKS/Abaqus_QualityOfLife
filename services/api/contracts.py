@@ -41,6 +41,9 @@ class MaterialCard(Contract):
     c10: float | None = Field(default=None, gt=0, le=1e9)
     d1: float | None = Field(default=None, gt=0, le=1e9)
     test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
+    # Element formulation belongs to the material's engineering family: a polymer
+    # weatherstrip quad is CPS4R and a deformable metal quad is CPS4.
+    family: Literal["polymer", "metal"] = "polymer"
 
     def checked(self, name="Library material"):
         from packages.engineering.model import Material
@@ -86,6 +89,8 @@ class LibraryVersion(Contract):
     card: MaterialCard
     created: float
     note: str
+    # CAE import provenance (source file, record, fingerprint, original data).
+    source: dict | None = None
 
 
 class LibraryUsageRow(Contract):
@@ -112,6 +117,36 @@ class LibrarySummary(Contract):
 class LibraryDetail(LibrarySummary):
     versions: list[LibraryVersion]
     usage: list[LibraryUsageRow]
+
+
+class CaeExportRequest(Contract):
+    """Export registered CAE-sourced materials into a user-selected folder."""
+
+    folder: str = Field(min_length=1, max_length=1000)
+    material_ids: list[str] = Field(default_factory=list, max_length=512)
+
+
+class ModelFileRequest(Contract):
+    """Save the current model head as a portable ``.aqmodel`` file."""
+
+    revision: UUID
+    path: str = Field(min_length=1, max_length=1000)
+    # Fingerprint this session last wrote; a different on-disk file is a conflict.
+    base_sha: str | None = None
+    overwrite: bool = False
+
+
+class OpenFileRequest(Contract):
+    path: str = Field(min_length=1, max_length=1000)
+
+
+class PackageResultRequest(Contract):
+    job: UUID
+    folder: str | None = Field(default=None, max_length=1000)
+
+
+class ResultFileRetry(Contract):
+    folder: str | None = Field(default=None, max_length=1000)
 
 
 class NewProjectGroup(Contract):
@@ -298,6 +333,9 @@ class Submit(Build):
     mode: Literal["DEMO", "ABAQUS"] = "ABAQUS"
     scenario: Literal["success", "failure", "slow", "extraction_failure"] = "success"
     cpus: int = Field(default=1, ge=1, le=32)
+    # Folder captured at submit. The worker publishes the .aqresult there after a
+    # successful extraction, even if the browser tab is closed.
+    output_dir: str | None = Field(default=None, max_length=1000)
 
 
 class Job(BaseModel):
@@ -338,3 +376,6 @@ class Job(BaseModel):
     diagnostic: str
     manifest: list[str]
     input_hash: str | None
+    output_dir: str | None = None
+    result_file: str | None = None
+    publication: str | None = None

@@ -106,6 +106,16 @@ export interface ViewportProps {
   resultRange?: number | null
   /** Localized legend heading supplied by the caller. */
   resultLabel?: string
+  /**
+   * Optional material perimeters and internal interfaces. A display preference
+   * only: it never changes the field, ranges, probes, camera or artifacts.
+   */
+  materialOutlines?: boolean
+  /**
+   * Face-id to effective material identity, taken from the job's immutable
+   * submitted revision. Legacy results without region data simply draw nothing.
+   */
+  faceMaterials?: Record<string, MaterialFaceAssignment>
   /** Rectangular node selection is armed (fixed-node fixture review). */
   boxSelect?: boolean
   /** How a completed rectangle combines with the current fixture. */
@@ -170,6 +180,12 @@ export interface Surface {
   nodeIds?: number[]
   magnitudes?: (number | undefined)[]
   contour?: boolean
+  /** Line width in pixels for edge overlays (material interfaces read thicker). */
+  width?: number
+  /** Both effective material identities of a drawn interface, when known. */
+  materials?: string[]
+  /** Which display overlay produced this surface; never a pick target. */
+  overlay?: 'material-perimeter' | 'material-interface'
 }
 export interface Scene {
   surfaces: Surface[]
@@ -178,6 +194,54 @@ export interface Scene {
   min?: number
   /** Bounds covering the whole run, so the camera is fitted once. */
   extent?: number[] | null
+}
+
+/**
+ * Effective material identity for one CAD region of the job's pinned revision.
+ *
+ * ``key`` is the pinned card identity. Two distinct CAD face IDs that point at
+ * the same card (or the same pinned library version) therefore share a key and
+ * never create a false material interface.
+ */
+export interface MaterialFaceAssignment {
+  key: string
+  name: string
+  color: string
+  /** Library version when the card is pinned to the global library. */
+  version?: number | null
+}
+
+export interface MaterialInterface {
+  instance: string
+  a: number
+  b: number
+  /** The two distinct effective material keys sharing this FE edge. */
+  materials: string[]
+}
+
+export interface MaterialPerimeter {
+  instance: string
+  a: number
+  b: number
+  material: string
+}
+
+/**
+ * Independent FE-edge classification for one result.
+ *
+ * Built once from each deformable instance's original element connectivity and
+ * local node labels (never from renderer vertices), so an element-based stress
+ * display with duplicated corner vertices cannot change the topology.
+ */
+export interface MaterialTopology {
+  perimeters: MaterialPerimeter[]
+  interfaces: MaterialInterface[]
+  /** Deformable continuum elements considered. */
+  total: number
+  /** Elements whose CAD region maps to a known pinned material. */
+  mapped: number
+  /** Effective material keys present, in first-seen order. */
+  materials: string[]
 }
 
 function cadColor(
@@ -332,6 +396,236 @@ function instanceSurfaces(
 
 
 /**
+ * Continuum element types that participate in material assignment. Rigid panel
+ * lines (R2D2) reuse local node labels in their own assembly instance and are
+ * excluded, so a rigid instance can never fabricate an interface.
+ */
+const DEFORMABLE = new Set(['CPS3', 'CPS4', 'CPS4R'])
+
+const topologyCache = new WeakMap<object, WeakMap<object, MaterialTopology>>()
+
+function buildMaterialTopology(
+  instances: ResultInstance[],
+  faceMaterials: Record<string, MaterialFaceAssignment>,
+): MaterialTopology {
+  type Edge = { instance: string; a: number; b: number; materials: Set<string>; count: number }
+  const edges = new Map<string, Edge>()
+  const order: string[] = []
+  const seen = new Set<string>()
+  let total = 0
+  let mapped = 0
+  for (const instance of instances) {
+    for (const element of instance.elements) {
+      if (!DEFORMABLE.has(element.type)) continue
+      total += 1
+      const assignment = element.region ? faceMaterials[element.region] : undefined
+      if (!assignment) continue
+      mapped += 1
+      if (!seen.has(assignment.key)) {
+        seen.add(assignment.key)
+        order.push(assignment.key)
+      }
+      const ring = element.connectivity
+      for (let i = 0; i < ring.length; i++) {
+        const one = ring[i]
+        const two = ring[(i + 1) % ring.length]
+        if (one === two) continue
+        const a = Math.min(one, two)
+        const b = Math.max(one, two)
+        const id = instance.name + '|' + a + '|' + b
+        let edge = edges.get(id)
+        if (!edge) {
+          edge = { instance: instance.name, a, b, materials: new Set(), count: 0 }
+          edges.set(id, edge)
+        }
+        edge.count += 1
+        edge.materials.add(assignment.key)
+      }
+    }
+  }
+  const perimeters: MaterialPerimeter[] = []
+  const interfaces: MaterialInterface[] = []
+  for (const edge of edges.values()) {
+    if (edge.count === 1 && edge.materials.size === 1) {
+      perimeters.push({
+        instance: edge.instance,
+        a: edge.a,
+        b: edge.b,
+        material: [...edge.materials][0],
+      })
+    } else if (edge.count === 2 && edge.materials.size === 2) {
+      // Exactly one interior FE edge shared by two differently assigned
+      // materials. Same-material regional seams keep size 1 and are skipped;
+      // an edge with an unknown neighbour is not guessed.
+      interfaces.push({
+        instance: edge.instance,
+        a: edge.a,
+        b: edge.b,
+        materials: [...edge.materials].sort(),
+      })
+    }
+  }
+  return { perimeters, interfaces, total, mapped, materials: order }
+}
+
+/** Cached per result instance list and pinned material map. */
+export function materialTopology(
+  instances: ResultInstance[] | undefined,
+  faceMaterials: Record<string, MaterialFaceAssignment> | undefined,
+): MaterialTopology {
+  const empty: MaterialTopology = {
+    perimeters: [],
+    interfaces: [],
+    total: 0,
+    mapped: 0,
+    materials: [],
+  }
+  if (!instances?.length || !faceMaterials) return empty
+  let byMaterials = topologyCache.get(instances)
+  if (!byMaterials) {
+    byMaterials = new WeakMap()
+    topologyCache.set(instances, byMaterials)
+  }
+  const cached = byMaterials.get(faceMaterials)
+  if (cached) return cached
+  const built = buildMaterialTopology(instances, faceMaterials)
+  byMaterials.set(faceMaterials, built)
+  return built
+}
+
+function outlineSurface(
+  instance: ResultInstance,
+  pairs: { a: number; b: number }[],
+  color: string,
+  key: string,
+  props: ViewportProps,
+  extra: Pick<Surface, 'overlay' | 'materials' | 'width'>,
+): Surface | null {
+  if (!pairs.length) return null
+  const displacement = new Map(
+    (props.results?.frame?.displacements[instance.name] ?? []).map((row) => [
+      row[0],
+      row.slice(1),
+    ]),
+  )
+  const coords = new Map(instance.nodes.map((row) => [row[0], row.slice(1)]))
+  const deformed = !!props.deformed
+  const scale = props.deformationScale ?? 1
+  const index = new Map<number, number>()
+  const points: number[][] = []
+  const cells: number[][] = []
+  const add = (label: number) => {
+    const existing = index.get(label)
+    if (existing !== undefined) return existing
+    const xyz = coords.get(label)
+    if (!xyz) return -1
+    const u = displacement.get(label)
+    const position = deformed && u ? xyz.map((x, i) => x + (u[i] ?? 0) * scale) : xyz
+    const next = points.length
+    points.push(position)
+    index.set(label, next)
+    return next
+  }
+  for (const pair of pairs) {
+    const a = add(pair.a)
+    const b = add(pair.b)
+    if (a >= 0 && b >= 0) cells.push([a, b])
+  }
+  if (!cells.length) return null
+  return {
+    key,
+    kind: 'edge',
+    points,
+    cells,
+    color,
+    meshEdges: false,
+    instance: instance.name,
+    contour: false,
+    ...extra,
+  }
+}
+
+/**
+ * Material perimeters (material-specific colour) and internal interfaces (one
+ * thicker neutral line, associated with both materials).
+ *
+ * Coordinates use the exact displayed frame: the same nodal displacements, the
+ * Deformed toggle and the deformation scale as the drawn surface. The overlays
+ * are separate line surfaces, so they are not pick or probe targets and their
+ * actors are reused while the topology is unchanged.
+ */
+export function materialOutlineSurfaces(props: ViewportProps): Surface[] {
+  if (!props.materialOutlines || !props.results) return []
+  const topology = materialTopology(props.results.instances, props.faceMaterials)
+  if (!topology.mapped) return []
+  const instances = new Map(props.results.instances.map((row) => [row.name, row]))
+  const surfaces: Surface[] = []
+  const byMaterial = new Map<string, { instance: string; pairs: { a: number; b: number }[] }[]>()
+  for (const perimeter of topology.perimeters) {
+    const key = perimeter.instance + '|' + perimeter.material
+    let group = byMaterial.get(key)
+    if (!group) {
+      group = []
+      byMaterial.set(key, group)
+    }
+    let bucket = group.find((entry) => entry.instance === perimeter.instance)
+    if (!bucket) {
+      bucket = { instance: perimeter.instance, pairs: [] }
+      group.push(bucket)
+    }
+    bucket.pairs.push({ a: perimeter.a, b: perimeter.b })
+  }
+  for (const [key, buckets] of byMaterial) {
+    const color = props.faceMaterials ? colorOf(key, props.faceMaterials) : '#12262c'
+    for (const bucket of buckets) {
+      const instance = instances.get(bucket.instance)
+      if (!instance) continue
+      const surface = outlineSurface(
+        instance,
+        bucket.pairs,
+        color,
+        [bucket.instance, 'material-perimeter', key].join('#'),
+        props,
+        { overlay: 'material-perimeter', materials: [key], width: 2.5 },
+      )
+      if (surface) surfaces.push(surface)
+    }
+  }
+  const byInstance = new Map<string, MaterialInterface[]>()
+  for (const item of topology.interfaces) {
+    const list = byInstance.get(item.instance) ?? []
+    list.push(item)
+    byInstance.set(item.instance, list)
+  }
+  for (const [name, list] of byInstance) {
+    const instance = instances.get(name)
+    if (!instance) continue
+    const surface = outlineSurface(
+      instance,
+      list.map((item) => ({ a: item.a, b: item.b })),
+      '#102b33',
+      name + '#material-interface',
+      props,
+      {
+        overlay: 'material-interface',
+        materials: [...new Set(list.flatMap((item) => item.materials))],
+        width: 3.2,
+      },
+    )
+    if (surface) surfaces.push(surface)
+  }
+  return surfaces
+}
+
+function colorOf(
+  key: string,
+  faceMaterials: Record<string, MaterialFaceAssignment>,
+): string {
+  const entry = Object.values(faceMaterials).find((row) => row.key === key)
+  return entry?.color ?? '#12262c'
+}
+
+/**
  * Bounds that cover the whole run, so fitting once cannot clip later frames.
  * The recorded display metadata is authoritative; the legacy estimate only
  * applies to a retained result that predates it.
@@ -425,6 +719,10 @@ export function makeScene(props: ViewportProps): Scene {
         })
       }
     }
+    // Material overlays are appended after the field surfaces: they are a
+    // separate display layer, independent of mesh edges, node markers and the
+    // selected field, and they never become probe or pick targets.
+    surfaces.push(...materialOutlineSurfaces(props))
     return {
       surfaces,
       range,

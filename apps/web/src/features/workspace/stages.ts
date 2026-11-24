@@ -3,10 +3,11 @@
  * visibility and panel rendering all read this table, so inserting a stage
  * cannot send the user to the wrong tool.
  *
- * Prepare and Submit are not a stage any more: they live in the always-visible
- * action group under the left workflow. Historical numeric storage mapped
- * 7 = Review/Run and 8 = Results; those decodes are kept here so an existing
- * tab or saved selection reopens somewhere useful without shifting indexes.
+ * Prepare and Submit are not a stage any more: they live at the top of the
+ * Results properties, one group, reachable before any artifact exists.
+ * Historical numeric storage mapped 7 = Review/Run and 8 = Results; those
+ * decodes are kept here so an existing tab or saved selection reopens
+ * somewhere useful without shifting indexes.
  */
 export const STAGE_ORDER = [
   'import',

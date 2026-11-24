@@ -17,8 +17,12 @@ import {
   LoaderCircle,
   MousePointer2,
   Play,
+  RefreshCw,
+  RotateCcw,
   Save,
+  SaveAll,
   ScanLine,
+  FolderOpen,
   SlidersHorizontal,
   Waypoints,
 } from 'lucide-react'
@@ -30,6 +34,7 @@ import {
   err,
   go,
   replaceRoute,
+  replaceRouteSilent,
   request,
   type FixtureInfo,
   type Job,
@@ -51,6 +56,7 @@ import { STAGE_LABELS, WorkflowNavigation } from './features/workspace/WorkflowN
 import { workflowStates } from './features/workspace/workflowStates'
 import { findingKey, findingVars, type Readiness } from './features/workspace/readiness'
 import { AnalysisActions } from './features/workspace/AnalysisActions'
+import { useAutoSave } from './features/workspace/autosave'
 import { motionDelta, stepPlan } from './features/workspace/stepSequence'
 import {
   MESH_STAGES,
@@ -258,6 +264,17 @@ export default function Workspace({ initial, locked, notify }: Props) {
     [readinessLoading, setReadinessLoading] = useState(true)
   const [runName, setRunName] = useState(() => t('review.defaultRunName')),
     [cpus, setCpus] = useState(1)
+  // Portable file: the active pathname and the exact fingerprint this session
+  // last wrote. A different on-disk file is a conflict until overwrite is chosen.
+  const [filePath, setFilePath] = useState('')
+  const [fileSha, setFileSha] = useState('')
+  const [fileDialog, setFileDialog] = useState(false)
+  const [folderDraft, setFolderDraft] = useState('')
+  const [nameDraft, setNameDraft] = useState('')
+  const [fileBusy, setFileBusy] = useState(false)
+  // Folder captured at submit, so the worker can publish the .aqresult even when
+  // the browser tab is closed.
+  const [outputDir, setOutputDir] = useState('')
   // Narrow and zoomed layouts can collapse the workflow/properties panes so the
   // canvas and the primary actions remain reachable without clipping.
   const [panesOpen, setPanesOpen] = useState(true)
@@ -307,10 +324,74 @@ export default function Workspace({ initial, locked, notify }: Props) {
   const busy = working || !!drawingJob
   // Semantic persisted-value equality: returning exactly to the saved values
   // must clear the dirty state even though the object identity changed.
-  const dirty = useMemo(
-    () => JSON.stringify(p) !== JSON.stringify(rev.setup),
-    [p, rev.setup],
-  )
+  const serializedProject = useMemo(() => JSON.stringify(p), [p])
+  const savedProject = useMemo(() => JSON.stringify(rev.setup), [rev.setup])
+  const dirty = serializedProject !== savedProject
+  const archivedModel = rev.archived || rev.group_archived
+  /**
+   * One current model, one working head. A valid committed edit replaces the
+   * current setup automatically; the model identity (and every immutable
+   * revision a run already points at) stays unchanged. A locked replay and an
+   * archived model are read-only and never write.
+   */
+  const autosave = useAutoSave({
+    projectId: rev.project,
+    baseId: rev.id,
+    baseline: savedProject,
+    // A 3D extrusion preview is still an editable model (its name, dimension
+    // and extrusion settings persist); only simulation is deferred.
+    enabled: !locked && !archivedModel,
+    onSaved: (saved, sent, adopt) => {
+      setRev(saved)
+      // Adopt the server-normalized setup when no newer edit arrived while the
+      // write was in flight; otherwise the newer draft stays on screen. A reload
+      // or a rebased write explicitly adopts the newest committed document.
+      setP((current) =>
+        adopt || JSON.stringify(current) === JSON.stringify(sent) ? saved.setup : current,
+      )
+      // Follow the head in the URL without a router-visible remount, so focus,
+      // selection, the viewport camera and the active stage survive the save.
+      replaceRouteSilent('workspace/' + saved.id)
+    },
+  })
+  const savePhase = autosave.state.phase
+  // The action handlers read the newest rendered draft, never a stale closure.
+  const latestDraft = useRef(p)
+  latestDraft.current = p
+  useEffect(() => {
+    if (locked || !dirty) return
+    autosave.queue(p)
+    // The serialized draft is the only change signal; queueing is idempotent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serializedProject, savedProject, locked])
+  useEffect(() => {
+    // Restore the active file for this model. The fingerprint is what makes an
+    // external edit a conflict rather than a silent overwrite.
+    try {
+      const raw = localStorage.getItem('model-file:' + initial.project)
+      const parsed = raw ? (JSON.parse(raw) as { path?: string; sha?: string }) : null
+      setFilePath(parsed?.path ?? '')
+      setFileSha(parsed?.sha ?? '')
+    } catch {
+      setFilePath('')
+      setFileSha('')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial.project])
+  // Ctrl+S flushes the current model to the portable file. A ref keeps the
+  // listener stable while the handler sees the newest path and head.
+  const saveShortcut = useRef<() => void>(() => undefined)
+  saveShortcut.current = saveModel
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault()
+        saveShortcut.current()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [])
   const problem = useCallback(
     (e: unknown) => {
       setIssue(err(e))
@@ -640,7 +721,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
-  const archivedModel = rev.archived || rev.group_archived
   function edit(fn: (next: Project) => void) {
     if (locked || archivedModel) return
     setP((old) => {
@@ -881,19 +961,20 @@ export default function Workspace({ initial, locked, notify }: Props) {
     // its own scrolling pane; a previous stage's scroll position is not kept.
     requestAnimationFrame(() => rightPane.current?.scrollTo({ top: 0 }))
   }
+  /**
+   * Commit every valid pending edit and return the head the next operation must
+   * use. Callers that queue work (mesh, partition, deck, submit, duplicate) await
+   * this first, so work is never queued from the previous settings. A failed or
+   * conflicting write throws and the operation is abandoned with its cause.
+   */
   async function save() {
     assertNumericDrafts()
-    if (!dirty) return rev
-    const saved = await request<Revision>('/api/projects/' + rev.project, 'PUT', {
-      base: rev.id,
-      setup: p,
-    })
-    replaceRoute('workspace/' + saved.id)
-    setRev(saved)
-    setP(saved.setup)
-    // The mesh is not cleared: its identity decides whether it is still reusable.
-    message(t('status.revisionSaved', { number: saved.number }))
-    return saved
+    // Register the newest rendered draft synchronously: the debounced effect may
+    // not have run yet, and a queued job must never use the previous settings.
+    autosave.queue(latestDraft.current)
+    const saved = await autosave.flush()
+    if (saved) message('')
+    return saved ?? rev
   }
   function cutPoints(): number[] {
     return [cutStart.x, cutStart.y, cutEnd.x, cutEnd.y]
@@ -920,10 +1001,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
       notify(t('partition.chooseTarget'))
       return
     }
-    if (dirty) {
-      notify(t('partition.saveFirst'))
-      return
-    }
+    // Any pending edit is committed by the preview/apply flush; arming the tool
+    // never forces a manual save first.
     resetCut()
     setCutArmed(true)
     setCutPrecision(false)
@@ -958,11 +1037,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
     const requestId = ++cutRequest.current
     setCutBusy(true)
     try {
+      // Commit the visible draft first. Preview and commit then share one saved
+      // base, so the child IDs the engineer reviews are the IDs that are saved.
+      const base = await save()
       const result = await request<{ plan: PartitionPlan }>('/api/partition/preview', 'POST', {
-        // Preview and commit use the same saved base and target, so derived child
-        // IDs agree. A draft is never the preview authority.
-        setup: rev.setup,
-        base: rev.id,
+        setup: base.setup,
+        base: base.id,
         face: activeCutFace.id,
         strokes: strokes.map((stroke) => [
           [stroke.a[0], stroke.a[1]],
@@ -1018,11 +1098,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
     if (!cutStrokes.length) return
     setCutBusy(true)
     try {
+      // A partition is its own validated operation, but it still starts from the
+      // committed head so preview and commit describe the same base revision.
+      const base = await save()
       const saved = await request<Revision>(
-        '/api/projects/' + rev.project + '/partition',
+        '/api/projects/' + base.project + '/partition',
         'POST',
         {
-          base: rev.id,
+          base: base.id,
           face: activeCutFace.id,
           strokes: cutStrokes.map((stroke) => [
             [stroke.a[0], stroke.a[1]],
@@ -1085,11 +1168,13 @@ export default function Workspace({ initial, locked, notify }: Props) {
   }
   async function prepareDeck() {
     assertNumericDrafts()
-    // The server rechecks the same decision; this is the visible gate only.
-    if (!readiness?.can_prepare || dirty || !compatibleMesh || !fixtureReviewed || pendingDeck)
-      return
+    // Commit the visible edit before the deck is prepared: a deck always names
+    // the current head revision, never the previous settings. The server
+    // rechecks the same action-specific decision and stays authoritative.
+    const head = await save()
+    if (!compatibleMesh || !fixtureReviewed || pendingDeck) return
     const job = await request<Job>('/api/decks', 'POST', {
-      revision: rev.id,
+      revision: head.id,
       token: crypto.randomUUID(),
       mesh: compatibleMesh.id,
       // The exact fixture the engineer reviewed. If another tab saved a newer
@@ -1139,17 +1224,100 @@ export default function Workspace({ initial, locked, notify }: Props) {
   }
   async function submit() {
     assertNumericDrafts()
-    if (!readiness?.can_submit || !deckReady || !deck) return
+    // Submit-only settings are validated locally, then the current head is
+    // flushed so the run pins the setup the engineer can see.
+    const head = await save()
+    if (!deckReady || !deck) return
     const r = await request<Job>('/api/runs', 'POST', {
       name: runName,
-      revision: rev.id,
+      revision: head.id,
       deck: deck.id,
       token: token.current,
       cpus,
       mode: 'ABAQUS',
+      output_dir: outputDir.trim() || undefined,
     })
     token.current = crypto.randomUUID()
     go('diagnostics/' + r.id)
+  }
+  function sanitizedFile(name: string) {
+    return (
+      name
+        .trim()
+        .replace(/[^0-9A-Za-z._-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 60) || 'model'
+    )
+  }
+  async function writeModel(path: string, overwrite = false) {
+    setFileBusy(true)
+    try {
+      const saved = await request<{ path: string; sha256: string }>(
+        '/api/files/model/save',
+        'POST',
+        {
+          revision: rev.id,
+          path,
+          base_sha: fileSha || undefined,
+          overwrite,
+        },
+      )
+      setFilePath(saved.path)
+      setFileSha(saved.sha256)
+      try {
+        localStorage.setItem(
+          'model-file:' + rev.project,
+          JSON.stringify({ path: saved.path, sha: saved.sha256 }),
+        )
+      } catch {
+        // The pathname is still shown for this session.
+      }
+      notify(t('file.savedTo', { path: saved.path }))
+    } catch (error) {
+      const message = err(error)
+      if (!overwrite && /differs from the version/i.test(message)) {
+        if (window.confirm(t('file.overwriteConfirm', { path }))) {
+          setFileBusy(false)
+          await writeModel(path, true)
+          return
+        }
+      } else {
+        notify(message)
+      }
+    } finally {
+      setFileBusy(false)
+    }
+  }
+  function saveModel() {
+    if (locked || archivedModel) return
+    if (filePath) {
+      void writeModel(filePath)
+      return
+    }
+    beginSaveAs()
+  }
+  function beginSaveAs() {
+    setFolderDraft(filePath ? filePath.replace(/[\\/][^\\/]*$/, '') : '')
+    setNameDraft(filePath ? filePath.split(/[\\/]/).pop() || '' : sanitizedFile(rev.setup.name) + '.aqmodel')
+    setFileDialog(true)
+  }
+  async function chooseSaveFolder() {
+    try {
+      const picked = await request<{ path: string }>(
+        '/api/files/pick?mode=folder&title=' + encodeURIComponent(t('file.chooseFolder')),
+      )
+      if (picked.path) setFolderDraft(picked.path)
+    } catch (error) {
+      notify(err(error))
+    }
+  }
+  function commitSaveAs() {
+    const folder = folderDraft.trim().replace(/[\\/]+$/, '')
+    const name = nameDraft.trim()
+    if (!folder || !name) return
+    const path = folder + '/' + (name.toLowerCase().endsWith('.aqmodel') ? name : name + '.aqmodel')
+    setFileDialog(false)
+    void writeModel(path)
   }
   async function importFile(f: File) {
     const r = await save(),
@@ -1195,6 +1363,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
             test_data: (detail.card.test_data ?? []).map(
               (row) => [row[0], row[1], row[2]] as [number, number, number],
             ),
+            family: detail.card.family ?? 'polymer',
             library_id: detail.id,
             library_version: detail.current_version,
           }
@@ -1259,21 +1428,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
           ? t('workspace.extrusionPreview')
           : blockedReason
             ? blockedReason
-            : dirty
-              ? t('status.unsaved')
-              : fixturePending
-                ? t('hint.fixturePending')
-                : readinessLoading && !readiness
-                  ? t('actions.checking')
-                  : readinessError
-                    ? t('actions.readinessUnavailable')
-                    : readinessMismatch
-                      ? t('actions.checking')
-                      : !readiness!.can_prepare
-                        ? prepareIssue
-                          ? issueText(prepareIssue)
-                          : t('actions.notReady')
-                        : ''
+            : savePhase === 'error'
+              ? t('status.saveFailedReason')
+              : dirty || savePhase === 'saving'
+                ? t('status.saving')
+                : fixturePending
+                  ? t('hint.fixturePending')
+                  : readinessLoading && !readiness
+                    ? t('actions.checking')
+                    : readinessError
+                      ? t('actions.readinessUnavailable')
+                      : readinessMismatch
+                        ? t('actions.checking')
+                        : !readiness!.can_prepare
+                          ? prepareIssue
+                            ? issueText(prepareIssue)
+                            : t('actions.notReady')
+                          : ''
   const submitReason = prepareReason
     ? prepareReason
     : !readiness!.can_submit
@@ -1343,18 +1514,107 @@ export default function Workspace({ initial, locked, notify }: Props) {
             </>
           ) : (
             <>
+              {/* Automatic persistence: the state is visible, but there is no
+                  manual Save revision step in the ordinary workspace. Duplicate
+                  remains the explicit way to branch into an independent model. */}
+              <span
+                className="save-state"
+                data-testid="save-state"
+                data-state={savePhase}
+                data-dirty={dirty ? 'true' : 'false'}
+                aria-live="polite"
+              >
+                {savePhase === 'saving' || savePhase === 'pending' ? (
+                  <LoaderCircle className="spin" />
+                ) : savePhase === 'error' ? (
+                  <Activity />
+                ) : (
+                  <CheckCheck />
+                )}
+                {savePhase === 'saving'
+                  ? t('status.saving')
+                  : savePhase === 'pending'
+                    ? t('status.pendingSave')
+                    : savePhase === 'error'
+                      ? t('status.saveFailed')
+                      : t('status.autosaved')}
+              </span>
+              {savePhase === 'error' && (
+                <button
+                  type="button"
+                  data-testid="save-retry"
+                  onClick={() => void execute(() => autosave.retry())}
+                >
+                  <RefreshCw />
+                  {t('actions.retry')}
+                </button>
+              )}
+              {savePhase === 'error' && autosave.state.conflicts.length > 0 && (
+                // A field changed in both windows cannot be merged. Keep the
+                // local draft until the engineer chooses the other revision.
+                <button
+                  type="button"
+                  data-testid="save-reload"
+                  onClick={() => void execute(() => autosave.reload())}
+                >
+                  <RotateCcw />
+                  {t('actions.reload')}
+                </button>
+              )}
+              <span
+                className="model-file"
+                data-testid="model-file"
+                title={filePath || t('file.noFile')}
+              >
+                {filePath ? filePath.split(/[\\/]/).pop() : t('file.notSaved')}
+              </span>
               <button
-                disabled={!dirty || busy || !!blockedReason || archivedModel}
-                title={archivedModel ? t('workspace.archivedReadOnly') : blockedReason || undefined}
-                onClick={() => execute(save)}
+                type="button"
+                data-testid="model-save"
+                disabled={fileBusy || archivedModel}
+                onClick={saveModel}
+                title={t('file.saveHint')}
               >
                 <Save />
-                {t('workspace.saveRevision')}
+                {t('file.save')}
+              </button>
+              <button
+                type="button"
+                data-testid="model-save-as"
+                disabled={fileBusy || archivedModel}
+                onClick={beginSaveAs}
+              >
+                <SaveAll />
+                {t('file.saveAs')}
+              </button>
+              <button
+                disabled={busy || archivedModel}
+                title={archivedModel ? t('workspace.archivedReadOnly') : undefined}
+                onClick={() =>
+                  execute(async () => {
+                    // Duplicate the latest valid setup, not the last manual save.
+                    const head = await save()
+                    const copy = await request<Revision>(
+                      '/api/projects/' + head.project + '/duplicate',
+                      'POST',
+                      {},
+                    )
+                    go('workspace/' + copy.id)
+                  })
+                }
+              >
+                <Copy />
+                {t('dashboard.duplicate')}
               </button>
             </>
           )}
         </div>
       </div>
+      {savePhase === 'error' && (
+        <p className="error-text blocked-banner" role="alert" data-testid="save-error">
+          {autosave.state.error}
+        </p>
+      )}
       {archivedModel && !locked && (
         <p className="notice blocked-banner" data-testid="archived-banner">
           {t('workspace.archivedReadOnly')}
@@ -1365,8 +1625,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
           {t('materials.err.finite')} — {blockedReason}
         </p>
       )}
+      {/* Keep the next-action banner mounted across a background save: hiding it
+          while the head advances changed the canvas height and re-fitted the
+          viewport. It reflects the last known readiness and updates when the
+          new document arrives. */}
       {!locked &&
-        !dirty &&
         readiness?.first_blocker &&
         (STAGE_ORDER as readonly string[]).includes(readiness.first_blocker.stage) && (
           <div className="readiness-banner" aria-live="polite" data-testid="next-action">
@@ -1437,46 +1700,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 if (target) target.alias = alias
               })
             }
-          />
-          <AnalysisActions
-            locked={locked}
-            archived={archivedModel}
-            pendingDeck={!!pendingDeck}
-            preparing={actionBusy === 'prepare'}
-            submitting={actionBusy === 'submit'}
-            deck={deck}
-            deckReady={deckReady}
-            prepareReason={prepareReason}
-            submitReason={submitReason}
-            runName={runName}
-            setRunName={setRunName}
-            cpus={cpus}
-            setCpus={setCpus}
-            cap={cap}
-            activeRun={activeRun}
-            readinessError={readinessError}
-            readinessLoading={readinessLoading}
-            onRetry={() => refresh((g) => g + 1)}
-            onPrepare={() => {
-              void execute(async () => {
-                setActionBusy('prepare')
-                try {
-                  await prepareDeck()
-                } finally {
-                  setActionBusy(null)
-                }
-              })
-            }}
-            onSubmit={() => {
-              void execute(async () => {
-                setActionBusy('submit')
-                try {
-                  await submit()
-                } finally {
-                  setActionBusy(null)
-                }
-              })
-            }}
           />
         </aside>
         <section className="canvas-card card">
@@ -2219,15 +2442,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       {t('body.excluded')}
                     </p>
                   )}
-                  <button
-                    className="primary wide"
-                    disabled={busy || !dirty}
-                    title={dirty ? undefined : t('contact.saved')}
-                    onClick={() => execute(save)}
-                  >
-                    <CheckCheck />
-                    {t('contact.save')}
-                  </button>
+                  {/* Contact values are ordinary model settings: a valid edit is
+                      committed automatically. There is no separate save action
+                      that could discard an unrelated pending setup edit. */}
+                  <small>{t('contact.autoSaved')}</small>
                   <small>{t('contact.noFixtureAction')}</small>
                 </>
               )}
@@ -2417,7 +2635,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <p className="quality-note subtle" data-testid="motion-zero-hold">
                     {t('motion.zeroHolds')}
                   </p>
-                  {motionFinding && !dirty && (
+                  {motionFinding && readiness?.revision === rev.id && (
                     <p className="error-text" role="alert" data-testid="motion-error">
                       {t(
                         findingKey(motionFinding.code),
@@ -2425,9 +2643,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       )}
                     </p>
                   )}
+                  {/* The assessment describes the committed mesh. A pending
+                      automatic save is not a reason to hide it or the fields. */}
                   <AssemblyDiagnostics
                     assessment={readiness?.assembly ?? null}
-                    dirty={dirty}
+                    dirty={false}
                   />
                   {/* Analysis settings live with Motion; the viewport is not
                       touched. Solver thickness stays read-only so a navigation
@@ -2647,7 +2867,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       {t('mesh.generate')}
                     </button>
                   )}
-                  {meshJob && !dirty && (
+                  {meshJob && (
                     <div className="build-info" data-testid="mesh-status">
                       <strong>
                         {compatibleMesh ? t('mesh.meshReady') : t('mesh.meshStale')}
@@ -2655,7 +2875,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       {meshJob.diagnostic && <p className="error-text">{meshJob.diagnostic}</p>}
                     </div>
                   )}
-                  {compatibleMesh && !dirty && (
+                  {compatibleMesh && (
                     <>
                       <h3>{t('mesh.identity')}</h3>
                       <Facts
@@ -2671,7 +2891,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       <p>{t('review.meshOwnedByMesh')}</p>
                     </>
                   )}
-                  {quality && meshFile && compatibleMesh && !dirty && (
+                  {quality && meshFile && compatibleMesh && (
                     <MeshReview
                       quality={quality}
                       project={p}
@@ -2707,7 +2927,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   />
                 </>
               )}
-              {stage === 'mounting' && !dimension && !locked && compatibleMesh && !dirty && (
+              {/* The fixed-node picker belongs to a compatible mesh, not to the
+                  absence of a pending automatic save: an unrelated friction or
+                  motion edit must keep Mounting visible and usable. */}
+              {stage === 'mounting' && !dimension && !locked && compatibleMesh && (
                 <>
                   <h3>{t('mesh.fixedNodes')}</h3>
                   <p>{t('mesh.fixedNodesHelp')}</p>
@@ -2788,6 +3011,51 @@ export default function Workspace({ initial, locked, notify }: Props) {
             </fieldset>
             {stage === 'results' && (
               <>
+                {/* One place to prepare and run: the action group lives at the
+                    top of the Results properties, so it is reachable before a
+                    mesh or deck exists and there is no duplicate control set. */}
+                <AnalysisActions
+                  locked={locked}
+                  archived={archivedModel}
+                  pendingDeck={!!pendingDeck}
+                  preparing={actionBusy === 'prepare'}
+                  submitting={actionBusy === 'submit'}
+                  deck={deck}
+                  deckReady={deckReady}
+                  prepareReason={prepareReason}
+                  submitReason={submitReason}
+                  runName={runName}
+                  setRunName={setRunName}
+                  cpus={cpus}
+                  setCpus={setCpus}
+                  outputDir={outputDir}
+                  setOutputDir={setOutputDir}
+                  cap={cap}
+                  activeRun={activeRun}
+                  readinessError={readinessError}
+                  readinessLoading={readinessLoading}
+                  onRetry={() => refresh((g) => g + 1)}
+                  onPrepare={() => {
+                    void execute(async () => {
+                      setActionBusy('prepare')
+                      try {
+                        await prepareDeck()
+                      } finally {
+                        setActionBusy(null)
+                      }
+                    })
+                  }}
+                  onSubmit={() => {
+                    void execute(async () => {
+                      setActionBusy('submit')
+                      try {
+                        await submit()
+                      } finally {
+                        setActionBusy(null)
+                      }
+                    })
+                  }}
+                />
                 <h2>{t('results.revisionResults')}</h2>
                 {related.length === 0 ? (
                   <p>{t('results.noRuns')}</p>
@@ -2813,15 +3081,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
         </aside>
       </div>
       <div className={'statusbar ' + (issue ? 'has-error' : '')} role="status">
-        {busy ? <LoaderCircle className="spin" /> : issue ? <Activity /> : <CheckCheck />}
+        {busy || savePhase === 'saving' || savePhase === 'pending' ? (
+          <LoaderCircle className="spin" />
+        ) : issue || savePhase === 'error' ? (
+          <Activity />
+        ) : (
+          <CheckCheck />
+        )}
         <strong>
           {issue
             ? t('status.validation')
-            : dirty
-              ? t('status.unsaved')
-              : locked
-                ? t('status.historical')
-                : t('status.saved')}
+            : savePhase === 'error'
+              ? t('status.saveFailed')
+              : savePhase === 'saving' || savePhase === 'pending'
+                ? t('status.saving')
+                : locked
+                  ? t('status.historical')
+                  : t('status.autosaved')}
         </strong>
         <span>
           {issue ||
@@ -2841,11 +3117,61 @@ export default function Workspace({ initial, locked, notify }: Props) {
         <span className="spacer" />
         <span>
           <CircleDot />
-          {meshJob && !dirty
+          {meshJob
             ? labelFrom(t, 'phase', (deck ?? meshJob).phase)
             : t('status.localProject')}
         </span>
       </div>
+      {fileDialog && (
+        <div className="dialog-backdrop" role="presentation">
+          <form
+            className="dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('file.saveAs')}
+            data-testid="save-as-dialog"
+            onSubmit={(event) => {
+              event.preventDefault()
+              commitSaveAs()
+            }}
+          >
+            <h2>{t('file.saveAs')}</h2>
+            <p>{t('file.saveAsHelp')}</p>
+            <label>
+              {t('file.folder')}
+              <input
+                value={folderDraft}
+                placeholder="C:\\models"
+                onChange={(event) => setFolderDraft(event.target.value)}
+              />
+            </label>
+            <button type="button" onClick={() => void chooseSaveFolder()}>
+              <FolderOpen /> {t('file.browse')}
+            </button>
+            <label>
+              {t('file.fileName')}
+              <input
+                value={nameDraft}
+                maxLength={120}
+                onChange={(event) => setNameDraft(event.target.value)}
+              />
+            </label>
+            <div className="row-actions">
+              <button type="button" onClick={() => setFileDialog(false)}>
+                {t('common.cancel')}
+              </button>
+              <button
+                type="submit"
+                className="primary"
+                data-testid="save-as-confirm"
+                disabled={!folderDraft.trim() || !nameDraft.trim()}
+              >
+                {t('file.save')}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   )
 }

@@ -4,10 +4,11 @@ import { artifact } from '../../api'
 import { useI18n, labelFrom } from '../../i18n'
 
 /**
- * Prepare and Submit are one compact group under the left workflow, available
- * throughout editable 2D setup. The server's action-specific readiness decides
- * enablement; the browser adds only unsaved drafts and in-flight operations.
- * Prepare never enqueues a mesh and Submit uses the exact prepared deck.
+ * Prepare and Submit are one compact group at the top of the Results
+ * properties, available throughout editable 2D setup. The server's
+ * action-specific readiness decides enablement; the browser adds only unsaved
+ * drafts and in-flight operations. Prepare never enqueues a mesh and Submit
+ * uses the exact prepared deck.
  */
 export function AnalysisActions({
   locked,
@@ -23,6 +24,8 @@ export function AnalysisActions({
   setRunName,
   cpus,
   setCpus,
+  outputDir,
+  setOutputDir,
   cap,
   activeRun,
   readinessError,
@@ -44,6 +47,9 @@ export function AnalysisActions({
   setRunName: (value: string) => void
   cpus: number
   setCpus: (value: number) => void
+  /** Captured output folder for the portable result file (optional). */
+  outputDir: string
+  setOutputDir: (value: string) => void
   cap: Record<string, string>
   activeRun: Job | null
   readinessError: boolean
@@ -146,6 +152,16 @@ export function AnalysisActions({
               })}
             </a>
           )}
+          {activeRun?.result_file && (
+            <a
+              className="action-result-file"
+              data-testid="result-file"
+              href={'file:///' + activeRun.result_file.replace(/\\/g, '/')}
+              title={activeRun.result_file}
+            >
+              <FileText /> {activeRun.result_file.split(/[\\/]/).pop()}
+            </a>
+          )}
           <div className="action-run-row">
             <label className="action-field">
               {t('review.runName')}
@@ -170,6 +186,16 @@ export function AnalysisActions({
               />
             </label>
           </div>
+          <label className="action-field action-output">
+            {t('file.resultFolder')}
+            <input
+              data-testid="output-dir"
+              value={outputDir}
+              placeholder="C:\\results"
+              onChange={(event) => setOutputDir(event.target.value)}
+            />
+            <small>{t('file.resultFolderHint')}</small>
+          </label>
           <button
             type="button"
             className="action-submit"

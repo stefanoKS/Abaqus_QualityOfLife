@@ -348,6 +348,18 @@ def perform(row, owner):
             diagnostic=str(exc) or type(exc).__name__,
         )
     log(directory, fields["phase"])
+    # Publish the portable result file after a successful extraction, without the
+    # browser: the output folder was captured at submit. Solver success,
+    # extraction success and file publication stay separate states.
+    if extracting and fields.get("extraction") == "Succeeded" and row.get("output_dir"):
+        try:
+            from services import portable_files
+
+            published = portable_files.package_job(jid, allow_running=True)
+            fields.update(result_file=published["path"], publication="Saved")
+        except Exception as exc:  # noqa: BLE001 - publication failure is reported, not hidden
+            log(directory, "Result file not saved: " + str(exc))
+            fields.update(publication="Failed")
     # Serialize a last-moment cancellation against publishing the terminal state.
     with store.connection(True) as db:
         current = db.execute("SELECT owner,cancelled FROM jobs WHERE id=?", (jid,)).fetchone()

@@ -10,6 +10,15 @@ import { expect, test, type Page } from './fixtures'
 import { meshAndFixture } from './pipeline'
 import type { Job, Revision } from '../src/api'
 
+/** Prepare and Submit live at the top of the Results properties, once. */
+async function openResults(page: Page) {
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .locator('[data-stage="results"]')
+    .click()
+  await expect(page.getByTestId('action-group')).toBeVisible()
+}
+
 async function preparedModel(request: import('@playwright/test').APIRequestContext, name: string) {
   const revision: Revision = await (
     await request.post('/api/projects', { data: { name, example: true } })
@@ -26,12 +35,13 @@ async function newestDeck(
   return decks.find((job) => job.revision === revisionId) ?? null
 }
 
-test('reporting width 100 → 101 → 100 clears Unsaved and restores Prepare without a write', async ({
+test('a valid edit replaces the current head automatically and Prepare follows it', async ({
   page,
   request,
 }) => {
   const { revision, mesh } = await preparedModel(request, 'Prepare width revert')
   await page.goto('/#workspace/' + revision.id)
+  await openResults(page)
 
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   const submit = page.getByRole('button', { name: 'Submit Abaqus analysis' })
@@ -39,10 +49,8 @@ test('reporting width 100 → 101 → 100 clears Unsaved and restores Prepare wi
   await expect(submit).toBeDisabled()
   await expect(page.getByTestId('submit-reason')).toContainText('No input deck')
 
-  const writes: string[] = []
-  page.on('request', (req) => {
-    if (['PUT', 'POST'].includes(req.method()) && req.url().includes('/api/')) writes.push(req.url())
-  })
+  // The ordinary workspace no longer offers a manual Save revision gesture.
+  await expect(page.getByRole('button', { name: 'Save revision' })).toHaveCount(0)
 
   await page
     .getByRole('navigation', { name: 'Workflow' })
@@ -50,47 +58,66 @@ test('reporting width 100 → 101 → 100 clears Unsaved and restores Prepare wi
     .click()
   const width = page.getByLabel('Reporting width W (mm)')
   await expect(width).toHaveValue('100')
+
+  // A committed numeric edit is persisted without a Save click. Prepare pauses
+  // only while the write is genuinely in flight and then returns on its own.
   await width.fill('101')
   await width.press('Tab')
-  await expect(prepare).toBeDisabled()
-  await expect(page.getByTestId('prepare-reason')).toContainText('Unsaved changes')
-
-  await width.fill('100')
-  await width.press('Tab')
-  // Semantic equality, not object identity: returning to the saved value
-  // restores eligibility with no Save and no durable write.
+  await expect(page.getByTestId('save-state')).toHaveAttribute('data-state', 'saved', {
+    timeout: 15000,
+  })
+  await openResults(page)
+  await expect(page.locator('.crumb')).toContainText('Revision 02')
   await expect(prepare).toBeEnabled()
   await expect(page.getByTestId('prepare-reason')).toContainText('Ready to prepare')
-  await expect(page.locator('.statusbar')).not.toContainText('Unsaved changes')
-  expect(
-    writes.filter((url) => !url.includes('readiness') && !url.includes('/api/display')),
-  ).toHaveLength(0)
+
+  // A second committed edit replaces the head again; the model identity is
+  // unchanged and no form state is lost.
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Motion' })
+    .click()
+  await width.fill('100')
+  await width.press('Tab')
+  await expect(page.getByTestId('save-state')).toHaveAttribute('data-state', 'saved', {
+    timeout: 15000,
+  })
+  await openResults(page)
+  await expect(page.locator('.crumb')).toContainText('Revision 03')
+  await expect(prepare).toBeEnabled()
+  const head: Revision = await (
+    await request.get('/api/revisions/' + page.url().split('/').pop())
+  ).json()
+  expect(head.project).toBe(revision.project)
+  expect(head.setup.analysis.reporting_width).toBe(100)
 
   await prepare.click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
   await expect(submit).toBeEnabled()
-  const deck = await newestDeck(request, revision.id)
+  // The deck belongs to the head the engine can see, not to an older revision.
+  const deck = await newestDeck(request, head.id)
   expect(deck).toBeTruthy()
   expect(deck!.mesh).toBe(mesh.id)
-  const settled = (await (await request.get('/api/revisions/' + revision.id)).json()) as Revision
   const currentMesh = (await (await request.get('/api/meshes')).json()) as Job[]
   const active = currentMesh.find((job) => job.id === mesh.id)!
-  expect(settled.id).toBe(revision.id)
   expect(deck!.fixture_hash).toBe(active.fixture!.hash)
 
-  // A genuinely unsaved change is distinct from the revert: Save persists it,
-  // and the prepared deck belongs to the previous revision.
+  // A further valid edit advances the head again. The old deck is now stale:
+  // Submit is blocked for the new revision while Prepare stays available.
   await page
     .getByRole('navigation', { name: 'Workflow' })
     .getByRole('button', { name: 'Motion' })
     .click()
   await width.fill('101')
   await width.press('Tab')
-  await expect(page.getByTestId('prepare-reason')).toContainText('Unsaved changes')
-  await page.getByRole('button', { name: 'Save revision' }).click()
-  await expect(page.locator('.crumb')).toContainText('Revision 02')
-  await expect(prepare).toBeDisabled()
+  await expect(page.getByTestId('save-state')).toHaveAttribute('data-state', 'saved', {
+    timeout: 15000,
+  })
+  await openResults(page)
+  await expect(page.locator('.crumb')).toContainText('Revision 04')
+  await expect(prepare).toBeEnabled()
   await expect(submit).toBeDisabled()
+  await expect(page.getByTestId('submit-reason')).toContainText('No input deck')
 })
 
 test('a positive delta-Y motion from below the seal prepares and writes PANEL_RP, 2, 2, 3', async ({
@@ -136,6 +163,7 @@ test('a positive delta-Y motion from below the seal prepares and writes PANEL_RP
   ).toHaveLength(0)
 
   await page.goto('/#workspace/' + saved.id)
+  await openResults(page)
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   await expect(prepare).toBeEnabled()
   await prepare.click()
@@ -177,6 +205,7 @@ test('a warning-only missed path stays a warning and does not disable Prepare', 
   ).toBe(true)
 
   await page.goto('/#workspace/' + saved.id)
+  await openResults(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
   await page
     .getByRole('navigation', { name: 'Workflow' })
@@ -198,6 +227,7 @@ test('a failed readiness read is distinct from loading, disables actions and ret
     return route.continue()
   })
   await page.goto('/#workspace/' + revision.id)
+  await openResults(page)
   const error = page.getByTestId('readiness-error')
   await expect(error).toBeVisible()
   await expect(error).toContainText('Readiness could not be read')
@@ -210,7 +240,7 @@ test('a failed readiness read is distinct from loading, disables actions and ret
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
 })
 
-test('the left action group is the only Prepare/Submit owner after the stage removal', async ({
+test('the Results action group is the only Prepare/Submit owner after the stage removal', async ({
   page,
   request,
 }) => {
@@ -219,7 +249,14 @@ test('the left action group is the only Prepare/Submit owner after the stage rem
   const workflow = page.getByRole('navigation', { name: 'Workflow' })
   await expect(workflow.locator('[data-stage="review"]')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Review / Run' })).toHaveCount(0)
+  // No duplicate run controls anywhere in the workspace before Results opens.
+  await expect(page.getByTestId('prepare')).toHaveCount(0)
+  await openResults(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toHaveCount(1)
   await expect(page.getByRole('button', { name: 'Submit Abaqus analysis' })).toHaveCount(1)
   await expect(page.getByTestId('action-group')).toHaveCount(1)
+  // It is part of the Results properties, not the left workflow pane.
+  await expect(page.locator('.property-body [data-testid="action-group"]')).toHaveCount(1)
+  await expect(page.locator('.workflow-pane [data-testid="action-group"]')).toHaveCount(0)
+  await expect(page.locator('.left [data-testid="action-group"]')).toHaveCount(0)
 })

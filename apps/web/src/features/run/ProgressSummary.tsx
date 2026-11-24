@@ -19,6 +19,8 @@ export function ProgressSummary({
 }) {
   const { t, formatDateTime } = useI18n()
   const progress = progressOf(job, setup)
+  const active =
+    progress.active === null ? undefined : progress.steps[progress.active]
   const stale = isStale(job, now)
   const extractionFailed = ['Failed', 'Cancelled'].includes(job.extraction)
   const last = job.heartbeat ?? job.started ?? job.created
@@ -52,7 +54,29 @@ export function ProgressSummary({
             : t('progress.indeterminate')}
       </p>
 
-      <ol className="progress-steps" data-testid="progress-steps">
+      {/* The active step stays visible even when a short window scrolls the
+          detailed chips and facts below. */}
+      <p className="progress-current" data-testid="progress-current">
+        {progress.complete
+          ? t('progress.allStepsComplete')
+          : active
+            ? t('progress.currentStep', {
+                step: active.name,
+                role: t(active.role === 'body' ? 'run.roleBody' : 'run.roleDoor'),
+              })
+            : t('progress.noSteps')}
+      </p>
+
+      {/* Named, keyboard-reachable overflow: on a short window the card keeps its
+          intrinsic height and this region scrolls instead of clipping. */}
+      <div
+        className="progress-detail"
+        data-testid="progress-detail"
+        role="region"
+        aria-label={t('progress.details')}
+        tabIndex={0}
+      >
+        <ol className="progress-steps" data-testid="progress-steps">
         {progress.steps.map((step, index) => {
           const state = progress.complete
             ? 'complete'
@@ -77,7 +101,7 @@ export function ProgressSummary({
         })}
       </ol>
 
-      <dl className="progress-facts">
+      <dl className="progress-facts" data-testid="progress-facts">
         <div>
           <dt>{t('diag.solver')}</dt>
           <dd>{labelFrom(t, 'state', job.solver)}</dd>
@@ -99,7 +123,7 @@ export function ProgressSummary({
           <dd>{formatDateTime(last)}</dd>
         </div>
       </dl>
-
+      </div>
       {job.solver === 'Waiting for license' && (
         <p className="notice" data-testid="license-wait">
           {t('progress.licenseWait')}

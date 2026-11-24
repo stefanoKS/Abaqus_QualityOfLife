@@ -1,4 +1,5 @@
 import { expect, test, type Page } from './fixtures'
+import { saveRevision } from './save'
 import type { Revision } from '../src/api'
 
 async function create(request: import('@playwright/test').APIRequestContext, name: string) {
@@ -118,7 +119,7 @@ test('an assembly-tree rename is persisted without changing CAD identity', async
     tree.getByRole('button', { name: /^Closing panel/ }),
   ).toBeVisible()
 
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   const projects = (await (await request.get('/api/projects')).json()) as {
     id: string

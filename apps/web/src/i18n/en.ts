@@ -24,6 +24,26 @@ export const en: Dictionary = {
     'This model is a 3D extrusion preview. Simulation needs a 2D plane-stress drawing.',
   'readiness.drawing.digest_missing':
     "The drawing's source digest is missing. Import the original drawing again.",
+  'readiness.drawing.no_closed_region':
+    'The drawing has {open_profiles} open profile(s) and no closed seal, so it has zero material regions and cannot be meshed. Inspect or save the curves here; close the contour in CAD before simulation.',
+  'readiness.cae.no_material_data': 'The card has no material data.',
+  'readiness.cae.data_unreadable': 'The card data could not be decoded.',
+  'readiness.cae.hyperelastic_unsupported':
+    'Hyperelastic law is not implemented; a generic mapping would change the response.',
+  'readiness.cae.hyperfoam_unsupported':
+    'Hyperfoam coefficients cannot be converted into the validated uniaxial test law.',
+  'readiness.cae.plasticity_unsupported': 'Plasticity is not supported in this phase.',
+  'readiness.cae.viscoelasticity_unsupported': 'Viscoelasticity is not supported in this phase.',
+  'readiness.cae.mullins_unsupported': 'Mullins effect is not supported in this phase.',
+  'readiness.cae.creep_unsupported': 'Creep is not supported in this phase.',
+  'readiness.cae.rate_dependent_unsupported': 'Rate dependence is not supported in this phase.',
+  'readiness.cae.no_structural_law': 'The card has no structural law.',
+  'readiness.cae.elastic_not_isotropic': 'Only an isotropic elastic card can be mapped exactly.',
+  'readiness.cae.temperature_dependent': 'Temperature-dependent data is not supported.',
+  'readiness.cae.field_dependent': 'Field-dependent data is not supported.',
+  'readiness.cae.elastic_table_missing': 'The elastic table is missing or incomplete.',
+  'readiness.cae.density_missing': 'The density table is missing.',
+  'readiness.cae.elastic_value_out_of_range': 'A density, modulus or Poisson value is out of range.',
   'readiness.components.unassigned':
     '{count} components have no role. Assign their roles in Components.',
   'readiness.components.no_moving_panel':
@@ -47,6 +67,8 @@ export const en: Dictionary = {
     'The latest attempt was {status}, but an earlier compatible mesh is still usable. Check the displayed mesh.',
   'readiness.mounting.missing':
     'Fixed nodes are not reviewed. Select and save them in Mounting.',
+  'readiness.mounting.awaiting_mesh':
+    'Fixed nodes need a compatible mesh. Generate the mesh in Mesh first; the node picker stays available afterwards.',
   'readiness.mounting.reviewed': '{count} fixed nodes are saved.',
   'readiness.motion.travel_not_closing':
     'The travel is not a closing motion. Set a negative travel in Motion.',
@@ -108,6 +130,7 @@ export const en: Dictionary = {
     'Use New project to create one. Its first model opens empty and can import a DXF or DWG.',
   'dashboard.projects': 'Projects',
   'dashboard.runs': 'Simulation runs',
+  'dashboard.runsRegion': 'Simulation run list, scrollable',
   'dashboard.revision': 'Revision {number}',
   'dashboard.filterProject': 'Filter by project',
   'dashboard.filterModel': 'Filter by model',
@@ -237,6 +260,8 @@ export const en: Dictionary = {
   'contact.save': 'Save contact',
   'contact.saved': 'Contact configuration saved',
   'contact.noFixtureAction': 'This step never fixes an edge or writes WSFIX; that belongs to Mounting.',
+  'contact.autoSaved':
+    'Valid contact changes are saved automatically. There is no separate contact save, so unrelated setup edits are never discarded.',
   'body.excluded': 'Body panel imported — excluded from this analysis',
   'review.mounting': 'Mounting',
   'review.fixtureSummary': '{count} fixed nodes reviewed and saved',
@@ -395,11 +420,44 @@ export const en: Dictionary = {
   'materials.newLibraryVersion':
     '{name} has library version {version}. Adopting it changes only the material; geometry and the mesh stay reusable.',
   'materials.adoptVersion': 'Adopt v{version}',
+  'materials.family': 'Engineering family',
+  'materials.familyPolymer': 'Polymer (CPS4R quads)',
+  'materials.familyMetal': 'Deformable metal (CPS4 quads)',
   'materials.assignFromLibrary': 'Assign from the material library',
   'materials.chooseLibraryMaterial': 'Choose a library material',
   'materials.openLibrary': 'Open material library',
 
   'materialsLibrary.eyebrow': 'SHARED MATERIAL LIBRARY',
+  // Portable model and result files. A model is a folder document; the project
+  // history stays readable while the file workflow replaces it.
+  'file.title': 'File',
+  'file.new': 'New model',
+  'file.untitled': 'Untitled model',
+  'file.openModel': 'Open model…',
+  'file.openResult': 'Open result…',
+  'file.modelPath': 'Model file (.aqmodel)',
+  'file.resultPath': 'Result file (.aqresult)',
+  'file.browse': 'Browse…',
+  'file.open': 'Open',
+  'file.recent': 'Recent files',
+  'file.chooseModel': 'Choose an .aqmodel model file',
+  'file.chooseResult': 'Choose an .aqresult result file',
+  'file.noFile': 'This model is not saved to a file yet.',
+  'file.notSaved': 'Not saved to a file',
+  'file.save': 'Save',
+  'file.saveAs': 'Save As…',
+  'file.saveHint': 'Save the current model to its file (Ctrl+S)',
+  'file.saveAsHelp':
+    'Save the current model as an independent file. The original file and its runs keep their own identity.',
+  'file.folder': 'Folder',
+  'file.fileName': 'File name',
+  'file.savedTo': 'Saved to {path}',
+  'file.overwriteConfirm':
+    '{path} changed on disk since this session saved it. Overwrite the newer file?',
+  'file.chooseFolder': 'Choose a folder for the model file',
+  'file.resultFolder': 'Result folder (optional)',
+  'file.resultFolderHint':
+    'The worker writes the .aqresult here after a successful extraction, even when the browser is closed.',
   'materialsLibrary.title': 'Materials',
   'materialsLibrary.subtitle':
     'One versioned library shared by every project. A saved model keeps the exact version it was assigned.',
@@ -425,6 +483,23 @@ export const en: Dictionary = {
   'materialsLibrary.chooseModel': 'Choose a model',
   'materialsLibrary.importButton': 'Import cards',
   'materialsLibrary.imported': '{count} card(s) imported.',
+  'materialsLibrary.caeTitle': 'CAE library import',
+  'materialsLibrary.caeHelp':
+    'Reads an Abaqus/CAE .lib without executing it, shows what each card would become and registers only the eligible cards you select.',
+  'materialsLibrary.caeChoose': 'Choose a .lib file',
+  'materialsLibrary.caeSummary': '{eligible} of {total} cards eligible',
+  'materialsLibrary.caeFamily': 'Structural family for these cards',
+  'materialsLibrary.caeUnits': 'Declared unit basis',
+  'materialsLibrary.caeImport': 'Register {count} card(s)',
+  'materialsLibrary.caeImported': '{count} card(s) registered; {skipped} skipped or conflicting.',
+  'materialsLibrary.caeExportTitle': 'CAE library export',
+  'materialsLibrary.caeExportHelp':
+    'Writes the original CAE record bytes, verifies the round-trip and publishes the file atomically.',
+  'materialsLibrary.caeFolder': 'Output folder',
+  'materialsLibrary.caeBrowse': 'Choose folder',
+  'materialsLibrary.caeExport': 'Export .lib',
+  'materialsLibrary.caeExported': '{count} file(s) written; {skipped} skipped.',
+  'materialsLibrary.caeFolderTitle': 'Choose a folder for the exported CAE library',
   'materialsLibrary.save': 'Save material',
   'materialsLibrary.archive': 'Archive',
   'materialsLibrary.restore': 'Restore',
@@ -485,6 +560,7 @@ export const en: Dictionary = {
   'actions.title': 'Analysis actions',
   'actions.readinessUnavailable': 'Readiness could not be read. Prepare and Submit are paused.',
   'actions.retry': 'Retry',
+  'actions.reload': 'Reload revision',
   'actions.submittedSetup': 'Submitted setup · read-only',
   'actions.openRun': 'Open run diagnostics',
   'actions.downloadDeck': 'Download INP',
@@ -727,6 +803,12 @@ export const en: Dictionary = {
   'status.localProject': 'Local project',
   'status.revisionSaved': 'Revision {number} saved.',
   'status.fixtureSelection': 'Selecting fixed nodes · {count} nodes',
+  'status.saving': 'Saving changes…',
+  'status.pendingSave': 'Saving changes…',
+  'status.autosaved': 'Saved automatically',
+  'status.saveFailed': 'Save failed',
+  'status.saveFailedReason':
+    'The current edits are not saved. Retry the save before preparing or submitting.',
 
   'hint.roles': 'Assign the seal or door panel role to every component.',
   'hint.materials': 'Assign a material card to every section region.',
@@ -774,6 +856,13 @@ export const en: Dictionary = {
   'run.loop': 'Loop',
   'run.meshEdges': 'Mesh edges',
   'run.nodeMarkers': 'Node markers',
+  'run.materialOutlines': 'Material outlines',
+  'run.materialLegend': 'Materials in this result',
+  'run.materialInterfaceCount': '{count} material interfaces',
+  'run.materialPartial': '{mapped} of {total} elements mapped to a material',
+  'run.materialSingle': 'Single material: the outline shows its perimeter only.',
+  'run.materialNoMapping':
+    'This result has no regional material mapping, so outlines are unavailable.',
   'run.deformationScale': 'Deformation scale (×)',
   'run.probeMode': 'Probe mode',
   'run.probeNode': 'Probe node',
@@ -806,6 +895,8 @@ export const en: Dictionary = {
   'run.closingDirection': 'Closing direction',
   'run.doorTravel': 'Door panel travel along closing direction (mm)',
   'run.doorReaction': 'Door panel reaction along closing direction ({unit})',
+  'run.displacementAxis': 'Displacement (mm)',
+  'run.forceAxis': 'Force ({unit})',
   'run.panelU2': 'Panel U2 (mm)',
   'run.panelRF2': 'Panel RF2 ({unit})',
   'run.historyUnavailable': 'Panel history unavailable.',
@@ -856,6 +947,12 @@ export const en: Dictionary = {
   'progress.staleHeartbeat':
     'The worker heartbeat is stale. The displayed state may be out of date; do not assume the run is healthy.',
   'progress.noEta': 'No completion time is estimated.',
+  'progress.details': 'Progress details',
+  'progress.currentStep': 'Current step: {step} · {role}',
+  'progress.allStepsComplete': 'All steps complete.',
+  'progress.noSteps': 'No solver step has been reported yet.',
+  'progress.compactTitle': 'Run completed',
+  'progress.openDiagnostics': 'Open diagnostics',
   'diag.jobId': 'Job ID',
   'diag.inputHash': 'Input SHA-256',
   'diag.inputHashPending': 'Preparing',

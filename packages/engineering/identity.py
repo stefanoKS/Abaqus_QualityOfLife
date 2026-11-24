@@ -17,6 +17,15 @@ def canonical(data):
     )
 
 
+def _family(project: Project, material_id: str | None) -> str:
+    if not material_id:
+        return "polymer"
+    for material in project.materials:
+        if material.id == material_id:
+            return getattr(material, "family", "polymer")
+    return "polymer"
+
+
 def mesh_inputs(project: Project):
     """Return only the fields that change the produced mesh.
 
@@ -60,7 +69,10 @@ def mesh_inputs(project: Project):
             for e in project.edges
         ],
         # A cavity is meshed only when a material fills it, so only the presence
-        # of an assignment matters here, not which card it points at.
+        # of an assignment matters here, not which card it points at. The element
+        # family does change the produced element type, so a metal region adds it;
+        # the default reduced-integration polymer entry stays byte-identical so
+        # meshes stored before this policy remain reusable.
         "faces": [
             {
                 "id": f.id,
@@ -68,6 +80,11 @@ def mesh_inputs(project: Project):
                 "component": f.component,
                 "loops": f.loops,
                 "filled": f.material is not None,
+                **(
+                    {"element": "CPS4"}
+                    if _family(project, f.material) == "metal"
+                    else {}
+                ),
             }
             for f in project.faces
         ],

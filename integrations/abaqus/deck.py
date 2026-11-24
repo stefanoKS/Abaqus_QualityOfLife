@@ -185,6 +185,15 @@ def _mesh_parts(project, mesh):
                     f"Rubber quadrilateral element {e['id']} is CPS4; rubber uses "
                     "reduced integration (CPS4R). Regenerate the mesh."
                 )
+            if (
+                kind == "CPS4R"
+                and material is not None
+                and getattr(material, "family", "polymer") == "metal"
+            ):
+                raise ValueError(
+                    f"Metal quadrilateral element {e['id']} is CPS4R; deformable metal uses "
+                    "full integration (CPS4). Regenerate the mesh."
+                )
             points = [nodes[n] for n in node_ids]
             for i, point in enumerate(points):
                 prev, nxt = points[i - 1], points[(i + 1) % len(points)]

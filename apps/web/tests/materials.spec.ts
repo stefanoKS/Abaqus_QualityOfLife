@@ -1,4 +1,5 @@
 import { expect, test, type Page } from './fixtures'
+import { saveRevision } from './save'
 import type { LibraryDetail, LibrarySummary, MaterialImportResult, Revision } from '../src/api'
 
 async function create(
@@ -61,9 +62,10 @@ test('the library validates, versions, archives and restores material cards', as
   request,
 }) => {
   const revision = await create(request, 'Library UI')
+  // The retired model-local import panel is replaced by the explicit API and the
+  // CAE import panel; this test exercises the library editor.
+  await request.post('/api/materials/import', { data: { revision: revision.id } })
   await page.goto('/#materials')
-  await page.getByLabel('Model to import from').selectOption(revision.project)
-  await page.getByRole('button', { name: 'Import cards' }).click()
   await expect(row(page, 'Dense EPDM')).toBeVisible()
   await expect(row(page, 'Cellular EPDM')).toBeVisible()
 
@@ -185,7 +187,7 @@ test('workspace assigns a library material, adopts a newer version and reuses th
   await expect(assigned).toHaveCount(0)
   await expect(page.locator('.property-body')).toContainText('Dense EPDM')
 
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   let projects = (await (await request.get('/api/projects')).json()) as {
     id: string
@@ -207,6 +209,7 @@ test('workspace assigns a library material, adopts a newer version and reuses th
   await workflow.getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await workflow.locator('[data-stage="results"]').click()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', {
     timeout: 60000,
@@ -227,7 +230,7 @@ test('workspace assigns a library material, adopts a newer version and reuses th
   await expect(page.locator('.property-body')).toContainText('Dense EPDM')
   await expect(page.getByTestId('library-newer')).toBeVisible()
   await page.getByRole('button', { name: 'Adopt v3' }).click()
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 03')
   projects = (await (await request.get('/api/projects')).json()) as {
     id: string

@@ -81,6 +81,21 @@ export function replaceRoute(route: string) {
   window.dispatchEvent(new Event('abaqus-qol:route'))
 }
 
+/**
+ * Point the URL at the current working head without telling the router to
+ * rebuild the page. An automatic save advances the model inside the same form:
+ * remounting there would drop focus, an in-progress draft, the viewport camera,
+ * the selection and the active stage.
+ */
+export function replaceRouteSilent(route: string) {
+  try {
+    history.replaceState(null, '', '#' + route)
+  } catch {
+    // A denied history write only leaves the URL on the previous revision id;
+    // the open form and the saved head are unaffected.
+  }
+}
+
 const LAST_MODEL = 'abaqus-qol.lastModel'
 
 /** Remember the model the user explicitly opened, never a substituted one. */

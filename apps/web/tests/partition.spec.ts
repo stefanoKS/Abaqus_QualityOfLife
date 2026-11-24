@@ -7,6 +7,7 @@
  * and deck, and a sibling model is checked to be untouched.
  */
 import { expect, test, type Page } from './fixtures'
+import { saveRevision } from './save'
 import { meshAndDeck } from './pipeline'
 import type { Job, Revision } from '../src/api'
 
@@ -165,18 +166,20 @@ test('draw arbitrary guides in Components, apply once, then assign two materials
   await selectRegion(page, 'Mounting foot B')
   await page.getByTestId('assign-material').click()
   await page.getByLabel('Material card').selectOption({ label: 'Dense EPDM' })
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 03')
 
   // A topology change invalidates the prepared deck and requires remeshing.
-  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   const workflow = page.getByRole('navigation', { name: 'Workflow' })
+  await workflow.locator('[data-stage="results"]').click()
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await workflow.getByRole('button', { name: 'Mesh' }).click()
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
   await workflow.getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await workflow.locator('[data-stage="results"]').click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
@@ -454,7 +457,7 @@ test('reviewed native lip is selectable after viewport partition and reopen', as
   await expect(page.getByTestId('partition-target')).toContainText('Region 1 B')
   await page.getByTestId('assign-material').click()
   await page.getByLabel('Material card').selectOption({ label: 'Dense EPDM' })
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 05')
   const finalRevision: Revision = await (
     await request.get('/api/revisions/' + page.url().split('/').pop())
@@ -469,6 +472,7 @@ test('reviewed native lip is selectable after viewport partition and reopen', as
   await workflow.getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await workflow.locator('[data-stage="results"]').click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })

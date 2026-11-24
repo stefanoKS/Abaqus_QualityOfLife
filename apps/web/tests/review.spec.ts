@@ -1,4 +1,5 @@
 import { expect, test, type Page } from './fixtures'
+import { saveRevision } from './save'
 import { meshAndDeck } from './pipeline'
 import type { Job, Revision } from '../src/api'
 
@@ -21,6 +22,11 @@ function wsfix(inp: string) {
 
 async function openReview(page: Page, revision: Revision) {
   await page.goto('/#workspace/' + revision.id)
+  // Prepare and Submit live once, at the top of the Results properties.
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .locator('[data-stage="results"]')
+    .click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeVisible()
 }
 
@@ -56,7 +62,7 @@ test('Review prepares decks without ever enqueueing a mesh', async ({ page, requ
     .click()
   await page.getByLabel('Door panel stroke (mm)').fill('6.5')
   await page.getByLabel('Door panel stroke (mm)').press('Tab')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   const saved: Revision = await (
     await request.get('/api/revisions/' + page.url().split('/').pop())

@@ -140,6 +140,11 @@ def initialize():
         for name in ("mesh", "mesh_digest", "mesh_compat", "fixture_hash", "fixture_labels"):
             if name not in jobs_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+        # Captured output folder, published result file and its publication state
+        # are additive; an older job simply has none.
+        for name in ("output_dir", "result_file", "publication"):
+            if name not in jobs_columns:
+                db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
         # Compressible neo-Hookean library cards add two parameters; older
         # versions keep NULL and are read unchanged.
         material_columns = {
@@ -148,6 +153,14 @@ def initialize():
         for name in ("c10", "d1"):
             if name not in material_columns:
                 db.execute(f"ALTER TABLE material_versions ADD COLUMN {name} REAL")
+        # The engineering family and the CAE import provenance are additive: an
+        # older card reads as a polymer with no source and stays unchanged.
+        if "family" not in material_columns:
+            db.execute(
+                "ALTER TABLE material_versions ADD COLUMN family TEXT NOT NULL DEFAULT 'polymer'"
+            )
+        if "source" not in material_columns:
+            db.execute("ALTER TABLE material_versions ADD COLUMN source TEXT")
         # A DEMO job that never started cannot be executed any more. Retire it with
         # an explicit record instead of relabelling it or launching it as Abaqus.
         db.execute(
@@ -786,6 +799,7 @@ def submit(
     mesh=None,
     compat=None,
     expected_fixture=None,
+    output_dir=None,
 ):
     jid = token if mode == "IMPORT" else new_id()
     if mode == "DEMO":
@@ -911,8 +925,8 @@ def submit(
                 fixture_labels = record["fixture_labels"]
             db.execute(
                 """INSERT INTO jobs(id,revision,name,mode,scenario,cpus,token,build,mesh,created,
-                       input_hash,mesh_digest,mesh_compat,fixture_hash,fixture_labels)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       input_hash,mesh_digest,mesh_compat,fixture_hash,fixture_labels,output_dir)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     jid,
                     rev,
@@ -929,8 +943,67 @@ def submit(
                     compat,
                     fixture_hash,
                     fixture_labels,
+                    output_dir,
                 ),
             )
+    return job(jid)
+
+
+def set_publication(jid, result_file, publication):
+    with connection(True) as db:
+        db.execute(
+            "UPDATE jobs SET result_file=?, publication=? WHERE id=?",
+            (result_file, publication, str(jid)),
+        )
+
+
+def import_result_job(revision, name, members, provenance):
+    """Materialize an opened portable result as a read-only historical job.
+
+    The result is never resubmitted or re-extracted; the row exists so the
+    existing viewer can display exactly the packaged frames, history and index.
+    """
+    jid = new_id()
+    directory = job_dir(jid)
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for member, payload in members.items():
+        if member in {"setup.json"}:
+            continue
+        if member.startswith("frames/") or member in {
+            "results.json",
+            "history.csv",
+            "provenance.json",
+        }:
+            target = directory / Path(member).name
+            target.write_bytes(payload)
+            manifest.append(target.name)
+    now = time.time()
+    source = provenance.get("job", {}) if isinstance(provenance, dict) else {}
+    with connection(True) as db:
+        db.execute(
+            """INSERT INTO jobs(id,revision,name,mode,scenario,cpus,token,created,started,ended,
+                   solver,extraction,phase,manifest,result_file,publication)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                jid,
+                str(revision),
+                name[:200],
+                "ABAQUS",
+                "imported",
+                1,
+                new_id(),
+                now,
+                source.get("created") or now,
+                source.get("ended") or now,
+                "Succeeded",
+                "Succeeded",
+                "Results imported from a portable file",
+                encoded(sorted(set(manifest))),
+                str(source.get("id") or ""),
+                "Imported",
+            ),
+        )
     return job(jid)
 
 

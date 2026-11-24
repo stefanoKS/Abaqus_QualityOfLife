@@ -1,5 +1,11 @@
 import { expect, test } from './fixtures'
+import { saveRevision } from './save'
 import type { Revision } from '../src/api'
+
+async function revisionNumber(page: import('@playwright/test').Page) {
+  const match = /Revision\s+(\d+)/.exec(await page.locator('.crumb').innerText())
+  return match ? Number(match[1]) : 0
+}
 
 test('independent coefficients persist and review actions live in Properties', async ({
   page,
@@ -21,6 +27,7 @@ test('independent coefficients persist and review actions live in Properties', a
   await expect(page.locator(`[id="${describedBy}"]`)).toHaveText(
     'Dimensionless Coulomb coefficient, from 0 to 5 (inclusive).',
   )
+  const before = await revisionNumber(page)
   for (const value of ['0', '0.17', '1', '2.5', '5']) {
     await door.fill(value)
     await door.press('Tab')
@@ -40,16 +47,16 @@ test('independent coefficients persist and review actions live in Properties', a
   await door.press('Tab')
   await self.fill('0.81')
   await self.press('Tab')
-  await expect(workflow.locator('[data-stage="contact"]')).toHaveAttribute(
-    'data-state',
-    'incomplete',
-  )
-  await page.getByRole('button', { name: 'Save revision' }).click()
-  await expect(page.locator('.crumb')).toContainText('Revision 02')
+  // The stage clears itself once the automatic write commits: no Save contact
+  // action and no visit to another tab is required.
+  await saveRevision(page)
   await expect(workflow.locator('[data-stage="contact"]')).toHaveAttribute(
     'data-state',
     'complete',
   )
+  // Every valid committed edit advanced the head automatically; the exact count
+  // is a coalescing detail, not a contract.
+  expect(await revisionNumber(page)).toBeGreaterThan(before)
 
   // A motion edit leaves contact untouched and reuses the mesh identity.
   await workflow.locator('[data-stage="motion"]').click()
@@ -77,8 +84,7 @@ test('independent coefficients persist and review actions live in Properties', a
   ).toBeVisible()
   await page.locator('.lang-button').click()
 
-  await page.getByRole('button', { name: 'Save revision' }).click()
-  await expect(page.locator('.crumb')).toContainText('Revision 03')
+  await saveRevision(page)
   await page.reload()
   await expect(workflow.locator('[data-stage="contact"]')).toHaveAttribute(
     'data-state',
@@ -92,15 +98,19 @@ test('independent coefficients persist and review actions live in Properties', a
   expect(saved.setup.contact.seal_self).toBe(0.81)
   expect(saved.setup.motion.stroke).toBe(0)
 
-  // Prepare and Submit live in one action group beneath the left workflow.
+  // Prepare and Submit live at the top of the Results properties, once.
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .locator('[data-stage="results"]')
+    .click()
   const actions = page.getByTestId('action-group')
   await expect(actions.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await expect(actions.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
-  const left = (await page.locator('.workgrid > .left').boundingBox())!
+  const right = (await page.locator('.workgrid > .right').boundingBox())!
   const prepare = (await actions.locator('[data-testid="prepare"]').boundingBox())!
   const submit = (await actions.locator('[data-testid="submit"]').boundingBox())!
-  expect(prepare.x).toBeGreaterThanOrEqual(left.x - 1)
-  expect(submit.x + submit.width).toBeLessThanOrEqual(left.x + left.width + 1)
+  expect(prepare.x).toBeGreaterThanOrEqual(right.x - 1)
+  expect(submit.x + submit.width).toBeLessThanOrEqual(right.x + right.width + 1)
   expect(prepare.y).toBeLessThan(submit.y)
   await expect(page.getByRole('button', { name: 'Go to Mesh' })).toHaveCount(0)
   await page.setViewportSize({ width: 700, height: 900 })

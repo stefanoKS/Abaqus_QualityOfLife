@@ -75,6 +75,22 @@ test('repeated display changes reuse or replace actors without leaking or mispic
   await expect.poll(() => actorCount(page)).toBe(threeD.primitives.length)
   await page.getByRole('button', { name: '2D', exact: true }).click()
   await expect.poll(() => actorCount(page)).toBe(twoD.primitives.length)
+  // The dimension toggle is an ordinary model setting, so it is persisted
+  // automatically; wait for the display and camera to settle before using
+  // screen coordinates for picking.
+  const viewport = page.getByTestId('vtk-viewport')
+  await expect(viewport).toHaveAttribute('data-dimension', '2D')
+  await expect(viewport).toHaveAttribute('data-display-bounds', twoD.bounds.join(','))
+  await expect
+    .poll(
+      async () => {
+        const first = await host.getAttribute('data-camera')
+        await page.waitForTimeout(150)
+        return first !== null && first === (await host.getAttribute('data-camera'))
+      },
+      { timeout: 15000 },
+    )
+    .toBe(true)
 
   // Picking still resolves the original CAD entity after all of the above.
   await page

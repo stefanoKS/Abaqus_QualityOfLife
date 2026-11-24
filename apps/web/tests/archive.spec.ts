@@ -144,5 +144,12 @@ test('an archived model opens read-only with a restore explanation', async ({ pa
   await page.goto('/#workspace/' + created.model.id)
   await expect(page.getByTestId('archived-banner')).toBeVisible()
   await expect(page.getByTestId('archived-banner')).toContainText('restore it from the dashboard')
-  await expect(page.getByRole('button', { name: 'Save revision' })).toBeDisabled()
+  // Read-only means no automatic write path at all: the setup fields and the
+  // analysis actions are disabled and no manual save gesture exists.
+  await expect(page.getByRole('button', { name: 'Save revision' })).toHaveCount(0)
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .locator('[data-stage="results"]')
+    .click()
+  await expect(page.locator('.action-fields')).toHaveAttribute('disabled', '')
 })

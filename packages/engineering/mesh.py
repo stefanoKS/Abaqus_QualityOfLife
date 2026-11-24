@@ -191,11 +191,15 @@ def _build(p, faces_at_edge, excluded=()):
         face_nodes = defaultdict(set)
         for face in p.material_regions:
             face_elements[face.id] = []
+            # Reduced integration belongs to the element formulation: a polymer
+            # weatherstrip quad is CPS4R, a deformable metal quad is CPS4.
+            material = next((m for m in p.materials if m.id == face.material), None)
+            quad = "CPS4" if material is not None and material.family == "metal" else "CPS4R"
             types, groups, connectivities = gmsh.model.mesh.getElements(2, surfaces[face.id])
             for kind, ids, connectivity in zip(types, groups, connectivities):
                 if kind not in (2, 3):
                     raise ValueError(f"Unsupported Gmsh surface element type {kind}.")
-                width, label = (3, "CPS3") if kind == 2 else (4, "CPS4R")
+                width, label = (3, "CPS3") if kind == 2 else (4, quad)
                 for element_id, row in zip(ids, connectivity.reshape(-1, width)):
                     conn = [int(n) for n in row]
                     _check_element(int(element_id), conn, coords)

@@ -1,5 +1,40 @@
 # Engineering validation
 
+## Independent file and CAE material software checks · 2026-11-25
+
+Release `81fc7a73aa30` previewed all 27 supplied CAE cards. The ordinary import endpoint registered two and skipped 25 when every source record was requested. Exporting the selected PA6 card returned the entire original 27-record library. A synthetic model with unregistered cards could prepare without a registry-related readiness finding. The [audit and execution handoff](file-open-materials-navigation-handoff.md) records the Hyperfoam source options, open-file and fixture reproduction, and full-suite outcomes. This audit used read-only access to operator metadata and disposable application runs. It adds no licensed solver, CAE GUI or physical-correlation evidence.
+
+## Independent retained material-overlay replay · 2026-11-24
+
+An independent read-only check used completed run `632ad17b-fae7-4774-a9e9-ee1e550523c7`, its submitted setup, converted index and frames. All **783** deformable elements mapped to material assignments. Counting instance-qualified corner edges gave **8** shared by different materials, **4** across different CAD faces with the same material, **1,370** internal to a single face and **239** perimeter edges. A fresh Edge session on isolated frontend `4933ae101e08` displayed **8 interfaces and 239 perimeters** in both languages. Original results were only read. This is a viewer check with previously generated data.
+
+Recounting manufactured run `9b713f7e-9f87-4c96-9be2-cb9e86485fb4` gave the reported 36 interfaces, 184 perimeter edges and 567 mapped deformable elements. All 1,006 other interior edges were within **one CAD face per edge**. This sample has zero same-material edges between distinct faces. The earlier counter checked the material identity only. Operator health during this later audit reported API `be1bb24c071006c8`, release `4933ae101e08`. No additional licensed solve or CAE library round-trip was performed.
+
+## Workbench edit/readiness/dashboard/axis/outlines pass · 2026-11-24 (no solver launch)
+
+No Abaqus license was checked out, no solver process was started and no retained operator artifact
+was read or modified. Every "completed" run in this pass came from the license-free launcher double
+(`tests/fake_abaqus.py`) through the real API → SQLite queue → worker → artifact path. Results are
+therefore **manufactured test evidence**, not solver physics.
+
+| Item | Value |
+|---|---|
+| Verified build | API `be1bb24c071006c8`, release `4933ae101e08`, entry `index-BZ3wYYIK.js`, API 3 |
+| Checkout | `84ab7a2` plus the uncommitted changes in this pass |
+| Isolated data | `--test-data` temp root on port 8876; disposable `SEAL_DATA` for Python |
+| Operator instance | port 8765 release `5be20b24e6d0`; not contacted, stopped or modified |
+| Manufactured Gate E run | mesh 708 nodes / 615 elements; 567 deformable seal elements, all mapped; 36 internal material interfaces; 184 perimeter segments; 1006 same-material interior edges excluded; rigid `PANEL-1` excluded |
+| Solver physics | **not exercised** |
+| Numerical sensitivity | **not exercised** |
+| Physical correlation | **BLOCKED** |
+| Self-contact participation | **BLOCKED** |
+| Retained operator result | not re-read; the brief's 8-interface / 4-same-material-seam observation is the operator's measurement |
+
+The material-interface counts were computed independently of the renderer from `results.json`
+connectivity and the job's immutable revision using `.local/gate-e-counts.py` (isolated, license-free).
+A separate browser test recomputes the same count from the artifact and asserts it against the drawn
+overlay, legend and interface count.
+
 ## Force-axis replay of retained licensed run 76b20d84 · 2026-11-24 (no solver launch)
 
 The oblique two-panel run recorded below was replayed through the built UI from a **copy** of its
@@ -697,3 +732,73 @@ These are intentionally separate; none implies the next one.
 |---|---|
 | Physical correlation | No independent reference and no agreed tolerance. |
 | Convergence/rate sensitivity | Not studied; the synthetic cases emit divergence cut-backs and zero-force warnings before contact. |
+
+## Abaqus/CAE material-library card verification — 2026-11-24 (no solver launch)
+
+**Scope.** One Abaqus/CAE 2024 noGUI session (`C:\SIMULIA\Commands\abq2024.bat`,
+license token consumed) was used to read the supplied library's material data
+through CAE's own kernel. No analysis was submitted and no ODB or deck was
+created.
+
+**Input.** `I:\GithubProjects\AbaqusLibrary\HK_matlib.lib`, 79,592 bytes, SHA-256
+`7ab001b64d3a35fe6d40bdc9c3feb253b74b4e2480e8615e34be635084dbbca6`. It is a
+legacy protocol-0 pickle: 28 records (27 materials, 1 container). The
+application reader never executes it; it interprets data opcodes only and
+rejects `GLOBAL`/`REDUCE`/`OBJ`/`BUILD`/`INST`.
+
+**Method.** The application parser extracted each card's `Data` string (Japanese
+values decoded to UTF-8). A CAE noGUI script called
+`matG_MatLibKernel.createMaterialFromDataString(model, name, '6-12', data)` for
+all 27 cards, then read back density, elastic table and type from
+`mdb.models['Model-1']`.
+
+**Result.** 27 of 27 cards were created without error. Reproduced values:
+
+| Card | Density | Elastic table | Type |
+|---|---|---|---|
+| PA6 | `1.13e-09` | `[[2600.0, 0.39]]` | `ISOTROPIC` |
+| METAL | `7.65e-09` | `[[206000.0, 0.3]]` | `ISOTROPIC` |
+
+Application eligibility was 2 of 27: only a pure isotropic linear-elastic card
+with constant density maps exactly. Hyperfoam (11), hyperelastic (9), plastic
+(2), viscoelastic (4), Mullins (2) and thermal-only (1) cards are shown with
+precise reasons and are not registered. The exported `.lib` is byte-identical to
+the CAE-authored source (same SHA-256), and the export is re-parsed and verified
+before the file is published.
+
+**Gap.** The CAE GUI `Material Library Manager` file-open path is not scriptable
+in this environment, so the GUI action itself is **not verified**. Card data,
+the exported container bytes and the application's decoded metadata are verified.
+This is a verification gap, not a claim of physical material validation.
+
+**Separate conclusions.**
+
+| Conclusion | Outcome |
+|---|---|
+| CAE card-data interoperability | **PASS for the supplied library** (27/27 created, numbers reproduced) |
+| CAE GUI library manager round-trip | **NOT VERIFIED** (GUI-only path) |
+| Material behaviour validation | **BLOCKED** — no physical test data or agreed tolerance for these cards |
+| Licensed solver execution | **NOT RUN** in this pass |
+
+## Portable model/result containers — 2026-11-24 (software evidence)
+
+`.aqmodel` and `.aqresult` are versioned ZIP containers with per-member sizes and
+SHA-256. Opening validates kind, version, required members, member hashes,
+expansion bound (4 GiB) and safe relative paths before extracting anything.
+Writes stage to a temporary sibling, re-read the staged container, then replace
+atomically.
+
+Verified in disposable data roots and temporary folders:
+
+| Check | Result |
+|---|---|
+| Model round-trip after moving the file and using a fresh data root | PASS — setup edges/faces/source preserved; new independent head |
+| Save As preserves the original bytes; Save replaces the same pathname | PASS (SHA-256 compared) |
+| External edit + Save without overwrite | 409 with `currentSha`; explicit overwrite succeeds |
+| Renamed JSON as `.aqmodel` | refused as "not a readable portable container" |
+| Worker publishes `.aqresult` after extraction with no browser | PASS — two runs, two distinct collision-safe files |
+| Result opened in a fresh installation | PASS — frames, history and index readable; read-only import |
+| Truncated / unsupported-version file | refused; the open document is untouched |
+| Failed extraction | result file not published |
+
+No solver was launched; these runs used the manufactured test launcher.

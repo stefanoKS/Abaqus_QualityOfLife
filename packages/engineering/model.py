@@ -129,6 +129,11 @@ class Material(Model):
     c10: Positive | None = None
     d1: Positive | None = None
     test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
+    # Explicit engineering family. Reduced integration belongs to the element
+    # formulation, not to the law: a weatherstrip polymer quad meshes as CPS4R and
+    # a deformable metal quad as full-integration CPS4. A linear elastic law alone
+    # cannot tell metal from polymer, so the engineer declares the family here.
+    family: Literal["polymer", "metal"] = "polymer"
     # Optional pin to a global library version. The card values above remain the
     # immutable snapshot a saved revision and its deck actually use.
     library_id: Annotated[str, Field(max_length=80)] | None = None
@@ -136,6 +141,11 @@ class Material(Model):
 
     @model_validator(mode="after")
     def check_card(self):
+        if self.family == "metal" and self.model != "linear_elastic":
+            raise ValueError(
+                "A metal family card uses the linear elastic law in this phase; "
+                "rubber laws stay polymer."
+            )
         if self.model == "linear_elastic" and (self.young is None or self.poisson is None):
             raise ValueError("Enter Young's modulus and Poisson's ratio for the elastic card.")
         if self.model == "hyperfoam_test" and len(self.test_data) < 3:

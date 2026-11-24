@@ -97,7 +97,7 @@ function makeActor(
   property.setDiffuse(0.6)
   property.setEdgeVisibility(surface.meshEdges)
   property.setEdgeColor(0.19, 0.28, 0.3)
-  property.setLineWidth(surface.kind === 'edge' ? 2 : 1)
+  property.setLineWidth(surface.kind === 'edge' ? (surface.width ?? 2) : 1)
   if (surface.kind === 'points') {
     property.setRepresentationToPoints()
     property.setPointSize(5)
@@ -127,6 +127,7 @@ function makeActor(
         parseInt(nextHex.slice(3, 5), 16) / 255,
         parseInt(nextHex.slice(5, 7), 16) / 255
       )
+      property.setLineWidth(next.kind === 'edge' ? (next.width ?? 2) : 1)
       const ratio = (value: number) =>
         range === null || range <= minimum
           ? 0

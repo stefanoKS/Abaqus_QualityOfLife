@@ -55,11 +55,15 @@ test('an in-progress region selection survives a language switch', async ({ page
   await expect(page.getByRole('heading', { name: 'Hollow bulb' })).toBeVisible()
   await page.getByTestId('assign-material').click()
   await page.getByLabel('Material card').selectOption('base_rubber')
-  await expect(page.locator('.statusbar')).toContainText('Unsaved changes')
   await page.locator('.lang-button').click()
 
-  // Same selected region and the same in-progress edit, now in Japanese.
+  // Same selected region and the same edit, now in Japanese. The automatic
+  // writer may still be committing, but it never remounts this form: the chosen
+  // card and the region selection survive the language switch.
   await expect(page.getByRole('heading', { name: 'Hollow bulb' })).toBeVisible()
   await expect(page.getByLabel('材料カード')).toHaveValue('base_rubber')
-  await expect(page.locator('.statusbar')).toContainText('未保存の変更があります')
+  await expect(page.getByTestId('save-state')).toHaveAttribute('data-state', 'saved', {
+    timeout: 15000,
+  })
+  await expect(page.locator('.statusbar')).toContainText('自動保存済み')
 })

@@ -1,4 +1,5 @@
-﻿import { expect, test, type Page } from './fixtures'
+import { expect, test, type Page } from './fixtures'
+import { saveRevision } from './save'
 import { meshAndDeck } from './pipeline'
 import type { Display, Revision } from '../src/api'
 
@@ -66,7 +67,7 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
   // Save the zero-body hold, navigate away, reopen.
   await body.fill('0')
   await body.press('Tab')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   const savedId = page.url().split('/').pop()!
   await page.getByRole('button', { name: 'Dashboard' }).click()
@@ -94,7 +95,7 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
   await workflow.getByRole('button', { name: 'Motion' }).click()
   await page.getByLabel('Door panel stroke (mm)').fill('0')
   await page.getByLabel('Door panel stroke (mm)').press('Tab')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 03')
   revision = await (
     await request.get('/api/revisions/' + page.url().split('/').pop())

@@ -17,9 +17,10 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from integrations import dwg, drawings
 from packages import engineering
 from packages.engineering.model import Project
-from services import activity, material_library, readiness, release, store
+from services import activity, material_library, portable_files, readiness, release, store
 from .contracts import (
     Build,
+    CaeExportRequest,
     Deck,
     DeleteConfirm,
     DeletionInfo,
@@ -37,13 +38,17 @@ from .contracts import (
     LibraryUpdate,
     MaterialImportRequest,
     MaterialImportResult,
+    ModelFileRequest,
     NewGroup,
     NewProject,
     NewProjectGroup,
+    OpenFileRequest,
+    PackageResultRequest,
     PartitionApply,
     PartitionPreview,
     Revision,
     RevisionSummary,
+    ResultFileRetry,
     Save,
     Submit,
     Summary,
@@ -301,6 +306,295 @@ def archive_material(mid: str):
 @app.post("/api/materials/{mid}/restore", response_model=LibraryDetail)
 def restore_material(mid: str):
     return material_library.set_archived(mid, False)
+
+
+# ---------------------------------------------------- CAE material library I/O
+
+
+def _cae_source_path(digest: str) -> Path:
+    folder = store.root() / "material-library"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / (digest + ".lib")
+
+
+def _read_cae_upload(data: bytes):
+    from packages.engineering import abaqus_lib
+
+    try:
+        library = abaqus_lib.parse(data)
+    except abaqus_lib.LibraryError as exc:
+        raise ValueError(str(exc)) from exc
+    return library
+
+
+@app.post("/api/material-library/cae/preview")
+async def preview_cae_library(file: UploadFile = File(...)):
+    """Decode an uploaded CAE library without executing or registering anything."""
+    data = await file.read()
+    library = _read_cae_upload(data)
+    from packages.engineering import abaqus_lib
+
+    cards = []
+    for card in library.cards:
+        entry = card.describe()
+        entry["eligibility"] = abaqus_lib.eligibility(card)
+        cards.append(entry)
+    return {
+        "file": file.filename or "library.lib",
+        "sha256": library.fingerprint,
+        "bytes": library.size,
+        "containers": library.containers,
+        "cards": cards,
+        "eligible": sum(1 for entry in cards if entry["eligibility"]["eligible"]),
+    }
+
+
+@app.post("/api/material-library/cae/import")
+async def import_cae_library(
+    file: UploadFile = File(...),
+    keys: str = Form("[]"),
+    family: str = Form("polymer"),
+    units: str = Form("N-mm-s-tonne"),
+):
+    """Register selected eligible cards with a stable fingerprint and provenance."""
+    data = await file.read()
+    library = _read_cae_upload(data)
+    from packages.engineering import abaqus_lib
+
+    if units != "N-mm-s-tonne":
+        raise ValueError(
+            "This application stores N-mm-s-tonne data. Declare that basis for the library."
+        )
+    if family not in ("polymer", "metal"):
+        raise ValueError("Declare the structural family (polymer or metal) for the imported cards.")
+    try:
+        wanted = [str(key) for key in json.loads(keys)]
+    except ValueError as exc:
+        raise ValueError("The selected card list is not valid JSON.") from exc
+    chosen = [card for card in library.cards if card.key in set(wanted)]
+    if not chosen:
+        raise ValueError("Select at least one card to import.")
+    _cae_source_path(library.fingerprint).write_bytes(data)
+    existing = material_library.list_materials(include_archived=True)
+    by_record = {}
+    for entry in existing:
+        detail = material_library.get(entry["id"])
+        for version in reversed(detail.get("versions", [])):
+            source = version.get("source") or {}
+            if source.get("sha256") == library.fingerprint and source.get("record"):
+                by_record.setdefault(source["record"], detail)
+    registered, skipped, conflicts = [], [], []
+    palette = ["#46ad94", "#dc9b50", "#5b8def", "#b06ad4", "#d45b5b", "#7a8a99"]
+    for card in chosen:
+        decision = abaqus_lib.eligibility(card)
+        if not decision["eligible"]:
+            skipped.append(
+                {
+                    "key": card.key,
+                    "name": card.name,
+                    "reasons": decision["reasons"],
+                }
+            )
+            continue
+        if card.key in by_record:
+            detail = by_record[card.key]
+            registered.append(
+                {
+                    "key": card.key,
+                    "library_id": detail["id"],
+                    "version": detail["current_version"],
+                    "existing": True,
+                }
+            )
+            continue
+        same_name = [
+            entry
+            for entry in existing
+            if entry["name"].casefold() == card.name.casefold()
+        ]
+        name = card.name
+        if same_name:
+            # Never merge divergent same-name cards; make the difference explicit.
+            name = f"{card.name} · {card.fingerprint()[:8]}"
+            conflicts.append(
+                {
+                    "key": card.key,
+                    "name": card.name,
+                    "existing": [entry["id"] for entry in same_name],
+                    "registered_as": name,
+                }
+            )
+        source = {
+            "engine": "Abaqus/CAE",
+            "file": file.filename or "library.lib",
+            "sha256": library.fingerprint,
+            "record": card.key,
+            "fingerprint": card.fingerprint(),
+            "category": card.category,
+            "metadata": card.metadata_json(),
+            "data": abaqus_lib._jsonable(card.data),
+            "units": units,
+            "exportable": True,
+        }
+        card_payload = {
+            "model": "linear_elastic",
+            "color": palette[len(registered) % len(palette)],
+            "density": decision["values"]["density"],
+            "young": decision["values"]["young"],
+            "poisson": decision["values"]["poisson"],
+            "c10": None,
+            "d1": None,
+            "test_data": [],
+            "family": family,
+        }
+        created = material_library.create(
+            name,
+            card_payload,
+            f"Imported from {source['file']} ({library.fingerprint[:8]} record {card.key})",
+            source=source,
+        )
+        registered.append(
+            {
+                "key": card.key,
+                "library_id": created["id"],
+                "version": created["current_version"],
+                "existing": False,
+            }
+        )
+    return {
+        "file": file.filename or "library.lib",
+        "sha256": library.fingerprint,
+        "registered": registered,
+        "skipped": skipped,
+        "conflicts": conflicts,
+        "source": str(_cae_source_path(library.fingerprint)),
+    }
+
+
+@app.post("/api/material-library/cae/export")
+def export_cae_library(body: CaeExportRequest):
+    """Write the original CAE bytes to a chosen folder and verify the round-trip."""
+    from packages.engineering import abaqus_lib
+
+    folder = body.folder.strip()
+    if not folder:
+        raise ValueError("Choose a folder for the exported CAE library.")
+    target = Path(folder)
+    if not target.is_dir():
+        raise ValueError("The chosen output folder is not available.")
+    wanted = {str(item) for item in body.material_ids}
+    sources = material_library.cae_sources()
+    if not sources:
+        raise ValueError(
+            "No CAE-imported material is registered yet. App-created cards have no "
+            "CAE source record to export faithfully."
+        )
+    written, skipped = [], []
+    for source in sources:
+        if wanted and not wanted.intersection(set(source["materials"])):
+            continue
+        path = _cae_source_path(source["sha256"])
+        if not path.is_file():
+            skipped.append({"sha256": source["sha256"], "reason": "source bytes missing"})
+            continue
+        library = _read_cae_upload(path.read_bytes())
+        stem = Path(source.get("file") or "material-library").stem or "material-library"
+        output = target / f"{stem}-export.lib"
+        counter = 1
+        while output.exists():
+            counter += 1
+            output = target / f"{stem}-export-{counter}.lib"
+        written.append(abaqus_lib.write_export(library, output))
+    if not written and not skipped:
+        raise ValueError("The selected materials have no CAE source library to export.")
+    return {"files": written, "skipped": skipped}
+
+
+@app.get("/api/files/pick")
+def pick_path(mode: str = "folder", title: str = "Choose a folder"):
+    """Explorer-style picker through the local desktop session (loopback only)."""
+    from services import picker
+
+    return picker.choose(mode, title)
+
+
+# ------------------------------------------------ portable model/result files
+
+
+@app.post("/api/files/model/save")
+def save_model_file(body: ModelFileRequest):
+    """Write the current head as a portable model file, atomically."""
+    from hashlib import sha256
+
+    target = Path(body.path)
+    if target.is_file() and not body.overwrite:
+        current = sha256(target.read_bytes()).hexdigest()
+        if body.base_sha != current:
+            return JSONResponse(
+                {
+                    "detail": "The file on disk differs from the version this session saved. "
+                    "Overwrite it explicitly or choose Save As.",
+                    "currentSha": current,
+                },
+                status_code=409,
+            )
+    try:
+        return portable_files.save_model(
+            str(body.revision), body.path, body.base_sha, body.overwrite
+        )
+    except portable_files.portable.PortableError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+@app.post("/api/files/model/open", response_model=Revision)
+def open_model_file(body: OpenFileRequest):
+    """Open a portable model as a new independent head in this installation."""
+    try:
+        opened = portable_files.open_model(body.path)
+    except portable_files.portable.PortableError as exc:
+        raise ValueError(str(exc)) from exc
+    return revision_payload(store.revision(opened["revision"]))
+
+
+@app.post("/api/files/model/open-info")
+def open_model_file_with_identity(body: OpenFileRequest):
+    """Open a model and return the file identity the browser must remember.
+
+    The revision alone cannot tell the workspace which file is active, so the
+    opener returns the pathname and the exact SHA-256 it read.
+    """
+    from hashlib import sha256
+
+    data = Path(body.path).read_bytes()
+    try:
+        opened = portable_files.open_model(body.path)
+    except portable_files.portable.PortableError as exc:
+        raise ValueError(str(exc)) from exc
+    return {
+        "revision": revision_payload(store.revision(opened["revision"])),
+        "path": body.path,
+        "sha256": sha256(data).hexdigest(),
+    }
+
+
+@app.post("/api/files/result/package")
+def package_result_file(body: PackageResultRequest):
+    try:
+        return portable_files.package_job(str(body.job), body.folder)
+    except portable_files.portable.PortableError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+@app.post("/api/files/result/open", response_model=Job)
+def open_result_file(body: OpenFileRequest):
+    """Open a packaged result read-only; no solver or extractor runs."""
+    try:
+        opened = portable_files.open_result(body.path)
+    except portable_files.portable.PortableError as exc:
+        raise ValueError(str(exc)) from exc
+    return opened["job"]
+
+
 
 
 @app.get("/api/groups", response_model=list[GroupSummary])
@@ -818,6 +1112,11 @@ def submit(body: Submit):
     if body.scenario != "success":
         raise ValueError("Synthetic scenarios are no longer available for new submissions.")
     store.revision(body.revision)
+    output_dir = (body.output_dir or "").strip() or None
+    if output_dir:
+        target = Path(output_dir)
+        if not target.is_dir():
+            raise ValueError("The captured output folder is not available. Choose another folder.")
     return store.submit(
         str(body.revision),
         body.name,
@@ -826,6 +1125,7 @@ def submit(body: Submit):
         "success",
         body.cpus,
         deck=str(body.deck),
+        output_dir=output_dir,
     )
 
 
@@ -860,6 +1160,17 @@ def cancel(jid: UUID):
 @app.post("/api/jobs/{jid}/retry", response_model=Job)
 def retry(jid: UUID):
     return store.retry(str(jid))
+
+
+@app.post("/api/jobs/{jid}/result-file")
+def retry_result_file(jid: UUID, body: ResultFileRetry | None = None):
+    """Retry saving a completed result to a folder without resubmitting the solver."""
+    job = store.job(jid)
+    folder = body.folder if body is not None else None
+    try:
+        return portable_files.package_job(str(jid), folder or job.get("output_dir"))
+    except portable_files.portable.PortableError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 @app.get("/api/jobs/{jid}/display-metadata")

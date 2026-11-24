@@ -1,4 +1,5 @@
 import { test, expect } from './fixtures'
+import { saveRevision } from './save'
 import { resolve } from 'node:path'
 import type { Revision } from '../src/api'
 
@@ -17,7 +18,7 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page, r
   await workflow.getByRole('button', { name: 'Motion' }).click()
   await page.getByLabel('Door panel stroke (mm)').fill('6.5')
   await page.getByLabel('Door panel stroke (mm)').press('Tab')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   const savedURL = page.url()
   await page.reload()
@@ -27,11 +28,13 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page, r
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
   // The deck cannot be prepared before a fixed-node selection exists.
+  await workflow.locator('[data-stage="results"]').click()
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   await expect(prepare).toBeDisabled()
   await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await workflow.locator('[data-stage="results"]').click()
   await expect(prepare).toBeEnabled()
   await prepare.click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', {
@@ -89,7 +92,7 @@ test('edit, run, reload and reopen an immutable closing setup', async ({ page, r
   await workflow.getByRole('button', { name: 'Motion' }).click()
   await page.getByLabel('Door panel stroke (mm)').fill('4')
   await page.getByLabel('Door panel stroke (mm)').press('Tab')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 03')
   await page.goto('/#setup/' + runId)
   await workflow.getByRole('button', { name: 'Motion' }).click()
@@ -120,6 +123,6 @@ test('clean DXF upload appears in the workspace and clears assignments', async (
     .click()
   await expect(page.getByLabel('Material card')).toHaveValue('')
   await page.getByLabel('Material card').selectOption('base_rubber')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 03')
 })

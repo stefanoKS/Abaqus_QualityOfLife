@@ -53,6 +53,8 @@ export function Viewport(props: ViewportProps) {
       props.showMeshEdges,
       props.resultComponent,
       props.resultRange,
+      props.materialOutlines,
+      props.faceMaterials,
       colorsKey,
       hiddenKey,
       props.previewTranslation,
@@ -377,6 +379,27 @@ export function Viewport(props: ViewportProps) {
     <div className="seal-viewport" data-testid="vtk-viewport" data-dimension={props.dimension}
       data-frame-time={props.results?.frame ? String(props.results.frame.time) : ''}
       data-scene-actors={scene.surfaces.length}
+      data-display-bounds={props.display ? props.display.bounds.join(',') : ''}
+      data-material-outlines={props.materialOutlines ? 'on' : 'off'}
+      data-material-interfaces={String(
+        scene.surfaces
+          .filter((surface) => surface.overlay === 'material-interface')
+          .reduce((total, surface) => total + surface.cells.length, 0),
+      )}
+      data-material-perimeters={String(
+        scene.surfaces
+          .filter((surface) => surface.overlay === 'material-perimeter')
+          .reduce((total, surface) => total + surface.cells.length, 0),
+      )}
+      data-material-keys={[
+        ...new Set(
+          scene.surfaces
+            .filter((surface) => surface.overlay)
+            .flatMap((surface) => surface.materials ?? []),
+        ),
+      ]
+        .sort()
+        .join(',')}
       data-plain={props.plain ? 'true' : 'false'}
       data-cut-phase={props.cut?.active ? props.cut.phase ?? 'start' : ''}
       data-preview-translation={

@@ -9,14 +9,16 @@
 import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { expect, test, type Page } from './fixtures'
+import { saveRevision } from './save'
 import type { Job, Revision } from '../src/api'
 import type { Display } from '../src/viewportModel'
 
-async function saveRevision(page: Page) {
-  const save = page.getByRole('button', { name: 'Save revision' })
-  await expect(save).toBeEnabled({ timeout: 20000 })
-  await save.click()
+async function revisionNumber(page: Page) {
+  const crumb = await page.locator('.crumb').innerText()
+  const match = /Revision\s+(\d+)/.exec(crumb)
+  return match ? Number(match[1]) : 0
 }
+
 async function projectPoint(page: Page, x: number, y: number) {
   const viewport = page.getByRole('application')
   const box = (await viewport.boundingBox())!
@@ -54,8 +56,12 @@ test('empty model → DXF import → roles → cut → material → mesh → fix
   const workflow = page.getByRole('navigation', { name: 'Workflow' })
   await expect(workflow.locator('[data-stage="review"]')).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Review / Run' })).toHaveCount(0)
+  // Prepare/Submit have exactly one owner: the top of the Results properties.
+  await expect(page.getByTestId('action-group')).toHaveCount(0)
+  await workflow.locator('[data-stage="results"]').click()
   await expect(page.getByTestId('action-group')).toHaveCount(1)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  await workflow.locator('[data-stage="import"]').click()
 
   // --- Import owns the chooser; Import is not complete while the model is empty.
   await expect(workflow.locator('[data-stage="import"]')).toHaveAttribute('data-state', 'incomplete')
@@ -66,15 +72,15 @@ test('empty model → DXF import → roles → cut → material → mesh → fix
 
   // --- Components owns roles and the region list.
   const tree = page.locator('.tree')
+  const beforeRoles = await revisionNumber(page)
   await tree.getByRole('button', { name: /Imported section · Unassigned/ }).click()
   await page.getByLabel('Role').selectOption('seal')
   await tree.getByRole('button', { name: /Panel profile · Unassigned/ }).click()
   await page.getByLabel('Role').selectOption('moving_panel')
-  await tree.getByRole('button', { name: /Section 2 · Unassigned/ }).click()
-  await page.getByLabel('Role').selectOption('seal')
-  // Roles are a saved-revision state; Save before the badge can say complete.
+  // Roles are persisted by the automatic writer; the badge clears without a
+  // manual Save step.
   await saveRevision(page)
-  await expect(page.locator('.crumb')).toContainText('Revision 03')
+  expect(await revisionNumber(page)).toBeGreaterThan(beforeRoles)
   await expect(workflow.locator('[data-stage="components"]')).toHaveAttribute('data-state', 'complete')
 
   // --- Materials: each material region gets a card via the explicit link.
@@ -86,10 +92,11 @@ test('empty model → DXF import → roles → cut → material → mesh → fix
     await page.getByLabel('Material card').selectOption({ label: material })
     assignedMaterial[region] = material
   }
+  const beforeMaterials = await revisionNumber(page)
   await assign('Region 1', 'Cellular EPDM')
   await assign('Region 2', 'Dense EPDM')
   await saveRevision(page)
-  await expect(page.locator('.crumb')).toContainText('Revision 04')
+  expect(await revisionNumber(page)).toBeGreaterThan(beforeMaterials)
   await expect(workflow.locator('[data-stage="materials"]')).toHaveAttribute('data-state', 'complete')
 
   // --- Components owns the projected partition and keeps the operator there.
@@ -125,8 +132,9 @@ test('empty model → DXF import → roles → cut → material → mesh → fix
   await page.getByRole('button', { name: 'Partition region' }).click()
   await drawGuide(page, [0, -1], [0, 4])
   await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'valid')
+  const beforeCut = await revisionNumber(page)
   await page.getByRole('button', { name: 'Apply partition' }).click()
-  await expect(page.locator('.crumb')).toContainText('Revision 05')
+  await expect.poll(() => revisionNumber(page)).toBeGreaterThan(beforeCut)
   // Still in Components after the cut; the region list now shows both children.
   const regionList = page.locator('.region-list')
   await expect(regionList).toContainText(targetName + ' A')
@@ -138,7 +146,7 @@ test('empty model → DXF import → roles → cut → material → mesh → fix
     assignedMaterial[targetName] === 'Cellular EPDM' ? 'Dense EPDM' : 'Cellular EPDM'
   await page.getByLabel('Material card').selectOption({ label: childMaterial })
   await saveRevision(page)
-  await expect(page.locator('.crumb')).toContainText('Revision 06')
+  expect(await revisionNumber(page)).toBeGreaterThan(beforeCut)
 
   // --- Mesh.
   await workflow.getByRole('button', { name: 'Mesh' }).click()
@@ -171,12 +179,14 @@ test('empty model → DXF import → roles → cut → material → mesh → fix
   await workflow.getByRole('button', { name: 'Contact' }).click()
   await expect(page.getByLabel('Door panel ↔ seal coefficient')).toHaveValue('0.7')
   await workflow.getByRole('button', { name: 'Motion' }).click()
+  const beforeStroke = await revisionNumber(page)
   await page.getByLabel('Door panel stroke (mm)').fill('6.5')
   await page.getByLabel('Door panel stroke (mm)').press('Tab')
   await saveRevision(page)
-  await expect(page.locator('.crumb')).toContainText('Revision 07')
+  expect(await revisionNumber(page)).toBeGreaterThan(beforeStroke)
 
   // --- Prepare by keyboard from the action group; inspect the deck.
+  await workflow.locator('[data-stage="results"]').click()
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   await expect(prepare).toBeEnabled({ timeout: 20000 })
   await prepare.focus()
@@ -209,6 +219,7 @@ test('empty model → DXF import → roles → cut → material → mesh → fix
 
   // The prepared deck is archived with the submitted revision and remains readable.
   await page.goto('/#setup/' + runId)
+  await page.locator('[data-stage="results"]').click()
   await expect(page.getByTestId('action-locked')).toBeVisible()
   await expect(page.getByTestId('action-group')).toContainText('Submitted setup')
   await expect(workflow.locator('[data-stage="review"]')).toHaveCount(0)
@@ -242,6 +253,7 @@ test('the setup action group is reachable in both locales at desktop, narrow and
   ]) {
     await page.setViewportSize(size)
     await page.goto('/#workspace/' + revision.id)
+    await page.locator('[data-stage="results"]').click()
     const group = page.getByTestId('action-group')
     await group.scrollIntoViewIfNeeded()
     await expect(group).toBeVisible()
@@ -263,6 +275,7 @@ test('the setup action group is reachable in both locales at desktop, narrow and
   await toggle.click()
   await toggle.click()
   await expect(page.locator('.workgrid > .left')).toBeVisible()
+  await page.locator('[data-stage="results"]').click()
   await page.getByTestId('action-group').scrollIntoViewIfNeeded()
   await expect(page.getByTestId('action-group')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toHaveCount(1)

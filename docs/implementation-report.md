@@ -1,6 +1,205 @@
 # Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
+The [independent A–E audit and next execution brief](file-workbench-execution-handoff.md) records the full test rerun, a reproducible two-tab Retry overwrite, the active progress-card clip, and the retained material-outline replay. Its measurements distinguish ordinary same-face mesh edges from same-material seams across different CAD faces.
+
+## A13. Workbench model edit, readiness, dashboard, force axis and material outlines · 2026-11-24
+
+Baseline `84ab7a2fdeaaa5068cddb8ea6ad9164ebe3159ff` on `main`, matching the audited baseline in the
+[execution brief](model-edit-readiness-results-handoff.txt); the only prior working-tree change was the
+brief and the existing handoff entry. All writes used the isolated `--test-data` browser service on
+port 8876, a disposable `SEAL_DATA` directory for Python, and temporary paths for the evidence scripts.
+The operator instance on port 8765, its database, drawings and retained licensed artifacts were not
+stopped, restarted or modified. **No licensed solver was launched and no license was consumed.** The
+manufactured launcher double supplied every completed run used here; retained operator results were not
+re-read and their 8-interface/4-same-material-seam observation remains the operator's own measurement.
+
+Verified build: API build `be1bb24c071006c8`, frontend release **`4933ae101e08`**
+(entry `index-BZ3wYYIK.js`, CSS `index-B5CPZgAZ.css`, API 3) from checkout `84ab7a2` plus these
+uncommitted changes.
+
+| Gate | Result | Principal evidence |
+|---|---|---|
+| A — Dashboard runs | **PASS** | Long-name filters and every run state at 1440×900, 1280×720, 720×450 and 390×844 in both languages: filter overhang **0 px** (was 166/148 px), page horizontal overflow **0 px**, table scroller `scrollWidth == clientWidth`, last row and its last action reachable. |
+| B — Replace the current model | **PASS** | Automatic head replacement with coalescing, serialized writes, retained drafts, idempotent recovery and a recoverable two-tab conflict; no Save revision or Save contact control; submitted setup/mesh/deck/result hashes unchanged by later edits. |
+| C — Order, readiness and locks | **PASS** | All 12 transition rows exercised through the UI and direct API; the visible Prepare/Submit state matched `/readiness` in every row; the padlock is now reserved for the deferred 3D extrusion. |
+| D — Readable force axis | **PASS** | Full description in a wrapping caption beside the plot; rotated Y title **52.5 px** (`N`) and **80.0 px** (`N/mm`) inside a **210 px** plot at every width and 200% zoom (was ~269 px, 45 px above and 14 px below). |
+| E — Material outlines | **PASS on manufactured evidence; operator retained-run recheck not repeated in A13** | Renderer-free invariants plus a real API→worker→manufactured-result run: **36** internal FE material interfaces, **184** perimeter segments, **1006** same-material interior edges excluded, **567/567** deformable elements mapped, rigid `PANEL-1` excluded. |
+| — Physical correlation / solver physics | **BLOCKED** (unchanged) | No licensed solve was run; nothing here is physical validation. |
+
+### A. Dashboard runs
+
+The dashboard filter header is now a shrinking flex row inside the run card; native selects are
+clamped (`min-width: 0; max-width: 100%`) so a long project/model option can no longer set the card's
+intrinsic width. Below 760 px the table becomes one labelled compact row per run (identity, state,
+submitted, elapsed, actions) instead of a horizontally scrolling table, and the run list still scrolls
+with the page. Run names wrap with their full value in `title`, and the table scroller is a focusable,
+labelled region.
+
+Rendered measurements (`dashboard-measurements.json`, fictional long Japanese names, 12 rows in four
+states in both locales):
+
+| Window | Card width | Filters width | Filter overhang past card | Page horizontal overflow | Table scroller (scroll/client) |
+|---|---|---|---|---|---|
+| 1440×900 en/ja | 1393.9 | 1199.6 / 1223.2 | **0** | 0 | 1392/1392 |
+| 1280×720 en/ja | 1239.1 | 1044.7 / 1068.3 | **0** | 0 | 1237/1237 |
+| 720×450 en/ja | 688.0 | 656.0 | **0** | 0 | 686/686 |
+| 390×844 en/ja | 358.0 | 326.0 | **0** | 0 | 356/356 (compact layout) |
+
+Before, from the audited brief and reproduced by the same measurement: at 390 px the table needed
+133 px of horizontal scrolling, and with long names two filter controls protruded **166 px** and
+**148 px** past the card's clipping edge. The table's own scroller could reveal its last action but did
+not contain the filter header. Filtering to an active run and reaching Diagnostics and Cancel by
+keyboard caused **zero** cancel requests; an intentional activation caused exactly one. A real
+manufactured Running/Queued pair rendered as active and was not cancelled by inspection.
+
+### B. Replacing the current model during normal editing
+
+[autosave.ts](../apps/web/src/features/workspace/autosave.ts) is the single writer. A valid committed
+edit is coalesced (350 ms) and replaces the working head; the store still appends an immutable revision
+per committed write, so a run, mesh, deck, fixture or historical link keeps referring to exactly what it
+used. The URL follows the new head with `history.replaceState` only — no router event, no remount — so
+focus, the focused field, the active stage, the selection, the camera and any in-progress draft survive.
+`main.tsx` keeps mounting the workspace on the stable model identity for the same reason. Writes are
+serialized per model, edits that arrive while a request is in flight are retained and written next, and
+a response for a different model/generation is discarded. A 409 from another tab keeps the unsent draft,
+says “Another revision was saved…”, and an explicit **Retry** adopts the newer head. A lost response is
+recovered idempotently: Retry reads the head first and adopts it when it already contains the draft, so
+the navigation adds exactly one revision instead of two.
+
+Removed: the header **Save revision** button and the Contact **Save contact** action (the latter could
+discard unrelated pending setup edits). Added: a compact localized `Saved automatically /
+Saving changes… / Save failed` state with a Retry button and its cause, and **Duplicate setup** as the
+explicit branch action. Prepare is disabled with the temporary “Saving changes…” reason only while the
+write is genuinely in flight; a failed write blocks Prepare with “The current edits are not saved.” Mesh,
+partition preview/Apply, Prepare, Submit, Duplicate and navigating away all flush and await the latest
+valid edit, using the newest rendered draft synchronously so work is never queued from the previous
+settings. An invalid numeric draft is never committed and keeps its field feedback and the existing
+Escape restore.
+
+Verified behaviours (real Edge, manufactured worker): immediate Generate-mesh after typing used the new
+size; three rapid edits produced at most two revisions and the final value; a background save preserved
+focus, stage and camera; navigating away committed the edit; an aborted PUT kept the value, showed the
+cause and retried; a delivered-but-lost response retried without a duplicate revision; two tabs
+surfaced a conflict and converged after Retry; editing a submitted model left the revision setup JSON
+and the INP, mesh and `results.json` SHA-256 values byte-identical and its `/setup/<run>` link
+read-only; switching models during a pending write kept both models independent.
+
+### C. Setting order, readiness and locks
+
+`services/readiness.py` now renders a role, mesh, mounting, motion or deck prerequisite as
+**incomplete** with the owning stage and reason; the padlock is reserved for the deferred 3D extrusion
+(the only read-only restriction in this phase). A local draft overlays the stale server snapshot, so
+correcting a role can never leave a padlock beside an editable selector. Mounting reports
+`mounting.awaiting_mesh` before a mesh exists, and the mesh stage names the missing drawing or roles.
+Prepare/Submit remain one action-specific decision shared by the controls, the click handlers and the
+API. The table below is the requested matrix; “UI” means the real browser, “API” the direct readiness
+document.
+
+| State or edit | Observed behaviour | Artifact identity used |
+|---|---|---|
+| Empty editable 2D model | Import actionable; every stage opens; **no padlock** anywhere; Mesh and Prepare name `drawing.missing`; `can_prepare=false`. | — |
+| Drawing imported, roles missing | Components opens editable immediately, badge **incomplete** (`components.no_*`); the last role correction clears it without visiting Mesh or a manual save; one/two-step mode derived from participating roles. | head revision only |
+| Roles correct, materials missing | Components complete; Materials incomplete with `material.unassigned` naming regions `foot`/`bulb`; partition remains available on valid geometry before a mesh. | head revision |
+| Valid mesh inputs, no FE mesh | Generate mesh actionable; Contact and Motion open and accept edits before a mesh; Mounting explains `mounting.awaiting_mesh`; Prepare names `mesh.missing`. | mesh inputs digest |
+| Role-dependent settings | Door↔seal and seal↔self always; body↔seal only while a body participates; 0.7 defaults for new models and stored values preserved; step plan changes with roles without a Contact visit. | head revision |
+| New mesh, no reviewed fixed nodes | Mounting actionable when the mesh completes; Prepare names `mounting.missing`; one **Save fixed nodes** gesture associates the selection with this mesh; a discarded/pending rectangle never overwrites the saved set. | mesh job + fixture hash |
+| Mesh and fixture ready, no deck | Prepare enabled, Submit blocked on `deck.missing`; one Prepare click queued exactly **one** DECK with that mesh and fixture hash; Submit then enabled. | mesh id + fixture hash |
+| Friction 0.70 → 0.63 | Committed automatically; same mesh and same fixture hash; Mounting stayed visible and usable; the old deck became stale and Submit blocked; Prepare rebuilt one deck for the new head with the same mesh/fixture. | mesh id, fixture hash |
+| Mesh-affecting change | A material-card value change reused the compatible mesh; changing global size made the mesh incompatible, said the mesh inputs changed, named `mesh.missing` and left the old mesh artifact readable. | mesh compatibility digest |
+| Fixed nodes on the same mesh | Expected-hash write: a stale tab receives a recoverable conflict, the identical set is idempotent, the old deck is invalidated and Prepare can rebuild. | fixture hash |
+| Deck ready | Submit enabled only for the current prepared deck and valid Submit-only settings; CPU 0 and a blank run name each disabled Submit with their own reason while Prepare stayed usable; the contract rejects the same values directly. | deck id + revision |
+| Run / historical replay | `/setup/<run>` shows “Submitted setup · read-only”, no automatic writer, disabled actions; later head edits left the run's revision, mesh, deck and results byte-identical; Results open independently; 3D remains preview-only. | run revision + deck snapshot |
+
+### D. Readable force axis
+
+The long rotated title is gone from the axis. The full phrase is a wrapping semantic caption next to
+the plot (`aria-describedby` on the plot, and the plot's accessible name carries both directions), while
+the Y axis keeps a concise unit-bearing title. Measured against the real clipping container:
+
+| Case | Plot height | Y title height | Y within plot | X title width / plot width |
+|---|---|---|---|---|
+| 1440/1280/720/390, English, `N` | 210 | **52.5** | top ≥ plot top, bottom ≤ plot bottom | 111.6 / 332–424 |
+| 1440/1280/720/390, Japanese, `N` | 210 | **34.2** | inside | 59.9 / 332–424 |
+| `N/mm` | 210 | **80.0** | inside | 111.6 / 424 |
+| Body seating step | 210 | **80.0** | inside | 111.6 / 424 |
+| Reverse Y | 210 | **80.0** | inside | 111.6 / 424 |
+
+Before: the English title measured about **269 px** vertically in the **210 px** host and extended
+**45 px above** and **14 px below** the SVG at every width. The plotted trace, zoom, picking and the
+two-row exported CSV were re-checked unchanged (the existing signed-projection, step-switch and export
+test still passes, including `4,-3` and Reverse-Y `-4,3`).
+
+### E. Material outlines
+
+The overlay is built from each deformable instance's **original element connectivity and local node
+labels**, not from renderer vertices, so an element-based stress display with duplicated corner vertices
+cannot change its topology. Face→material identity comes from the job's immutable submitted revision
+with the pinned library version in the key. A shared FE edge with two distinct materials becomes one
+interface associated with both; an edge shared by two CAD faces that carry the same material is not an
+interface; edges with one incident element are perimeters (outer and cavity); rigid `R2D2` instances are
+excluded; a result without regional mapping draws nothing and disables the toggle with the reason.
+
+Renderer-free synthetic invariants (CI, no solver): a two-material bonded patch gives **2** interfaces
+and **8** perimeters with the rigid panel excluded; the same patch with one material gives **0**
+interfaces (four same-material seams skipped); a pinned version change splits the identity; a hollow
+triangle ring gives **0** interfaces and **8** perimeter edges including the **4** inner cavity edges;
+a legacy result with no regions maps **0** elements and draws nothing; the overlay follows the frame's
+displacements, Deformed toggle and scale and is never a probe/pick target.
+
+Manufactured API→worker→result run (default synthetic section, two materials, `PANEL-1` rigid):
+
+| Quantity | Count |
+|---|---|
+| Mesh nodes / elements | 708 / 615 |
+| Deformable seal elements / mapped | 567 / **567** |
+| Effective materials | `card:base_rubber`, `card:bulb_foam` |
+| Internal material interfaces | **36** |
+| Perimeter segments | **184** |
+| Same-material interior edges excluded | **1006**, all within a single CAD face per edge |
+
+The browser test recomputes the interface count independently from `results.json` and the pinned
+revision and compares it with the rendered overlay dataset and the legend; toggling mesh edges, node
+markers, Deformed and frames changes neither the count nor the legend. A single-material run keeps a
+readable perimeter, reports **0** interfaces and says so.
+
+### Tests actually run (this machine, isolated data)
+
+- `.\.venv\Scripts\python.exe -m pytest -q`: **305 passed, 1 skipped** (opt-in Abaqus-Python roundtrip).
+- `npm --prefix apps/web run test:i18n`: **879 keys** in both dictionaries. `test:encoding`: 45 files.
+- `npm --prefix apps/web run typecheck`: pass.
+- `npm --prefix apps/web run build`: release **`4933ae101e08`**, entry `index-BZ3wYYIK.js`, API 3.
+- `npm --prefix apps/web run test:browser`: **150 passed, 4 skipped, 0 failed** (154 tests). The four
+  skips are the two opt-in retained-result replays (no local seed on this run), the gated screenshot
+  capture and the retained native-lip drawing check.
+- `.\.venv\Scripts\python.exe scripts\schema.py`: regenerated `generated.ts` byte-identically (no diff).
+- `git diff --check`: clean (line-ending notices only).
+
+Manufactured evidence: every run in these suites used the license-free launcher double. No retained
+operator row, drawing, deck or ODB was read or changed by this pass.
+
+### Evidence files (local, not committed)
+
+`.local/evidence/dashboard-{1440,1280,720,390}-{en,ja}.png`,
+`dashboard-measurements.json`, `force-axis-measurements.json`,
+`material-outlines-{undeformed,deformed}.png`, and `.local/gate-e-counts.py` (isolated independent
+count). The existing `.local/evidence` axis replay files are from the earlier retained-run pass.
+
+### Outstanding
+
+- Operator's running instance (port 8765, release `5be20b24e6d0` at the brief's audit) was **not**
+  restarted or upgraded; this report describes the verified isolated build separately.
+- The operator's retained two-material result was not re-read: its 8-interface / 4-same-material-seam
+  count remains an operator observation. The synthetic CI equivalent and a fresh manufactured run are
+  the evidence here.
+- No licensed solve, numerical sensitivity study or physical correlation was performed; physical
+  correlation, self-contact participation and 3D solving remain **BLOCKED**.
+- Materials comparison and one renderer run failed once in full-suite runs under shared data and passed
+  after the concrete fixes (the renderer case waited for the now-persisted 2D/3D display to settle;
+  materials passes in isolation, the same pre-existing intermittency noted in A12). The definitive full
+  run on the final build and test tree is **150 passed, 4 skipped, 0 failed**.
+
 ## A12. Hollow lip partition repair · 2026-11-24
+
 
 Starting checkout `9dd196504864c7fdb310f09eb97c4ed0a902a917`; the handoff was modified and the
 two partition briefs were untracked. The operator's existing port 8765 served API build
@@ -1222,3 +1421,73 @@ Release decisions:
 
 No solver was executed in Phases 0–5 and no licensed artifact was modified. The live 8765 instance was
 not running at the final checkpoints and was never touched.
+
+## A14. Six file-workbench gates — 2026-11-24
+
+Baseline `84ab7a2` plus the uncommitted A–E delivery, preserved. Isolated
+`SEAL_DATA`, temporary folders and the isolated browser service only; the
+operator instance and retained artifacts were untouched. **No licensed solver
+was launched.** Abaqus/CAE 2024 noGUI was used once for material-card
+verification (a CAE license token was consumed).
+
+### Gate results
+
+| Gate | Result | Evidence |
+|---|---|---|
+| 0. Two-tab Save Retry | **PASS** | `apps/web/src/features/workspace/merge.ts` reconciles `base → head` with the local delta. Two-tab browser test: A saves width 111 mm, B changes only mesh size, Retry commits `reporting_width=111` **and** `mesh.size=1.25`. Same-field edits report `analysis.reporting_width` and offer Reload; nothing is overwritten. |
+| 1. Live progress | **PASS** | `ProgressSummary` gained a visible current-step line and a named, focusable `progress-detail` scroll region; `.run-view .run-progress` is `flex: 0 0 auto` with a bounded height. Tests assert `scrollHeight <= clientHeight` and child bounds at 1874×762, 1440×900, 1280×720 and 390×844 in JA/EN, plus keyboard scrolling at 1280×520. |
+| 2. Completed result space | **PASS** | The large card is replaced by a completion line in the existing banner. At 1280×720 the result grid is **458 px** (was 355) and the viewport **324 px** (was 302); playback is fully visible and the display controls are reachable by scrolling the field card. 46vh is the fixed shell's maximum because playback must remain inside the grid. Diagnostics keeps the full card. |
+| 3. Spline import | **PASS (software)** | Open-only drawings become inspectable models with zero faces and `drawing.no_closed_region`. The 1e-6 mm endpoint join reports `snapped`, `maxGap`, `nearestGap`; gaps outside tolerance are never bridged. The two documented passing drawings still contain two splines and one face through upload → worker. |
+| 4. Material library | **PARTIAL** | Data-only `.lib` reader (no pickle execution), 27 cards, Japanese decoded; 2 exact mappings (PA6, METAL), 25 explicit ineligibility reasons. Import/export with fingerprints and provenance. **CAE 2024 created all 27 cards from the parsed data and reproduced PA6/METAL numbers.** Metal regions emit CPS4, polymer regions CPS4R, with per-region ELSETs/sections in the INP. Legacy unregistered demo cards are still accepted with a warning; the CAE GUI Manager file-open was not automated. |
+| 5. One vertical workflow | **PASS** | `AnalysisActions` moved from the left tree to the top of the Results properties once. Eight stages keep DOM/visual/keyboard order in JA/EN and at short/zoomed sizes; Results opens before any artifact; Submit-only CPU/name reasons are local; no duplicate run controls. |
+| 6. Portable files | **PARTIAL** | `.aqmodel` New/Save/Save As with fingerprint conflict, atomic publish and fresh-install reopen. `.aqresult` published by the worker with no browser, collision-safe distinct names, read-only reopen. Truncated/wrong-kind/unsupported-version refused; failed extraction refuses publication. The Dashboard still shows project history. |
+
+### Measured layout
+
+| Measurement | Before | After |
+|---|---|---|
+| Progress card, 1280×720 | 124 px visible for 276 px content (audit) | card fits its content; detail scrolls only when the window is shorter |
+| Result grid, 1280×720 | 355 px | **458.2 px** |
+| Result viewport, 1280×720 | 302 px | **324 px** |
+
+### Material coverage ledger (supplied library, SHA-256 `7ab001b6…`)
+
+| Stage | Count |
+|---|---|
+| Records in file | 28 (27 materials, 1 container) |
+| Parsed and shown in preview | 27 |
+| Eligible for exact registration | 2 (PA6, METAL) |
+| Ineligible — hyperfoam | 11 |
+| Ineligible — hyperelastic | 9 |
+| Ineligible — plastic | 2 |
+| Ineligible — viscoelastic | 4 |
+| Ineligible — Mullins | 2 |
+| Ineligible — no structural law | 1 |
+| CAE kernel created from parsed data | **27 of 27** |
+
+CAE reproduction: PA6 density `1.13e-9`, elastic `[[2600, 0.39]]`,
+`ISOTROPIC`; METAL density `7.65e-9`, elastic `[[206000, 0.3]]`, `ISOTROPIC`.
+Export is byte-identical to the CAE-authored source (SHA-256 matches).
+
+### Tests actually run
+
+| Command | Result |
+|---|---|
+| `pytest -q` | **328 passed, 1 skipped** |
+| `test:i18n` | **946 keys** both dictionaries |
+| `test:encoding` | 47 files |
+| `typecheck` | pass |
+| `build` | release `81fc7a73aa30`, entry `index-BdawGA5k.js`, API 3 |
+| `test:browser` | **160 passed, 4 skipped, 3 failed** on release `81fc7a73aa30`; the three failing tests pass in isolation (`gate-f` 2 passed alone; `materials` + `motion-preview` 7 passed together). A later 4-file run also flaked the rapid-edit coalescing test once; it passed 3/3 when repeated alone. These are suite-load timing flakes, not gate failures. |
+
+New Python suites: `test_dwg_open_only.py` (11), `test_material_library_cae.py`
+(5), `test_portable_files.py` (7). New browser suites: `run-layout.spec.ts` (5),
+`auto-save.spec.ts` additions (2), `setup-workflow.spec.ts`, `file-workflow.spec.ts`.
+
+### Honest limits
+
+Physical correlation, numerical sensitivity, self-contact participation and any
+licensed solver execution remain **BLOCKED**. The CAE GUI Material Library
+Manager file-open path is not automated; card data and the exported container
+are verified, not that GUI action. Registered-only material enforcement and the
+full retirement of the project UI are partial.

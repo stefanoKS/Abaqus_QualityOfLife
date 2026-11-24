@@ -23,7 +23,7 @@ scroll the left pane below the assembly tree to reach the analysis actions.
 | Area | Contents |
 |---|---|
 | Header | Product logo and name, Workspace / Dashboard switch, session indicator, language selector |
-| Model header | Model name, revision, dimension, unit system, readiness notice; **Save revision** |
+| Model header | Model name, revision, dimension, unit system, readiness notice; automatic save state and **Duplicate setup** |
 | Left work area | Two-column workflow (with per-step configuration state) and the assembly tree |
 | Property editor | Editor for the selected workflow stage or CAD entity; scrolls on its own |
 | Drawing field | White geometry, mesh and result viewport with zoom / fit tools on the right |
@@ -33,19 +33,22 @@ scroll the left pane below the assembly tree to reach the analysis actions.
 On a narrow window or at high browser zoom the panes stack in the page flow and a **Workflow &
 properties** button collapses them, so the drawing field and the stage actions remain reachable. The
 empty drawing field is white and has no import button: the Import stage owns the file picker and its
-onboarding text.
+onboarding text. On the Dashboard, the run filters wrap inside the run card and a long run list scrolls
+with the page; at narrow widths each run becomes one compact labelled row (identity, state, submitted,
+elapsed, actions) instead of a wide table.
 
 Each workflow step shows its configuration state:
 
 - **check** — the required configuration is complete.
-- **circle** — not configured yet.
-- **lock** — blocked because a prerequisite step is incomplete.
+- **circle** — not configured yet, with the missing input named in its tooltip and the next-action banner.
+- **lock** — reserved for a genuine read-only restriction, such as the deferred 3D extrusion. A missing
+  role, material, mesh, mounting selection or contact value is correctable and never shows a lock.
 
-Completion is derived from the saved setup, not from whether you opened the step.
+Completion is derived from the automatically saved setup, not from whether you opened the step.
 
 ## 2. Basic workflow
 
-The 2D workflow is **Import -> Components -> Materials -> Mesh -> Mounting -> Contact -> Motion -> Results**. Mesh produces elements only; **Mounting** owns the fixed-node selection and **Contact** owns the contact law and friction, and neither blocks the other. **Prepare input deck** and **Submit Abaqus analysis** are not a stage: they stay in the left **Analysis actions** group throughout an editable 2D setup. **Results** and historical submitted setups remain reachable.
+The 2D workflow is **Import -> Components -> Materials -> Mesh -> Mounting -> Contact -> Motion -> Results**. Mesh produces elements only; **Mounting** owns the fixed-node selection and **Contact** owns the contact law and friction, and neither blocks the other. **Prepare input deck** and **Submit Abaqus analysis** are not a stage: they live once, at the top of the **Results properties**, and Results opens before a mesh, deck or run exists. **Results** and historical submitted setups remain reachable.
 
 The header shows one language button labelled with the destination language (`English` while the interface is Japanese, `日本語` while it is English). One click switches; the current model, step, camera, selection and unsaved values are kept.
 
@@ -73,6 +76,12 @@ The header shows one language button labelled with the destination language (`En
    through its fit points, so display and meshing follow the drawn curve rather than a chord.
    A failed import leaves the last good drawing usable; a first failed import leaves the model empty
    with an error you can act on.
+   An **open-only drawing** (curves that do not close) is now accepted as a saved, inspectable model:
+   the viewport shows every spline or line, both disconnected profiles stay selectable and saveable,
+   and the import summary reports zero closed material regions. Simulation stays blocked with the
+   specific reason **No closed seal** until the contour is closed in CAD. Compatible evaluated
+   endpoints within 1e-6 mm are joined; a larger gap is reported with its measured size and is never
+   bridged.
 4. **Components** — assign each component a role: weatherstrip seal, door panel, and so on. The same
    stage lists section regions and owns the projected partition: selecting a region highlights it and
    makes it the partition target without leaving Components; **Assign material to this region** is the
@@ -109,21 +118,56 @@ The header shows one language button labelled with the destination language (`En
    nodes**, inspect the highlighted result, and save it as the reviewed fixture.
 9. **Analysis actions → Prepare input deck** (first, blue) is always available in the left group and
    writes an `.inp` from the reviewed mesh, fixed nodes, materials, contact and motion. It never
-   enqueues a mesh job and never submits. The button is enabled only for a saved revision whose
-   engineering inputs are complete; a missing or stale deck never blocks preparation. When ready,
+   enqueues a mesh job and never submits. The button is enabled only when the engineering inputs of the
+   current setup are complete; a missing or stale deck never blocks preparation. When ready,
    **Input ready** appears with **Inspect input deck** and **Download INP**. If disabled, the reason
    beside the button names the issue and its owning stage.
 10. **Submit Abaqus analysis** (second) runs that exact prepared deck and reviewed fixture; preparation
     and execution are separate. Set the run name and CPU count in the same group. If disabled, follow
-    the displayed reason: save the revision, correct invalid input, generate a compatible mesh, review
-    fixed nodes, configure the Abaqus launcher or prepare a current deck. A motion-only edit reuses the
-    mesh but needs a new deck and revision.
+    the displayed reason: correct invalid input, generate a compatible mesh, review fixed nodes,
+    configure the Abaqus launcher or prepare a current deck. A motion-only or friction edit reuses the
+    mesh but needs a new deck.
 11. **Results** — opens on **von Mises** and element probing when the run contains stress (otherwise
     on displacement magnitude and node probing). Switch the **Field**, set the displacement (0–5 mm) or stress (0–0.50 MPa) range
     (fixed default, run-wide auto, or editable limits), toggle mesh edges and
-    node markers independently, scale the deformation, and probe cells or nodes. The canvas is solid
+    node markers independently, scale the deformation, and probe cells or nodes. An optional
+    **Material outlines** layer draws material perimeters and internal interfaces with a compact
+    swatch legend; it is independent of mesh edges, node markers, the field and the deformation scale.
+    The canvas is solid
     white. Play frames (Loop is on by default), read the door panel response curve, export the displayed curve, and download the
     raw history CSV (missing measurements stay empty, not zero).
+
+### Automatic saving, branching and history
+
+The workspace edits **one current model**. Every valid committed setting is saved automatically: type a
+value and press Enter or leave the field, choose a role or card, or tick an option, and the compact
+**Saved automatically** status confirms the new current revision. There is no Save revision button and
+no separate Save contact action. While a write is in flight the status reads **Saving changes…** and
+Prepare pauses with that temporary reason; if persistence fails, **Save failed** appears with the cause
+and a **Retry** button, and the typed values stay on screen. A conflict from another tab is resolved by
+rebasing only your own changed fields: if another window changed the reporting width and you changed
+the mesh size, Retry keeps both. If you both changed the same field, the message names it and offers
+**Reload revision**; nothing is overwritten.
+
+**Save and Save As (portable model files).** The header shows the current `.aqmodel` filename or
+**Not saved to a file**. **Save** writes the current model to that file (Ctrl+S does the same); the
+first Save, or **Save As…**, asks for a folder and a file name. A model file carries the drawing source,
+every CAD ID, the material snapshots, mesh settings, the compatible mesh and reviewed fixture, contact,
+motion and run settings. If the file changed on disk since this session saved it, you are asked before
+overwriting, and Save As always leaves the original untouched. Opening a model file creates an
+independent head in this installation; it never overwrites the file another engineer has open.
+
+**Result files.** In the Results properties, set an optional **Result folder** before Submit. After a
+successful extraction the worker writes `<model>-<run>-<timestamp>-<short-id>.aqresult` there, even if
+the browser is closed. A failed save is reported separately from solver and extraction state; you can
+retry it without resubmitting the solver. Open a result file from Dashboard → File → **Open result…**;
+it is read-only evidence with its frames, history, index and provenance.
+
+**Duplicate setup** (and Duplicate on the Dashboard) is the explicit way to branch into an independent
+model. New project and New model still start a fresh model. A submitted setup link
+(**Setup** on a run row) always opens exactly the revision that ran, read-only; later edits never change
+its setup, mesh, deck or results.
+
 
 ### Operator workflows
 
@@ -162,9 +206,12 @@ so the body panel and door panel travel/force curves are read separately. This t
 integration-tested but has **not** been validated with a licensed solve yet; treat it as unqualified
 until that evidence exists.
 
-**Change travel and rerun with the same mounting.** Open the model → Motion → change the signed travel
-→ Save revision. The mesh stays compatible; the analysis action group prepares a new deck with the same reviewed
-fixed nodes and submits Abaqus. The earlier revision, deck, fixture and result stay readable.
+**Change travel or friction and rerun with the same mounting.** Open the model → Motion (or Contact) →
+change the value. The edit is saved automatically, the mesh stays compatible, Mounting stays visible
+and keeps the reviewed fixed nodes, and the analysis action group prepares a new deck with them and
+submits Abaqus. The earlier deck, fixture and result stay readable. A material-card value change also
+reuses the mesh; changing mesh size/sizing or the roles that decide the mesh requires a new mesh and a
+fresh fixed-node review, which the stage explains.
 
 **Intentionally regenerate the mesh and review the fixed nodes again.** Open Mesh and choose Generate
 mesh. When a reviewed fixture exists, the app states how many fixed nodes are affected and requires
@@ -174,7 +221,7 @@ labels or mesh bytes require that fresh review.
 
 **Correct an invalid number.** A number you type stays visible even when it is invalid. A **cleared
 required field is invalid**, never “unchanged”: it cannot save the previous value. The field explains
-the problem, and **Save revision**, **Generate mesh**, **Prepare input deck** and submit stay
+the problem, nothing is written, and **Generate mesh**, **Prepare input deck** and submit stay
 disabled; leaving the step is refused with the same explanation. Correct the value, or press
 **Escape** to restore the saved value deliberately. Nothing is saved behind your back.
 
@@ -228,6 +275,22 @@ of selected versions only (no fit or extrapolation).
 
 **Import model-local cards** creates new library entries from a model revision. Cards are never
 merged by name, so two distinct cards with the same name remain separate.
+
+**Import a CAE material library.** In the Materials page, **Import a CAE material library** reads an
+Abaqus/CAE `.lib` file without executing it, shows every card, its law and the exact reason it can or
+cannot be registered, and registers only the eligible cards you tick. Only a pure isotropic
+linear-elastic card with a constant density maps exactly; hyperfoam, hyperelastic, plastic,
+viscoelastic, Mullins and thermal-only cards stay visible but blocked. Declare the structural family
+(polymer or metal) and the unit basis for the batch. An identical reimport reuses the existing entry;
+two different cards with the same name are both registered and distinguished by a content suffix.
+**Export a CAE material library** writes the original CAE record bytes to a folder, verifies the
+round-trip and publishes the file atomically.
+
+**Engineering family and element type.** Each card declares a family. Polymer quadrilaterals are
+reduced-integration **CPS4R**; deformable metal quadrilaterals are full-integration **CPS4**. Triangle
+seal elements stay CPS3 and rigid profiles stay R2D2. The INP writes one element block and one
+per-region ELSET/section per type. Changing the family requires a new mesh; changing a coefficient
+reuses the mesh and the reviewed fixture but stales the deck.
 
 In the workspace, choose a region and either pick an existing model-local card or **Assign from the
 material library**. The summary shows the pinned library version. If the library has a newer version,
@@ -326,7 +389,13 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   automatically; use **Fit and reset view** (F) to return explicitly. Stepping, scrubbing, playback,
   component changes and the deformed/undeformed toggle keep the camera. Each quantity's colour scale
   and legend come from measured run-wide values and do not change between frames.
-- **Mesh edges** are on by default in Results and remain an independent toggle. **Play frames** starts
+- **Mesh edges** are on by default in Results and remain an independent toggle. **Material outlines**
+  is an independent display preference, off by default: it draws each material's perimeter in the
+  material colour and every internal interface between two different materials as one thicker neutral
+  line, with a compact swatch/name legend and an interface count. It follows the displayed frame's
+  displacements, the Deformed toggle and the deformation scale, never changes the field, range, probes
+  or exports, and is unavailable (with the reason shown) for a legacy result without regional material
+  data. **Play frames** starts
   paused. **Loop** is on by default: after the last displayed frame is held for one playback interval,
   playback wraps to the first frame and repeats. Turn **Loop** off to stop on the final frame. Pause
   and scrub work at any time; a failed frame leaves the last valid scene visible and names the frame.
@@ -334,7 +403,11 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   fixed status row, so a pending frame cannot reflow the controls. Zero- and one-frame runs show a
   static frame and never start a timer.
 - **Panel response** plots the selected step's reference-point reaction projected onto that step's own
-  motion direction against the step-relative travel. The readout under the chart names the step, role,
+  motion direction against the step-relative travel. The full description (step direction, panel and
+  unit, for example “Door panel reaction along closing direction (N)”) is shown as a wrapping caption
+  immediately above the plot, and the rotated Y axis uses a short unit-bearing title such as
+  “Force (N)” so it fits the plot height at every window width and at 200% zoom. The readout under the
+  chart names the step, role,
   instance and RP label, the actual direction **d** = (dx, dy) and its angle counterclockwise from
   global +X, and the force basis. Body seating and Closing therefore use different axes; the body's
   upward seating is never projected onto the door's closing direction. A legacy record without step

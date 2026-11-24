@@ -158,6 +158,186 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/material-library/cae/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview Cae Library
+         * @description Decode an uploaded CAE library without executing or registering anything.
+         */
+        post: operations["preview_cae_library_api_material_library_cae_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/material-library/cae/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Cae Library
+         * @description Register selected eligible cards with a stable fingerprint and provenance.
+         */
+        post: operations["import_cae_library_api_material_library_cae_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/material-library/cae/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Export Cae Library
+         * @description Write the original CAE bytes to a chosen folder and verify the round-trip.
+         */
+        post: operations["export_cae_library_api_material_library_cae_export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/pick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pick Path
+         * @description Explorer-style picker through the local desktop session (loopback only).
+         */
+        get: operations["pick_path_api_files_pick_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/model/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save Model File
+         * @description Write the current head as a portable model file, atomically.
+         */
+        post: operations["save_model_file_api_files_model_save_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/model/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Model File
+         * @description Open a portable model as a new independent head in this installation.
+         */
+        post: operations["open_model_file_api_files_model_open_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/model/open-info": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Model File With Identity
+         * @description Open a model and return the file identity the browser must remember.
+         *
+         *     The revision alone cannot tell the workspace which file is active, so the
+         *     opener returns the pathname and the exact SHA-256 it read.
+         */
+        post: operations["open_model_file_with_identity_api_files_model_open_info_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/result/package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Package Result File */
+        post: operations["package_result_file_api_files_result_package_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/files/result/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open Result File
+         * @description Open a packaged result read-only; no solver or extractor runs.
+         */
+        post: operations["open_result_file_api_files_result_open_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/groups": {
         parameters: {
             query?: never;
@@ -751,6 +931,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{jid}/result-file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Result File
+         * @description Retry saving a completed result to a folder without resubmitting the solver.
+         */
+        post: operations["retry_result_file_api_jobs__jid__result_file_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{jid}/display-metadata": {
         parameters: {
             query?: never;
@@ -971,6 +1171,37 @@ export interface components {
              */
             file: string;
         };
+        /** Body_import_cae_library_api_material_library_cae_import_post */
+        Body_import_cae_library_api_material_library_cae_import_post: {
+            /**
+             * File
+             * Format: binary
+             */
+            file: string;
+            /**
+             * Keys
+             * @default []
+             */
+            keys: string;
+            /**
+             * Family
+             * @default polymer
+             */
+            family: string;
+            /**
+             * Units
+             * @default N-mm-s-tonne
+             */
+            units: string;
+        };
+        /** Body_preview_cae_library_api_material_library_cae_preview_post */
+        Body_preview_cae_library_api_material_library_cae_preview_post: {
+            /**
+             * File
+             * Format: binary
+             */
+            file: string;
+        };
         /** Build */
         Build: {
             /**
@@ -983,6 +1214,16 @@ export interface components {
              * Format: uuid
              */
             token: string;
+        };
+        /**
+         * CaeExportRequest
+         * @description Export registered CAE-sourced materials into a user-selected folder.
+         */
+        CaeExportRequest: {
+            /** Folder */
+            folder: string;
+            /** Material Ids */
+            material_ids?: string[];
         };
         /** Component */
         "Component-Input": {
@@ -1466,6 +1707,12 @@ export interface components {
             manifest: string[];
             /** Input Hash */
             input_hash: string | null;
+            /** Output Dir */
+            output_dir?: string | null;
+            /** Result File */
+            result_file?: string | null;
+            /** Publication */
+            publication?: string | null;
         };
         /** LibraryCreate */
         LibraryCreate: {
@@ -1562,6 +1809,10 @@ export interface components {
             created: number;
             /** Note */
             note: string;
+            /** Source */
+            source?: {
+                [key: string]: unknown;
+            } | null;
         };
         /** Material */
         "Material-Input": {
@@ -1597,6 +1848,12 @@ export interface components {
                 number,
                 number
             ][];
+            /**
+             * Family
+             * @default polymer
+             * @enum {string}
+             */
+            family: "polymer" | "metal";
             /** Library Id */
             library_id?: string | null;
             /** Library Version */
@@ -1636,6 +1893,12 @@ export interface components {
                 number,
                 number
             ][];
+            /**
+             * Family
+             * @default polymer
+             * @enum {string}
+             */
+            family: "polymer" | "metal";
             /** Library Id */
             library_id: string | null;
             /** Library Version */
@@ -1669,6 +1932,12 @@ export interface components {
                 number,
                 number
             ][];
+            /**
+             * Family
+             * @default polymer
+             * @enum {string}
+             */
+            family: "polymer" | "metal";
         };
         /** MaterialImportRequest */
         MaterialImportRequest: {
@@ -1724,6 +1993,26 @@ export interface components {
              * @default true
              */
             recombine: boolean;
+        };
+        /**
+         * ModelFileRequest
+         * @description Save the current model head as a portable ``.aqmodel`` file.
+         */
+        ModelFileRequest: {
+            /**
+             * Revision
+             * Format: uuid
+             */
+            revision: string;
+            /** Path */
+            path: string;
+            /** Base Sha */
+            base_sha?: string | null;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite: boolean;
         };
         /** Motion */
         "Motion-Input": {
@@ -1865,6 +2154,21 @@ export interface components {
              * Format: uuid
              */
             token: string;
+        };
+        /** OpenFileRequest */
+        OpenFileRequest: {
+            /** Path */
+            path: string;
+        };
+        /** PackageResultRequest */
+        PackageResultRequest: {
+            /**
+             * Job
+             * Format: uuid
+             */
+            job: string;
+            /** Folder */
+            folder?: string | null;
         };
         /** PartitionApply */
         PartitionApply: {
@@ -2125,6 +2429,11 @@ export interface components {
             extrusion: components["schemas"]["Extrusion-Output"];
             analysis: components["schemas"]["Analysis-Output"];
             source: components["schemas"]["Source-Output"];
+        };
+        /** ResultFileRetry */
+        ResultFileRetry: {
+            /** Folder */
+            folder?: string | null;
         };
         /** Revision */
         Revision: {
@@ -2426,6 +2735,8 @@ export interface components {
              * @default 1
              */
             cpus: number;
+            /** Output Dir */
+            output_dir?: string | null;
         };
         /** Summary */
         Summary: {
@@ -2778,6 +3089,302 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LibraryDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_cae_library_api_material_library_cae_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_preview_cae_library_api_material_library_cae_preview_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_cae_library_api_material_library_cae_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_cae_library_api_material_library_cae_import_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_cae_library_api_material_library_cae_export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaeExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    pick_path_api_files_pick_get: {
+        parameters: {
+            query?: {
+                mode?: string;
+                title?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_model_file_api_files_model_save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_model_file_api_files_model_open_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_model_file_with_identity_api_files_model_open_info_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    package_result_file_api_files_result_package_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PackageResultRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_result_file_api_files_result_open_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenFileRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
                 };
             };
             /** @description Validation Error */
@@ -3927,6 +4534,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_result_file_api_jobs__jid__result_file_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ResultFileRetry"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

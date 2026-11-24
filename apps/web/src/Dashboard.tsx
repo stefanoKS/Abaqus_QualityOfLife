@@ -31,6 +31,7 @@ import {
 import { labelFrom, useI18n } from './i18n'
 import { useCompatibility } from './Compat'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
+import { FileBar } from './features/files/FileBar'
 
 /** One user action: a project group and its first model, created atomically. */
 type GroupCreated = { group: Group; model: Revision }
@@ -425,6 +426,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           {t('dashboard.newProject')}
         </button>
       </div>
+      <FileBar notify={notify} />
       {creatingGroup && (
         <form className="create-form card" onSubmit={addGroup}>
           <p className="create-hint">{t('dashboard.groupHint')}</p>
@@ -487,7 +489,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                 <FolderOpen />
               </span>
               <div>
-                <strong>{group.name}</strong>
+                <strong title={group.name}>{group.name}</strong>
                 <small>
                   {group.archived ? t('dashboard.archivedBadge') + ' · ' : ''}
                   {t('dashboard.modelsCount', { count: group.models.length })} ·{' '}
@@ -559,7 +561,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                         <Layers3 />
                       </span>
                       <span>
-                        <strong>{p.name}</strong>
+                        <strong title={p.name}>{p.name}</strong>
                         <small>
                           {p.archived ? t('dashboard.archivedBadge') + ' · ' : ''}
                           {p.dimension} · {t('dashboard.revision', { number: p.number })} ·{' '}
@@ -633,10 +635,11 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             <History />
             {t('dashboard.runs')}
           </h2>
-          <div className="filters">
+          <div className="filters" data-testid="run-filters">
             <ListFilter />
             <select
               aria-label={t('dashboard.filterProject')}
+              title={groups.find((g) => g.id === projectFilter)?.name || t('dashboard.allProjects')}
               value={projectFilter}
               onChange={(e) => {
                 pf(e.target.value)
@@ -652,6 +655,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             </select>
             <select
               aria-label={t('dashboard.filterModel')}
+              title={projects.find((p) => p.id === modelFilter)?.name || t('dashboard.allModels')}
               value={modelFilter}
               onChange={(e) => mf(e.target.value)}
             >
@@ -664,6 +668,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             </select>
             <select
               aria-label={t('dashboard.filterStatus')}
+              title={status ? labelFrom(t, 'state', status) : t('dashboard.allStatuses')}
               value={status}
               onChange={(e) => sf(e.target.value)}
             >
@@ -678,7 +683,13 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           </div>
         </div>
         {visible.length ? (
-          <div className="table-scroll">
+          <div
+            className="table-scroll"
+            data-testid="run-table-scroll"
+            role="region"
+            aria-label={t('dashboard.runsRegion')}
+            tabIndex={0}
+          >
             <table>
               <thead>
                 <tr>
@@ -695,9 +706,9 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
               </thead>
               <tbody>
                 {visible.map((r) => (
-                  <tr key={r.id}>
+                  <tr key={r.id} data-run-status={r.status}>
                     <td>
-                      <strong>{r.name}</strong>
+                      <strong title={r.name}>{r.name}</strong>
                       <small>
                         {(r.group_name ? r.group_name + ' · ' : '') + r.project_name} ·{' '}
                         {r.dimension} · Rev {r.number}
@@ -709,7 +720,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                         {r.mode === 'DEMO' ? t('demo.notice') : r.mode}
                       </small>
                     </td>
-                    <td>
+                    <td data-label={t('dashboard.colState')}>
                       <Badge value={r.status} />
                       <small>
                         {labelFrom(t, 'phase', r.step || r.phase)}
@@ -718,9 +729,9 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                           : ''}
                       </small>
                     </td>
-                    <td>{formatDate(r.created)}</td>
-                    <td>{elapsed(r)}</td>
-                    <td>
+                    <td data-label={t('dashboard.colSubmitted')}>{formatDate(r.created)}</td>
+                    <td data-label={t('dashboard.colElapsed')}>{elapsed(r)}</td>
+                    <td data-label={t('dashboard.colOutput')}>
                       <JobActions job={r} notify={notify} refresh={refresh} />
                     </td>
                   </tr>

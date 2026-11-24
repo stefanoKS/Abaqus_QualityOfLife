@@ -22,6 +22,9 @@ class Builder:
         self.points = {}
         self.curves = {}
         self.splines = {}
+        # Measured endpoint snaps, so an import report can state the gap that was
+        # closed instead of silently hiding it.
+        self.snaps = []
 
     def vertex(self, xyz, tolerance=0.0):
         x, y, z = xyz
@@ -33,7 +36,16 @@ class Builder:
             # Only splines snap: a converted B-spline endpoint can differ from the
             # adjoining line's endpoint by a sub-micron rounding amount.
             for existing, vertex_id in self.points.items():
-                if math.dist(existing[:2], key[:2]) <= tolerance:
+                gap = math.dist(existing[:2], key[:2])
+                if gap <= tolerance:
+                    self.snaps.append(
+                        {
+                            "vertex": vertex_id,
+                            "xyz": list(key),
+                            "gap": gap,
+                            "tolerance": tolerance,
+                        }
+                    )
                     return vertex_id
         if key not in self.points:
             vertex = Vertex(id=f"v{self.prefix}{len(self.vertices) + 1}", xyz=xyz)

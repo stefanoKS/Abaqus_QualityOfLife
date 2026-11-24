@@ -233,8 +233,66 @@ def evaluate(rid):
         findings.append(finding("drawing.extrusion_preview", "import", BLOCKER))
 
     source = setup.source
+    unassigned_components = [c.id for c in setup.components if c.role == "unassigned"]
     if source.kind in {"dxf", "dwg"} and not source.digest:
         findings.append(finding("drawing.digest_missing", "import", WARNING))
+
+    # An open-only drawing is a valid, inspectable model (curves are selectable
+    # and saveable) but it has no closed structural seal. Name the condition
+    # before any other stage so the engineer knows simulation is blocked by
+    # geometry, not by a missing role or material.
+    if source.kind in {"dxf", "dwg"} and not setup.faces:
+        face_components = {face.component for face in setup.faces}
+        open_profiles = [
+            component
+            for component in setup.components
+            if component.id not in face_components
+            and any(edge.component == component.id for edge in setup.edges)
+        ]
+        findings.append(
+            finding(
+                "drawing.no_closed_region",
+                "import",
+                BLOCKER,
+                {"open_profiles": len(open_profiles), "curves": len(setup.edges)},
+                artifact="revision:" + str(rid),
+            )
+        )
+        # Simulation is blocked by the drawing itself. Returning here avoids a
+        # cascade of misleading downstream blockers (a missing mesh, fixture or
+        # deck) that cannot be repaired while the seal is still open.
+        counts = {
+            "components": len(setup.components),
+            "unassigned_components": len(unassigned_components),
+            "regions": 0,
+            "unassigned_regions": 0,
+            "materials": len(setup.materials),
+            "mesh": None,
+            "mesh_digest": None,
+            "mesh_compat": None,
+            "mesh_artifact": None,
+            "fixture_count": 0,
+            "fixture_hash": None,
+            "deck": None,
+            "deck_status": None,
+            "deck_mesh": None,
+            "deck_fixture_hash": None,
+            "run": None,
+            "revision": str(rid),
+            "head": head_id,
+            "archived": archived,
+            "head_revision": is_head,
+        }
+        return _document(
+            revision,
+            setup,
+            findings,
+            counts,
+            None,
+            head_id,
+            None,
+            archived=archived,
+        )
 
     unassigned_components = [c.id for c in setup.components if c.role == "unassigned"]
     for entry in role_findings(setup.components, setup.edges, setup.faces):
@@ -467,16 +525,33 @@ def evaluate(rid):
 def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, can_prepare,
                   can_submit, latest_run):
     """Sidebar badges from the same revision snapshot as the actions."""
-    # Missing-but-actionable inputs read as "incomplete"; a genuine
-    # incompatibility reads as "blocked".
+    # Missing-but-actionable inputs read as "incomplete"; the padlock is
+    # reserved for a genuine read-only restriction (for example the unsupported
+    # 3D extrusion preview). Every role, material, mesh, mounting and motion
+    # defect is repaired by editing the stage that owns it, so it must never be
+    # rendered as a lock: that hid an editable role selector behind a padlock.
     incomplete_codes = {
         "drawing.missing",
+        "drawing.no_closed_region",
         "mesh.missing",
+        "mesh.artifact_missing",
+        "mesh.artifact_corrupt",
         "mounting.missing",
+        "mounting.awaiting_mesh",
         "material.unassigned",
         "material.none",
         "motion.invalid",
+        "motion.initial_penetration",
+        "motion.direction_away",
+        "motion.no_x_overlap",
+        "motion.side_ambiguous",
+        "motion.unsupported_geometry",
         "components.roles",
+        "components.unassigned",
+        "components.no_seal",
+        "components.no_moving_panel",
+        "components.duplicate_moving_panel",
+        "components.duplicate_moving_body",
         "deck.missing",
     }
     by_stage = {}
@@ -488,15 +563,13 @@ def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, c
         if item["severity"] == WARNING:
             warning.setdefault(item["stage"], item)
 
-    def state(stage, complete, incomplete_code=None, blocked_code=None):
+    def state(stage, complete, incomplete_code=None):
         blocked = by_stage.get(stage)
         if blocked:
             return {
                 "state": "incomplete" if blocked["code"] in incomplete_codes else "blocked",
                 "code": blocked["code"],
             }
-        if blocked_code:
-            return {"state": "blocked", "code": blocked_code}
         if complete:
             entry = {"state": "complete"}
             if stage in warning:
@@ -505,23 +578,42 @@ def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, c
         return {"state": "incomplete", "code": incomplete_code}
 
     states = {
-        "import": {
-            "state": "incomplete" if setup.is_empty else "complete",
-            **({"code": "drawing.missing"} if setup.is_empty else {}),
-        },
+        # Import owns the deferred 3D extrusion: that is the one genuine,
+        # read-only restriction in this phase, so it is the one padlock.
+        "import": (
+            {"state": "incomplete", "code": "drawing.missing"}
+            if setup.is_empty
+            else {"state": "blocked", "code": "drawing.extrusion_preview"}
+            if setup.dimension != "2D"
+            else {"state": "incomplete", "code": "drawing.no_closed_region"}
+            if not setup.faces
+            else {"state": "complete"}
+        ),
         "components": state("components", geometry_ready, "components.roles"),
         "materials": state(
             "materials",
             all(face.material for face in setup.faces if not face.cavity)
             and bool([face for face in setup.faces if not face.cavity]),
-            "material.unassigned",
+            "drawing.no_closed_region" if not setup.faces else "material.unassigned",
         ),
-        "mesh": state("mesh", mesh_usable, "mesh.missing", "mesh.missing" if not geometry_ready else None),
+        # A mesh is always repairable in Mesh; a missing prerequisite is an
+        # incomplete stage, never a read-only lock. The hint names the input that
+        # actually unblocks meshing (a drawing, then roles).
+        "mesh": state(
+            "mesh",
+            mesh_usable,
+            "drawing.missing"
+            if setup.is_empty
+            else "drawing.no_closed_region"
+            if not setup.faces
+            else "components.roles"
+            if not geometry_ready
+            else "mesh.missing",
+        ),
         "mounting": state(
             "mounting",
             fixture_count > 0,
-            "mounting.missing",
-            "mesh.missing" if not mesh_usable else None,
+            "mounting.awaiting_mesh" if not mesh_usable else "mounting.missing",
         ),
         "contact": state("contact", True, "contact.invalid"),
         "motion": state("motion", not by_stage.get("motion"), "motion.invalid"),
@@ -532,10 +624,11 @@ def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, c
             if not can_prepare
             else {"state": "incomplete", "code": "deck.missing"}
         ),
-        "results": {
-            "state": "complete" if latest_run and latest_run.get("status") == "Completed" else "incomplete",
-            "code": "results.missing",
-        },
+        "results": (
+            {"state": "complete"}
+            if latest_run and latest_run.get("status") == "Completed"
+            else {"state": "incomplete", "code": "results.missing"}
+        ),
     }
     return states
 

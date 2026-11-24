@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
   Archive,
+  CheckCircle2,
   ChevronRight,
   Clock,
   Download,
@@ -15,6 +16,10 @@ import { artifact, elapsed, err, go, request, type Job, type Revision } from './
 import { Badge, JobActions } from './Dashboard'
 import Viewport from './Viewport'
 import type { Picked, ResultFrame, ResultInstance } from './viewportModel'
+import {
+  materialTopology,
+  type MaterialFaceAssignment,
+} from './viewportModel'
 import {
   elementDisplayValues,
   misesFrom,
@@ -259,6 +264,8 @@ export function RunView({
   // Independent display toggles. They never touch the solver artifacts.
   const [edges, setEdges] = useState(true)
   const [markers, setMarkers] = useState(false)
+  // Display preference only, default off; it never rewrites solver evidence.
+  const [materialOutlines, setMaterialOutlines] = useState(false)
   const [deformationScale, setDeformationScale] = useState(1)
   const [scaleDraft, setScaleDraft] = useState('1')
   const [displayedFrame, setDisplayedFrame] = useState<number | null>(null)
@@ -538,6 +545,35 @@ export function RunView({
             width: String(index?.reporting_width_mm ?? index?.thickness ?? '—'),
             thickness: String(index?.thickness_mm ?? index?.thickness ?? '—'),
           })
+  /**
+   * Full engineering description versus the short axis titles.
+   *
+   * The rotated Y title used to contain the whole phrase ("Door panel reaction
+   * along closing direction (N)"). Rotated 90 degrees it needed about 269 px of
+   * height inside a 210 px plot, so it was clipped above and below the SVG at
+   * every window width. The full phrase now lives in a wrapping semantic caption
+   * next to the plot and the axes keep a concise, unit-bearing title that really
+   * fits. The plotted series, zoom, picking and the exported two-row CSV are
+   * unchanged by this layout decision.
+   */
+  const forceUnit = index?.force_unit ?? 'N'
+  const travelAxisLabel =
+    stepRole === 'body'
+      ? t('run.bodyTravel')
+      : index?.closing
+        ? t('run.doorTravel')
+        : t('run.panelU2')
+  const forceAxisLabel =
+    stepRole === 'body'
+      ? t('run.bodyReaction', { unit: forceUnit })
+      : index?.closing && stepProvenance !== 'unknown'
+        ? t('run.doorReaction', { unit: forceUnit })
+        : stepDirection
+          ? t('run.projectedReaction', { unit: forceUnit })
+          : t('run.panelRF2', { unit: forceUnit })
+  const shortTravelAxis = t('run.displacementAxis')
+  const shortForceAxis = t('run.forceAxis', { unit: forceUnit })
+  const plotDescription = `${travelAxisLabel} · ${forceAxisLabel}`
   const historyRows = useMemo(
     () =>
       curveStep
@@ -586,6 +622,46 @@ export function RunView({
     () => (fieldIsStress ? elementDisplayValues(stressSampleCells, field) : undefined),
     [fieldIsStress, stressSampleCells, field],
   )
+  // Face-to-material assignments, names and colours come from the job's
+  // immutable submitted revision, never from a later editable head. The key is
+  // the effective pinned card identity, so two distinct CAD faces that share a
+  // material (or a pinned library version) can never create a false interface.
+  const faceMaterials = useMemo(() => {
+    const map: Record<string, MaterialFaceAssignment> = {}
+    // A diagnostics response for a synthetic route may carry only the motion
+    // subset of a revision; material overlays then simply stay unavailable.
+    if (!setup?.materials || !setup?.faces) return map
+    const cards = new Map(setup.materials.map((card) => [card.id, card]))
+    for (const face of setup.faces) {
+      const card = face.material ? cards.get(face.material) : undefined
+      if (!card) continue
+      map[face.id] = {
+        key: card.library_id
+          ? card.library_id + '@' + (card.library_version ?? 0)
+          : 'card:' + card.id,
+        name: card.name,
+        color: card.color,
+        version: card.library_version ?? card.version,
+      }
+    }
+    return map
+  }, [setup])
+  // Edge adjacency is built once per result topology and pinned material map.
+  const materialInfo = useMemo(
+    () => materialTopology(index?.instances, faceMaterials),
+    [index?.instances, faceMaterials],
+  )
+  const materialLegend = useMemo(() => {
+    const seen = new Set<string>()
+    const rows: { key: string; name: string; color: string; version?: number | null }[] = []
+    for (const face of setup?.faces ?? []) {
+      const entry = faceMaterials[face.id]
+      if (!entry || seen.has(entry.key)) continue
+      seen.add(entry.key)
+      rows.push({ ...entry })
+    }
+    return rows
+  }, [setup, faceMaterials])
   const displacementKey: Component =
     field === 'U1' ? 'U1' : field === 'U2' ? 'U2' : 'magnitude'
   const rangeKey: Component | 'mises' | 'S11' | 'S22' | 'S33' | 'S12' = fieldIsStress
@@ -821,13 +897,35 @@ export function RunView({
       <div className="run-banner">
         <Badge value={job.status} />
         <span>{job.mode === 'DEMO' ? t('demo.notice') : job.mode}</span>
+        {resultView && index && (
+          // A usable completed result is stated here instead of in a full-width
+          // progress card, so the geometry and response panes get the height.
+          <span className="banner-complete" data-testid="run-complete">
+            <CheckCircle2 aria-hidden="true" />
+            {t('progress.compactTitle')}
+          </span>
+        )}
         <span className="spacer" />
+        {resultView && index && (
+          <button
+            type="button"
+            className="banner-action"
+            data-testid="open-diagnostics"
+            onClick={() => go('diagnostics/' + id)}
+          >
+            <Terminal />
+            {t('progress.openDiagnostics')}
+          </button>
+        )}
         <Clock />
         {elapsed(job)}
       </div>
-      <ProgressSummary job={job} setup={setup} now={now} />
       {resultView && index ? (
-        <div className="result-grid">
+        <>
+          {/* A usable completed result gives its height back to the geometry and
+              response panes. Completion identity and Diagnostics remain one click
+              away; a failed or unreadable extraction keeps the full status card. */}
+          <div className="result-grid results-layout">
           <section className="card">
             <div className="panel-title">
               <ScanLine />
@@ -887,6 +985,8 @@ export function RunView({
                 resultLabel={legendLabel}
                 showMeshEdges={edges}
                 nodeMarkers={markers}
+                materialOutlines={materialOutlines}
+                faceMaterials={faceMaterials}
                 plain
               />
             </div>
@@ -1043,6 +1143,57 @@ export function RunView({
                   />
                 </label>
               </div>
+              {/* Material outlines are an independent display preference (default
+                  off). They are separate from mesh edges, node markers, the
+                  selected field and the deformation scale. */}
+              <div className="control-row material-controls">
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    data-testid="material-outlines"
+                    checked={materialOutlines}
+                    disabled={!materialInfo.mapped}
+                    title={materialInfo.mapped ? undefined : t('run.materialNoMapping')}
+                    onChange={(e) => setMaterialOutlines(e.target.checked)}
+                  />
+                  {t('run.materialOutlines')}
+                </label>
+                {!materialInfo.mapped && (
+                  <small className="field-hint" data-testid="material-outlines-unavailable">
+                    {t('run.materialNoMapping')}
+                  </small>
+                )}
+              </div>
+              {materialOutlines && materialInfo.mapped > 0 && (
+                <div className="material-legend" data-testid="material-legend">
+                  <strong>{t('run.materialLegend')}</strong>
+                  <div className="material-swatches">
+                    {materialLegend.map((row) => (
+                      <span key={row.key}>
+                        <b style={{ background: row.color }} />
+                        {row.name}
+                        {row.version ? ' v' + row.version : ''}
+                      </span>
+                    ))}
+                  </div>
+                  <small data-testid="material-interface-count">
+                    {t('run.materialInterfaceCount', {
+                      count: materialInfo.interfaces.length,
+                    })}
+                  </small>
+                  {materialInfo.mapped < materialInfo.total && (
+                    <small data-testid="material-coverage">
+                      {t('run.materialPartial', {
+                        mapped: materialInfo.mapped,
+                        total: materialInfo.total,
+                      })}
+                    </small>
+                  )}
+                  {materialInfo.materials.length < 2 && (
+                    <small data-testid="material-single">{t('run.materialSingle')}</small>
+                  )}
+                </div>
+              )}
             </div>
             <div className="legend">
               <span>{probeText}</span>
@@ -1077,25 +1228,21 @@ export function RunView({
               )}
               {historyRows.length ? (
                 <>
+                  <p
+                    className="plot-caption"
+                    id="force-plot-caption"
+                    data-testid="force-caption"
+                  >
+                    <span>{forceAxisLabel}</span>
+                    <span className="plot-caption-x">{travelAxisLabel}</span>
+                  </p>
                   <Plot
                     x={curve.x}
                     y={curve.y}
-                    xlabel={
-                      stepRole === 'body'
-                        ? t('run.bodyTravel')
-                        : index.closing
-                          ? t('run.doorTravel')
-                          : t('run.panelU2')
-                    }
-                    ylabel={
-                      stepRole === 'body'
-                        ? t('run.bodyReaction', { unit: index.force_unit })
-                        : index.closing && stepProvenance !== 'unknown'
-                          ? t('run.doorReaction', { unit: index.force_unit })
-                          : stepDirection
-                            ? t('run.projectedReaction', { unit: index.force_unit })
-                            : t('run.panelRF2', { unit: index.force_unit })
-                    }
+                    xlabel={shortTravelAxis}
+                    ylabel={shortForceAxis}
+                    label={plotDescription}
+                    describedBy="force-plot-caption"
                     active={activeSample}
                     onPick={plotPick}
                   />
@@ -1220,8 +1367,11 @@ export function RunView({
             </div>
           </aside>
         </div>
+        </>
       ) : (
-        <div className="result-grid">
+        <>
+          <ProgressSummary job={job} setup={setup} now={now} />
+          <div className="result-grid">
           <section className="card">
             <div className="panel-title">
               <Terminal />
@@ -1307,7 +1457,8 @@ export function RunView({
             </div>
             <pre>{logs || t('run.waitingLog')}</pre>
           </div>
-        </div>
+          </div>
+        </>
       )}
     </main>
   )

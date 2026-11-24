@@ -15,7 +15,17 @@ import time
 from packages.engineering.model import Material, Project
 from services import store
 
-CARD_FIELDS = ("model", "color", "density", "young", "poisson", "c10", "d1", "test_data")
+CARD_FIELDS = (
+    "model",
+    "color",
+    "density",
+    "young",
+    "poisson",
+    "c10",
+    "d1",
+    "test_data",
+    "family",
+)
 
 
 def _card_payload(card: dict) -> dict:
@@ -38,7 +48,9 @@ def _version_row(row) -> dict:
             "c10": row["c10"],
             "d1": row["d1"],
             "test_data": json.loads(row["test_data"]),
+            "family": row["family"] if "family" in row.keys() and row["family"] else "polymer",
         },
+        "source": json.loads(row["source"]) if "source" in row.keys() and row["source"] else None,
         "created": row["created"],
         "note": row["note"],
     }
@@ -131,7 +143,7 @@ def get(library_id):
     return {**summary, "versions": versions, "usage": usage(library_id)}
 
 
-def _insert_version(db, library_id, card, note):
+def _insert_version(db, library_id, card, note, source=None):
     version = (
         db.execute(
             "SELECT COALESCE(MAX(version),0)+1 FROM material_versions WHERE library_id=?",
@@ -140,7 +152,8 @@ def _insert_version(db, library_id, card, note):
     )
     db.execute(
         "INSERT INTO material_versions(library_id, version, model, color, density, young, "
-        "poisson, c10, d1, test_data, created, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "poisson, c10, d1, test_data, created, note, family, source) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             str(library_id),
             version,
@@ -154,6 +167,8 @@ def _insert_version(db, library_id, card, note):
             json.dumps(card.get("test_data") or [], separators=(",", ":")),
             time.time(),
             note,
+            card.get("family") or "polymer",
+            json.dumps(source, sort_keys=True, ensure_ascii=False) if source else None,
         ),
     )
     db.execute(
@@ -163,7 +178,7 @@ def _insert_version(db, library_id, card, note):
     return version
 
 
-def create(name, card, note=""):
+def create(name, card, note="", source=None):
     library_id = store.new_id()
     now = time.time()
     with store.connection(True) as db:
@@ -171,11 +186,11 @@ def create(name, card, note=""):
             "INSERT INTO material_library VALUES (?,?,?,?,?,?)",
             (library_id, name, 0, now, now, 1),
         )
-        _insert_version(db, library_id, card, note)
+        _insert_version(db, library_id, card, note, source)
     return get(library_id)
 
 
-def update(library_id, name=None, card=None, note=""):
+def update(library_id, name=None, card=None, note="", source=None):
     with store.connection(True) as db:
         row = db.execute(
             "SELECT * FROM material_library WHERE id=?", (str(library_id),)
@@ -190,8 +205,10 @@ def update(library_id, name=None, card=None, note=""):
                 "UPDATE material_library SET name=?, updated=? WHERE id=?",
                 (name, time.time(), str(library_id)),
             )
-        if card is not None and not _same_card(_version_row(latest)["card"], card):
-            _insert_version(db, library_id, card, note)
+        if card is not None and (
+            not _same_card(_version_row(latest)["card"], card) or source is not None
+        ):
+            _insert_version(db, library_id, card, note, source)
     return get(library_id)
 
 
@@ -246,6 +263,7 @@ def import_from_revision(revision_id, material_ids=()):
             "c10": card.c10,
             "d1": card.d1,
             "test_data": [list(row) for row in card.test_data],
+            "family": getattr(card, "family", "polymer"),
         }
         created = create(
             card.name,
@@ -274,4 +292,32 @@ def definition_for_material(material: Material) -> dict:
         "c10": material.c10,
         "d1": material.d1,
         "test_data": [list(row) for row in material.test_data],
+        "family": getattr(material, "family", "polymer"),
     }
+
+
+def cae_sources():
+    """Distinct CAE source libraries referenced by registered versions."""
+    with store.connection() as db:
+        rows = db.execute(
+            "SELECT library_id, source FROM material_versions WHERE source IS NOT NULL"
+        ).fetchall()
+    sources = {}
+    for row in rows:
+        try:
+            source = json.loads(row["source"])
+        except ValueError:
+            continue
+        digest = source.get("sha256")
+        if not digest:
+            continue
+        entry = sources.setdefault(
+            digest,
+            {
+                "sha256": digest,
+                "file": source.get("file", ""),
+                "materials": [],
+            },
+        )
+        entry["materials"].append(row["library_id"])
+    return list(sources.values())

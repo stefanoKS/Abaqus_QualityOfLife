@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test } from '@playwright/test'
 import { meshAndDeck } from './pipeline'
+import { saveRevision } from './save'
 import type { Job, Revision } from '../src/api'
 import { en, ja } from '../src/i18n'
 
@@ -82,7 +83,12 @@ test('engineer-entered values and the active step survive a language switch', as
   const travel = page.getByLabel('ドアパネルのストローク (mm)')
   await travel.fill('6.5')
   await travel.press('Tab')
-  await expect(page.locator('.statusbar')).toContainText('未保存の変更があります')
+  // A valid committed edit is persisted automatically; the visible state is
+  // localized, so it also proves the dictionaries cover the new workflow.
+  await expect(page.getByTestId('save-state')).toHaveAttribute('data-state', 'saved', {
+    timeout: 15000,
+  })
+  await expect(page.locator('.statusbar')).toContainText('自動保存済み')
 
   await page.locator('.lang-button').click()
 
@@ -90,10 +96,10 @@ test('engineer-entered values and the active step survive a language switch', as
   await expect(page.getByRole('navigation', { name: 'Workflow' })).toBeVisible()
   const englishTravel = page.getByLabel('Door panel stroke (mm)')
   await expect(englishTravel).toHaveValue('6.5')
-  await expect(page.locator('.statusbar')).toContainText('Unsaved changes')
-  // The draft is still unsaved, so saving must remain available.
-  await expect(page.getByRole('button', { name: 'Save revision' })).toBeEnabled()
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await expect(page.locator('.statusbar')).toContainText('Saved automatically')
+  // There is no manual save step anywhere in the ordinary workspace.
+  await expect(page.getByRole('button', { name: 'Save revision' })).toHaveCount(0)
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   // The engineering value is stored once, untranslated, in the saved revision.
   const projects = (await (await request.get('/api/projects')).json()) as {
@@ -201,6 +207,7 @@ test('Japanese Create, Import, Mesh, Mounting, Review and Results labels are rea
 
   await workflow.getByRole('button', { name: 'メッシュ' }).click()
   await expect(page.getByRole('heading', { name: 'メッシュの同一性' })).toBeVisible()
+  await workflow.getByRole('button', { name: '解析結果' }).click()
   await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeVisible()
   // The "Prepare never enqueues a mesh" explanation stays available to
   // assistive technology without consuming the compact column.

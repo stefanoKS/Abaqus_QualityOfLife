@@ -1,16 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Archive, ArchiveRestore, Copy, FlaskConical, Plus, Save, Search, Upload } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Archive,
+  ArchiveRestore,
+  Copy,
+  FileDown,
+  FlaskConical,
+  FolderOpen,
+  Plus,
+  Save,
+  Search,
+  Upload,
+} from 'lucide-react'
 import {
   err,
   request,
   type LibraryCard,
   type LibraryDetail,
   type LibrarySummary,
-  type MaterialImportResult,
   type Project,
-  type Summary,
 } from './api'
-import { useI18n } from './i18n'
+import { useI18n, type TranslationKey } from './i18n'
 import { NumberInput } from './shared/components/NumberInput'
 import { hasInvalidField, useAnyInvalidField } from './shared/components/draftGuard'
 import {
@@ -27,6 +36,31 @@ function fullCard(card: LibraryCard): FullCard {
   return { ...card, test_data: (card.test_data ?? []) as Triple[] }
 }
 
+/** A CAE library card as the preview endpoint reports it. */
+interface CaeReason {
+  code: string
+  property?: string
+  detail?: string
+}
+interface CaeCard {
+  key: string
+  name: string
+  category: string
+  dataError: string
+  eligibility: {
+    eligible: boolean
+    model: string | null
+    reasons: CaeReason[]
+  }
+}
+interface CaePreview {
+  file: string
+  sha256: string
+  bytes: number
+  cards: CaeCard[]
+  eligible: number
+}
+
 const DEFAULT_CARD: FullCard = {
   model: 'linear_elastic',
   color: '#2f7a6b',
@@ -36,6 +70,7 @@ const DEFAULT_CARD: FullCard = {
   c10: null,
   d1: null,
   test_data: [],
+  family: 'polymer',
 }
 
 interface Compared {
@@ -49,7 +84,6 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   const { t, formatDate } = useI18n()
   const invalidField = useAnyInvalidField()
   const [items, setItems] = useState<LibrarySummary[]>([])
-  const [projects, setProjects] = useState<Summary[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [detail, setDetail] = useState<LibraryDetail | null>(null)
   const [query, setQuery] = useState('')
@@ -58,17 +92,19 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   const [draft, setDraft] = useState<FullCard>(DEFAULT_CARD)
   const [busy, setBusy] = useState(false)
   const [compare, setCompare] = useState<Record<string, Compared>>({})
-  const [importProject, setImportProject] = useState('')
+  const [cae, setCae] = useState<CaePreview | null>(null)
+  const [caeFile, setCaeFile] = useState<File | null>(null)
+  const [caeKeys, setCaeKeys] = useState<string[]>([])
+  const [caeFamily, setCaeFamily] = useState<'polymer' | 'metal'>('polymer')
+  const [caeUnits, setCaeUnits] = useState('N-mm-s-tonne')
+  const [exportFolder, setExportFolder] = useState('')
+  const caeInput = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
-    const [list, heads] = await Promise.all([
-      request<LibrarySummary[]>(
-        '/api/materials?include_archived=' + (showArchived ? 'true' : 'false'),
-      ),
-      request<Summary[]>('/api/projects'),
-    ])
+    const list = await request<LibrarySummary[]>(
+      '/api/materials?include_archived=' + (showArchived ? 'true' : 'false'),
+    )
     setItems(list)
-    setProjects(heads)
     setSelected((current) =>
       current && list.some((row) => row.id === current) ? current : (list[0]?.id ?? null),
     )
@@ -226,17 +262,79 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
     })
   }
 
-  function importCards() {
-    if (!importProject) return
+  /**
+   * CAE library exchange. The preview never registers anything: cards are
+   * decoded, mapped onto an application law and shown with an eligibility
+   * reason. Only explicit selections are registered, with a content fingerprint.
+   */
+  async function previewCae(file: File) {
+    setCaeFile(file)
+    await run(async () => {
+      const form = new FormData()
+      form.append('file', file)
+      const payload = await request<CaePreview>(
+        '/api/material-library/cae/preview',
+        'POST',
+        form,
+      )
+      setCae(payload)
+      setCaeKeys(
+        payload.cards.filter((card) => card.eligibility.eligible).map((card) => card.key),
+      )
+    })
+  }
+
+  function importCae() {
+    if (!caeFile || !caeKeys.length) return
     void run(async () => {
-      const project = projects.find((row) => row.id === importProject)
-      if (!project) return
-      const imported = await request<MaterialImportResult[]>('/api/materials/import', 'POST', {
-        revision: project.revision,
+      const form = new FormData()
+      form.append('file', caeFile)
+      form.append('keys', JSON.stringify(caeKeys))
+      form.append('family', caeFamily)
+      form.append('units', caeUnits)
+      const result = await request<{
+        registered: { library_id: string; existing: boolean }[]
+        skipped: { name: string; reasons: CaeReason[] }[]
+        conflicts: { name: string; registered_as: string }[]
+      }>('/api/material-library/cae/import', 'POST', form)
+      await refresh()
+      setCae(null)
+      setCaeFile(null)
+      notify(
+        t('materialsLibrary.caeImported', {
+          count: result.registered.filter((item) => !item.existing).length,
+          skipped: result.skipped.length + result.conflicts.length,
+        }),
+      )
+    })
+  }
+
+  async function chooseFolder() {
+    await run(async () => {
+      const result = await request<{ path: string }>(
+        '/api/files/pick?mode=folder&title=' +
+          encodeURIComponent(t('materialsLibrary.caeFolderTitle')),
+      )
+      if (result.path) setExportFolder(result.path)
+    })
+  }
+
+  function exportCae() {
+    if (!exportFolder.trim()) return
+    void run(async () => {
+      const result = await request<{
+        files: { path: string; sha256: string; cards: string[] }[]
+        skipped: { sha256: string; reason: string }[]
+      }>('/api/material-library/cae/export', 'POST', {
+        folder: exportFolder.trim(),
         material_ids: [],
       })
-      await refresh()
-      notify(t('materialsLibrary.imported', { count: imported.length }))
+      notify(
+        t('materialsLibrary.caeExported', {
+          count: result.files.length,
+          skipped: result.skipped.length,
+        }),
+      )
     })
   }
 
@@ -327,26 +425,134 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
             ))}
             {!filtered.length && <p className="empty-line">{t('materialsLibrary.empty')}</p>}
           </div>
-          <div className="import-panel">
+          <div className="cae-panel" data-testid="cae-library">
             <h3>
-              <Upload size={15} /> {t('materialsLibrary.importTitle')}
+              <Upload size={15} /> {t('materialsLibrary.caeTitle')}
             </h3>
-            <p>{t('materialsLibrary.importHelp')}</p>
-            <select
-              aria-label={t('materialsLibrary.importModel')}
-              value={importProject}
-              onChange={(event) => setImportProject(event.target.value)}
+            <p>{t('materialsLibrary.caeHelp')}</p>
+            <input
+              ref={caeInput}
+              type="file"
+              accept=".lib"
+              className="sr-only"
+              aria-label={t('materialsLibrary.caeChoose')}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (file) void previewCae(file)
+                event.target.value = ''
+              }}
+            />
+            <button
+              type="button"
+              data-testid="cae-preview"
+              disabled={busy}
+              onClick={() => caeInput.current?.click()}
             >
-              <option value="">{t('materialsLibrary.chooseModel')}</option>
-              {projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-            <button type="button" onClick={importCards} disabled={!importProject || busy}>
-              {t('materialsLibrary.importButton')}
+              <Upload /> {t('materialsLibrary.caeChoose')}
             </button>
+            {cae && (
+              <div className="cae-preview" data-testid="cae-preview-panel">
+                <p className="field-hint">
+                  {cae.file} · {cae.sha256.slice(0, 10)} ·{' '}
+                  {t('materialsLibrary.caeSummary', {
+                    eligible: cae.eligible,
+                    total: cae.cards.length,
+                  })}
+                </p>
+                <div className="cae-cards">
+                  {cae.cards.map((card) => (
+                    <label
+                      key={card.key}
+                      className={
+                        'cae-card ' + (card.eligibility.eligible ? 'eligible' : 'blocked')
+                      }
+                      title={card.eligibility.reasons
+                        .map((reason) => reason.code)
+                        .join(' · ')}
+                    >
+                      <input
+                        type="checkbox"
+                        disabled={!card.eligibility.eligible}
+                        checked={caeKeys.includes(card.key)}
+                        onChange={(event) =>
+                          setCaeKeys((current) =>
+                            event.target.checked
+                              ? [...current, card.key]
+                              : current.filter((key) => key !== card.key),
+                          )
+                        }
+                      />
+                      <span>{card.name}</span>
+                      <small>
+                        {card.eligibility.eligible
+                          ? card.eligibility.model
+                          : card.eligibility.reasons
+                              .map((reason) =>
+                                t(('readiness.' + reason.code) as TranslationKey),
+                              )
+                              .join(' · ')}
+                      </small>
+                    </label>
+                  ))}
+                </div>
+                <label>
+                  {t('materialsLibrary.caeFamily')}
+                  <select
+                    aria-label={t('materialsLibrary.caeFamily')}
+                    value={caeFamily}
+                    onChange={(event) =>
+                      setCaeFamily(event.target.value as 'polymer' | 'metal')
+                    }
+                  >
+                    <option value="polymer">{t('materials.familyPolymer')}</option>
+                    <option value="metal">{t('materials.familyMetal')}</option>
+                  </select>
+                </label>
+                <label>
+                  {t('materialsLibrary.caeUnits')}
+                  <select
+                    aria-label={t('materialsLibrary.caeUnits')}
+                    value={caeUnits}
+                    onChange={(event) => setCaeUnits(event.target.value)}
+                  >
+                    <option value="N-mm-s-tonne">N · mm · s · tonne</option>
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  data-testid="cae-import"
+                  disabled={busy || !caeKeys.length}
+                  onClick={importCae}
+                >
+                  {t('materialsLibrary.caeImport', { count: caeKeys.length })}
+                </button>
+              </div>
+            )}
+            <h3>
+              <FileDown size={15} /> {t('materialsLibrary.caeExportTitle')}
+            </h3>
+            <p>{t('materialsLibrary.caeExportHelp')}</p>
+            <label>
+              {t('materialsLibrary.caeFolder')}
+              <input
+                value={exportFolder}
+                placeholder="C:\\path\\to\\folder"
+                onChange={(event) => setExportFolder(event.target.value)}
+              />
+            </label>
+            <div className="row-actions">
+              <button type="button" disabled={busy} onClick={chooseFolder}>
+                <FolderOpen /> {t('materialsLibrary.caeBrowse')}
+              </button>
+              <button
+                type="button"
+                data-testid="cae-export"
+                disabled={busy || !exportFolder.trim()}
+                onClick={exportCae}
+              >
+                <FileDown /> {t('materialsLibrary.caeExport')}
+              </button>
+            </div>
           </div>
         </aside>
 

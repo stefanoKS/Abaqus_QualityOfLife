@@ -61,18 +61,20 @@ export function workflowStates(input: WorkflowInput): Record<StageId, StepStatus
     }
   }
   // Unsaved edits are only visible at the stage that owns the changed input.
+  // A local draft always supersedes the server snapshot it came from: the
+  // padlock described the last committed revision, not the correction the
+  // engineer has already made. Keeping it would show a blocked role selector
+  // next to an editable one.
   if (dirtyStages) {
     for (const id of dirtyStages) {
       if (!states[id]) continue
-      if (states[id].state !== 'blocked') {
-        states[id] = { state: 'incomplete', hint: 'status.unsaved' }
-      }
+      states[id] = { state: 'incomplete', hint: 'status.unsaved' }
     }
   }
-  if (fixturePending && states.mounting.state !== 'blocked') {
+  if (fixturePending) {
     states.mounting = { state: 'incomplete', hint: 'hint.fixturePending' }
   }
-  if (invalidDraft && states.motion.state !== 'blocked') {
+  if (invalidDraft) {
     states.motion = { state: 'incomplete', hint: 'validation.invalidDraft' }
   }
   return states

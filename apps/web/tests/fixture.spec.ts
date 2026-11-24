@@ -1,4 +1,5 @@
 import { expect, test, type Page } from './fixtures'
+import { saveRevision } from './save'
 import { randomUUID } from 'node:crypto'
 import type { Display, ViewMesh } from '../src/viewportModel'
 import type { Job, Revision } from '../src/api'
@@ -37,16 +38,15 @@ async function openMeshStage(page: Page, revision: Revision) {
 }
 
 async function openReviewStage(page: Page) {
+  // Locale-independent: the workspace switches to Japanese in this suite too.
+  await page.locator('[data-stage="results"]').click({ timeout: 20000 })
   await expect(page.getByTestId('action-group')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeVisible()
+  await expect(page.getByTestId('prepare')).toBeVisible()
 }
 
 /** Mounting owns the fixed-node controls; Mesh only produces the mesh. */
 async function openMountingStage(page: Page) {
-  await page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Mounting' })
-    .click()
+  await page.locator('[data-stage="mounting"]').click()
   await expect(page.getByTestId('fixture-count')).toBeVisible()
 }
 
@@ -220,7 +220,7 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
     .click()
   await page.getByLabel('Door panel stroke (mm)').fill('5')
   await page.getByLabel('Door panel stroke (mm)').press('Tab')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 02')
   await page
     .getByRole('navigation', { name: 'Workflow' })
@@ -228,6 +228,7 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
     .click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 30000 })
   // The prepared deck was for the previous revision, so it is not submittable.
+  await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
   const before = await (await request.get('/api/meshes')).json()
   expect(before.filter((j: Job) => j.revision === revision.id)).toHaveLength(1)
@@ -239,14 +240,19 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
     .click()
   await page.getByLabel('Global size (mm)').fill('0.8')
   await page.getByLabel('Global size (mm)').press('Tab')
-  await page.getByRole('button', { name: 'Save revision' }).click()
+  await saveRevision(page)
   await expect(page.locator('.crumb')).toContainText('Revision 03')
   await expect(page.getByTestId('mesh-status')).toContainText(
     'These mesh inputs changed. Generate the mesh again.',
     { timeout: 30000 },
   )
+  await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await expect(page.getByText('Fixed nodes (WSFIX)')).toHaveCount(0)
+  await page
+    .getByRole('navigation', { name: 'Workflow' })
+    .getByRole('button', { name: 'Mesh' })
+    .click()
 
   await generateMesh(page)
   await openMountingStage(page)
@@ -316,6 +322,7 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   await expect(
     page.getByText(/\d+ 節点を選択中です。保存するまで解析には使われません。/),
   ).toBeVisible()
+  await openReviewStage(page)
   await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeDisabled()
 })
 

@@ -84,6 +84,7 @@ function freshCard(materials: Material[], name: string): Material {
     c10: null,
     d1: null,
     test_data: [],
+    family: 'polymer',
     library_id: null,
     library_version: null,
   }
@@ -522,6 +523,22 @@ export function MaterialEditor({
                   {t(option.labelKey)}
                 </option>
               ))}
+            </select>
+          </label>
+          <label>
+            {t('materials.family')}
+            <select
+              aria-label={t('materials.family')}
+              value={card.family ?? 'polymer'}
+              disabled={disabled}
+              onChange={(e) =>
+                onUpdate(card.id, { family: e.target.value as Material['family'] })
+              }
+            >
+              <option value="polymer">{t('materials.familyPolymer')}</option>
+              <option value="metal" disabled={card.model !== 'linear_elastic'}>
+                {t('materials.familyMetal')}
+              </option>
             </select>
           </label>
           <label>
