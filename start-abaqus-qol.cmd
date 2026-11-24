@@ -14,34 +14,22 @@ setlocal
 set "ROOT=%~dp0"
 cd /d "%ROOT%"
 
-if exist "%ROOT%.venv\Scripts\python.exe" (
-  "%ROOT%.venv\Scripts\python.exe" "%ROOT%scripts\serve.py" %*
-  exit /b %ERRORLEVEL%
-)
+if exist "%ROOT%.venv\Scripts\python.exe" goto project_python
 
 rem No repository environment yet. Find a bootstrap interpreter once; serve.py
 rem creates .venv, installs the pinned dependencies and builds the bundle.
 where py >nul 2>nul
 if not errorlevel 1 (
   py -3.11 -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,11) else 1)" >nul 2>nul
-  if not errorlevel 1 (
-    py -3.11 "%ROOT%scripts\serve.py" %*
-    exit /b %ERRORLEVEL%
-  )
+  if not errorlevel 1 goto py311
   py -3 -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,11) else 1)" >nul 2>nul
-  if not errorlevel 1 (
-    py -3 "%ROOT%scripts\serve.py" %*
-    exit /b %ERRORLEVEL%
-  )
+  if not errorlevel 1 goto py3
 )
 
 where python >nul 2>nul
 if not errorlevel 1 (
   python -c "import sys; raise SystemExit(0 if sys.version_info[:2] >= (3,11) else 1)" >nul 2>nul
-  if not errorlevel 1 (
-    python "%ROOT%scripts\serve.py" %*
-    exit /b %ERRORLEVEL%
-  )
+  if not errorlevel 1 goto path_python
 )
 
 echo.
@@ -55,5 +43,27 @@ echo     .\.venv\Scripts\python -m pip install -r requirements.txt
 echo     npm --prefix apps/web ci
 echo     npm --prefix apps/web run build
 echo.
-pause
-exit /b 1
+set "launch_result=1"
+goto report
+
+:project_python
+"%ROOT%.venv\Scripts\python.exe" "%ROOT%scripts\serve.py" %*
+goto finished
+
+:py311
+py -3.11 "%ROOT%scripts\serve.py" %*
+goto finished
+
+:py3
+py -3 "%ROOT%scripts\serve.py" %*
+goto finished
+
+:path_python
+python "%ROOT%scripts\serve.py" %*
+
+:finished
+set "launch_result=%ERRORLEVEL%"
+:report
+rem Keep a failed double-click readable. Invocations with flags return immediately.
+if not "%launch_result%"=="0" if "%~1"=="" pause
+exit /b %launch_result%

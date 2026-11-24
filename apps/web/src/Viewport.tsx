@@ -5,32 +5,6 @@ import { ViewportRenderer } from './viewportRenderer'
 import { useI18n } from './i18n'
 import './viewport.css'
 
-const CUT_ACQUIRE_PX = 12
-
-/** Nearest point on the eligible boundary polyline, or null outside tolerance. */
-function snapToBoundary(
-  boundary: number[][],
-  x: number,
-  y: number,
-  tolerance: number
-): [number, number] | null {
-  let best: { distance: number; point: [number, number] } | null = null
-  for (let i = 0; i < boundary.length - 1; i++) {
-    const [ax, ay] = boundary[i]
-    const [bx, by] = boundary[i + 1]
-    const dx = bx - ax
-    const dy = by - ay
-    const length2 = dx * dx + dy * dy
-    let t = length2 > 0 ? ((x - ax) * dx + (y - ay) * dy) / length2 : 0
-    t = Math.max(0, Math.min(1, t))
-    const px = ax + t * dx
-    const py = ay + t * dy
-    const distance = Math.hypot(x - px, y - py)
-    if (!best || distance < best.distance) best = { distance, point: [px, py] }
-  }
-  return best && best.distance <= tolerance ? best.point : null
-}
-
 export type {
   Display,
   Picked,
@@ -222,24 +196,15 @@ export function Viewport(props: ViewportProps) {
             const [x, y] = local(e)
             const cut = latest.current.cut
             if (cut?.active) {
-              // Acquisition uses a pixel band, then the hit is converted to a
-              // canonical point on the true model boundary. The server keeps its
-              // own 0.05 mm engineering tolerance; zoom never widens it.
+              // The projected workflow accepts any model point. The server owns
+              // the engineering projection onto material; pixels are ergonomics.
               const [mx, my] = view!.modelAt(x, y)
-              const snapped = snapToBoundary(
-                cut.boundary,
-                mx,
-                my,
-                view!.modelPerPixel() * CUT_ACQUIRE_PX
-              )
               animation = requestAnimationFrame(() => {
                 setCutHover((previous) => {
-                  const next = snapped ?? ([mx, my] as [number, number])
-                  if (previous && previous[0] === next[0] && previous[1] === next[1])
-                    return previous
-                  return next
+                  if (previous && previous[0] === mx && previous[1] === my) return previous
+                  return [mx, my]
                 })
-                latest.current.onCutHover?.(snapped)
+                latest.current.onCutHover?.([mx, my])
               })
             } else {
               animation = requestAnimationFrame(() =>
@@ -282,13 +247,7 @@ export function Viewport(props: ViewportProps) {
             const cut = latest.current.cut
             if (cut?.active) {
               const [mx, my] = view!.modelAt(lx, ly)
-              const snapped = snapToBoundary(
-                cut.boundary,
-                mx,
-                my,
-                view!.modelPerPixel() * CUT_ACQUIRE_PX
-              )
-              if (snapped) latest.current.onCutPoint?.(snapped)
+              latest.current.onCutPoint?.([mx, my])
             } else {
               latest.current.onSelect(view!.pick(latest.current.mode, lx, ly))
             }
@@ -391,18 +350,9 @@ export function Viewport(props: ViewportProps) {
   }, [props.guide])
   useEffect(() => {
     if (!props.cut?.active) setCutHover(null)
+    const cut = props.cut
     controller.current?.setCut(
-      props.cut?.active
-        ? {
-            active: true,
-            boundary: props.cut.boundary,
-            start: props.cut.start ?? null,
-            end: props.cut.end ?? null,
-            phase: props.cut.phase ?? 'start',
-            invalid: props.cut.invalid,
-            hover: cutHover,
-          }
-        : null
+      cut?.active ? { ...cut, hover: cutHover ?? cut.hover ?? null } : null
     )
   }, [props.cut, cutHover])
 

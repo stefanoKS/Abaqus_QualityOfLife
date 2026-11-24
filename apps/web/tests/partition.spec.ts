@@ -1,10 +1,12 @@
 /**
- * Gate 5b: the real partition workflow through the browser, worker and deck.
+ * Gate D: projected partition workflow through the real viewport, worker and
+ * deck. Guides are drawn with arbitrary model points (away from any former
+ * snap band) and stay in Components throughout.
  *
- * Fictional synthetic section only. The pre-cut revision keeps its own mesh and
- * deck, and a sibling model is checked to be untouched.
+ * Fictional synthetic sections only. The pre-cut revision keeps its own mesh
+ * and deck, and a sibling model is checked to be untouched.
  */
-import { expect, test } from './fixtures'
+import { expect, test, type Page } from './fixtures'
 import { meshAndDeck } from './pipeline'
 import type { Job, Revision } from '../src/api'
 
@@ -15,7 +17,38 @@ async function example(request: import('@playwright/test').APIRequestContext, na
   return revision
 }
 
-test('partition a seal in the browser, remesh, prepare a deck and replay the pre-cut revision', async ({
+async function projectPoint(page: Page, x: number, y: number) {
+  const viewport = page.getByRole('application')
+  const box = (await viewport.boundingBox())!
+  const camera = (await page.locator('.seal-vtk-host').getAttribute('data-camera'))!
+    .split(',')
+    .map(Number)
+  const fx = camera[3],
+    fy = camera[4],
+    scale = camera[6]
+  const aspect = box.width / box.height
+  return {
+    x: box.x + box.width / 2 + ((x - fx) / (scale * aspect)) * (box.width / 2),
+    y: box.y + box.height / 2 - ((y - fy) / scale) * (box.height / 2),
+  }
+}
+
+async function drawGuide(page: Page, a: [number, number], b: [number, number]) {
+  const first = await projectPoint(page, a[0], a[1])
+  await page.mouse.move(first.x, first.y, { steps: 3 })
+  await page.mouse.click(first.x, first.y)
+  const second = await projectPoint(page, b[0], b[1])
+  await page.mouse.move(second.x, second.y, { steps: 4 })
+  await page.mouse.click(second.x, second.y)
+}
+
+async function selectRegion(page: Page, name: RegExp | string) {
+  const workflow = page.getByRole('navigation', { name: 'Workflow' })
+  await workflow.getByRole('button', { name: 'Components' }).click()
+  await page.locator('.region-list button', { hasText: name }).first().click()
+}
+
+test('draw arbitrary guides in Components, apply once, then assign two materials and inspect the deck', async ({
   page,
   request,
 }) => {
@@ -31,28 +64,15 @@ test('partition a seal in the browser, remesh, prepare a deck and replay the pre
   const beforeRevision = await (await request.get('/api/revisions/' + revision.id)).json()
 
   await page.goto('/#workspace/' + revision.id)
-  const workflow = page.getByRole('navigation', { name: 'Workflow' })
-  // Components owns the region list; choosing a region opens its Materials editor.
-  await workflow.getByRole('button', { name: 'Components' }).click()
-  await page.getByRole('button', { name: /Mounting foot/ }).click()
+  await selectRegion(page, 'Mounting foot')
   const editor = page.getByTestId('partition-editor')
   await expect(editor).toBeVisible()
+  await expect(page.getByTestId('partition-target')).toContainText('Mounting foot')
 
-  // Real viewport clicks after a pan and a zoom. No XY form entry.
+  // Real viewport clicks after a pan and a zoom. Both endpoints are away from
+  // any former 12-px boundary acquisition band.
   const viewport = page.getByRole('application')
   const box = (await viewport.boundingBox())!
-  const projectPoint = async (x: number, y: number) => {
-    const camera = (await page.locator('.seal-vtk-host').getAttribute('data-camera'))!
-      .split(',')
-      .map(Number)
-    const [fx, fy, , , , , scale] = [camera[3], camera[4], 0, 0, 0, 0, camera[6]]
-    const aspect = box.width / box.height
-    return {
-      x: box.x + box.width / 2 + ((x - fx) / (scale * aspect)) * (box.width / 2),
-      y: box.y + box.height / 2 - ((y - fy) / scale) * (box.height / 2),
-    }
-  }
-  // Pan a little with the middle button, then zoom, then acquire both points.
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
   await page.mouse.down({ button: 'middle' })
   await page.mouse.move(box.x + box.width / 2 + 26, box.y + box.height / 2 + 12, { steps: 4 })
@@ -64,52 +84,44 @@ test('partition a seal in the browser, remesh, prepare a deck and replay the pre
     if (req.url().includes('/partition')) partitionWrites.push(req.method() + ' ' + req.url())
   })
 
-  await page.getByRole('button', { name: 'Cut region' }).click()
-  const a = await projectPoint(0, 0)
-  await page.mouse.move(a.x, a.y, { steps: 3 })
-  await page.mouse.click(a.x, a.y)
-  const b = await projectPoint(0, 3.2)
-  await page.mouse.move(b.x, b.y, { steps: 5 })
-  await page.mouse.click(b.x, b.y)
-  await expect(page.getByTestId('partition-plan')).toContainText('Boundary edges intersected')
-  // Snapped canonical coordinates, not raw pixels.
-  const snapped = await page.getByTestId('partition-plan').innerText()
-  expect(snapped).toContain('Cut preview ready')
-  await page.getByRole('button', { name: 'Cancel cut' }).click()
-  await expect(page.getByTestId('partition-plan')).toHaveCount(0)
-  expect(partitionWrites.filter((write) => write.includes('/partition') && !write.includes('preview'))).toHaveLength(0)
-
-  // Re-pick the start point, then preview and apply once.
-  await page.getByRole('button', { name: 'Cut region' }).click()
-  await page.mouse.click(a.x, a.y)
-  await page.getByRole('button', { name: 'Back one point' }).click()
+  await page.getByRole('button', { name: 'Partition region' }).click()
   await expect(page.getByTestId('cut-status')).toHaveAttribute('data-phase', 'start')
-  await page.mouse.click(a.x, a.y)
-  await page.mouse.move(b.x, b.y, { steps: 3 })
-  await page.mouse.click(b.x, b.y)
-  await expect(page.getByTestId('partition-plan')).toBeVisible()
+  await drawGuide(page, [0, 0.5], [0, 2.5])
+  await expect(page.getByTestId('partition-plan')).toContainText('Cut preview ready')
+  await expect(page.getByTestId('partition-plan')).toContainText('2 regions')
+  // No commit yet; the guide is a draft.
+  expect(partitionWrites.filter((write) => !write.includes('preview'))).toHaveLength(0)
+
+  // Undo the draft guide and draw it again: the draft work is retained, and
+  // only the second stroke is previewed.
+  await page.getByRole('button', { name: 'Undo last guide' }).click()
+  await expect(page.getByTestId('partition-plan')).toHaveCount(0)
+  await drawGuide(page, [0, 0.5], [0, 2.5])
+  await expect(page.getByTestId('partition-plan')).toContainText('Cut preview ready')
   await page.getByRole('button', { name: 'Apply partition' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 02')
 
-  // Two independent child regions, each with its own material card.
+  // Two independent child regions, each with its own material card. The tool
+  // stays in Components; assigning material is an explicit link.
+  await expect(page.getByTestId('assign-material')).toBeVisible()
+  await page.getByTestId('assign-material').click()
   await expect(page.getByLabel('Material card')).toBeVisible()
   await page.getByLabel('Material card').selectOption({ label: 'Cellular EPDM' })
-  await workflow.getByRole('button', { name: 'Components' }).click()
-  await page.getByRole('button', { name: /Mounting foot B/ }).click()
+  await selectRegion(page, 'Mounting foot B')
+  await page.getByTestId('assign-material').click()
   await page.getByLabel('Material card').selectOption({ label: 'Dense EPDM' })
   await page.getByRole('button', { name: 'Save revision' }).click()
   await expect(page.locator('.crumb')).toContainText('Revision 03')
 
   // A topology change invalidates the prepared deck and requires remeshing.
-  await workflow.getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
+  const workflow = page.getByRole('navigation', { name: 'Workflow' })
   await workflow.getByRole('button', { name: 'Mesh' }).click()
   await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
   await workflow.getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
-  await workflow.getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
@@ -121,6 +133,10 @@ test('partition a seal in the browser, remesh, prepare a deck and replay the pre
   expect(newest).toBeTruthy()
   const currentRevision = await (await request.get('/api/revisions/' + newest.id)).json()
   expect(currentRevision.mesh_compat).not.toEqual(beforeRevision.mesh_compat)
+  // Each child inherited its assigned material; they are independent.
+  const regions = currentRevision.setup.faces.filter((face: { component: string }) => face.component === 'seal')
+  expect(regions.length).toBe(3)
+  expect(new Set(regions.map((face: { material: string }) => face.material)).size).toBe(2)
 
   const decks: Job[] = await (await request.get('/api/decks')).json()
   const deck = decks.find((job) => job.revision === newest.id && job.status === 'Completed')!
@@ -134,6 +150,24 @@ test('partition a seal in the browser, remesh, prepare a deck and replay the pre
   const inpLines = inp.split(/\r?\n/)
   for (let i = 0; i < inpLines.length; i++)
     if (inpLines[i].startsWith('*Solid Section')) expect(inpLines[i + 1]).toBe('1,')
+  // The two child materials are distinct in the section definitions. The deck
+  // writes its own index-based material names (MAT_n), so compare the references
+  // rather than the card display names.
+  const materialNames = currentRevision.setup.faces
+    .slice(0, 2)
+    .map(
+      (face: { material: string }) =>
+        currentRevision.setup.materials.find(
+          (material: { id: string }) => material.id === face.material,
+        )?.name,
+    )
+  expect(new Set(materialNames).size).toBe(2)
+  const sectionMaterials = inpLines
+    .filter((line) => line.startsWith('*Solid Section'))
+    .map((line) => line.match(/material=([^,\s]+)/)?.[1])
+  expect(sectionMaterials.length).toBe(3)
+  expect(sectionMaterials[0]).not.toBe(sectionMaterials[1])
+  expect(new Set(sectionMaterials).size).toBe(2)
 
   // The internal interface has one shared node set on both children.
   const meshes: Job[] = await (await request.get('/api/meshes')).json()
@@ -184,4 +218,43 @@ test('partition a seal in the browser, remesh, prepare a deck and replay the pre
   const siblingAfter = await (await request.get('/api/revisions/' + sibling.id)).json()
   expect(siblingAfter.setup).toEqual(siblingBefore.setup)
   expect(siblingAfter.mesh_compat).toEqual(siblingBefore.mesh_compat)
+})
+
+test('a hollow seal keeps the draft after one radial cut and splits after the second', async ({
+  page,
+  request,
+}) => {
+  const revision = await example(request, 'Hollow projected partition')
+  await page.goto('/#workspace/' + revision.id)
+  await selectRegion(page, 'Hollow bulb')
+  await expect(page.getByTestId('partition-editor')).toBeVisible()
+
+  await page.getByRole('button', { name: 'Partition region' }).click()
+  // First radial guide crosses only the top wall (cavity to outer boundary):
+  // the annulus opens but one material region remains.
+  await drawGuide(page, [0, 10], [0, 13])
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'one_region')
+  await expect(page.getByTestId('partition-plan')).toContainText('One material region remains')
+  const apply = page.getByRole('button', { name: 'Apply partition' })
+  await expect(apply).toBeDisabled()
+
+  // A second guide at x = 2 separates the top wall into two children.
+  await drawGuide(page, [2, 10], [2, 13])
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'valid')
+  await expect(apply).toBeEnabled()
+  await apply.click()
+  await expect(page.locator('.crumb')).toContainText('Revision 02')
+
+  const stored: Revision = await (
+    await request.get('/api/revisions/' + page.url().split('/').pop())
+  ).json()
+  const children = stored.setup.faces.filter((face) =>
+    face.name.startsWith('Hollow bulb'),
+  )
+  expect(children).toHaveLength(2)
+  // The cavity still belongs to exactly one child as a hole, never a new region.
+  const holed = stored.setup.faces.filter(
+    (face) => face.name.startsWith('Hollow bulb') && face.loops.length === 2,
+  )
+  expect(holed.length).toBeLessThanOrEqual(1)
 })

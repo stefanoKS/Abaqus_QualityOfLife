@@ -85,6 +85,17 @@ test('door and body pick at distinct nonzero offsets through zoom and pan', asyn
   await expect
     .poll(async () => await page.locator('.seal-vtk-host').getAttribute('data-camera'))
     .toBeTruthy()
+  // Wait for the first container resize to settle before projecting model XY.
+  await expect
+    .poll(
+      async () => {
+        const first = (await camera(page)).join()
+        await page.waitForTimeout(120)
+        return first === (await camera(page)).join()
+      },
+      { timeout: 5000 },
+    )
+    .toBe(true)
 
   const box = await viewportBox(page)
   const status = page.getByRole('status')

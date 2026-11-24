@@ -1,5 +1,96 @@
 # Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
+## A11. Left-panel setup, deck readiness, force axis and projected seal cuts · 2026-11-24
+
+Baseline local HEAD `b8252a472a8722808e8b69f37c8adf3ae030ad4e`; remote main
+`aa2964b4e1ed4640f2a4e28c8a2a74e1e7a37393`. The checkout already carried uncommitted launcher,
+startup-test, handoff and guide edits; those were preserved. All writes used disposable data roots
+and unused ports. The operator instance, database, drawings and retained licensed artifacts were not
+modified. No new licensed solve was launched; the retained oblique run was replayed read-only from a
+copy of its artifacts.
+
+### Gate results
+
+| Gate | Result | Evidence |
+|---|---|---|
+| A — remove Review/Run, left setup and action group | **PASS** | `gate-a-workflow.spec.ts`: empty model → real DXF import → roles → projected cut → two materials → mesh → fixed nodes → contact → motion → Prepare → INP inspection → Submit → Results. Both actions are owned once by the left **Analysis actions** group; no Review stage, row or header shortcut exists. `layout.spec.ts` and the Gate A layout test cover 1440×900, 1280×720, 720×450 (200%), 390×844 narrow drawer and both locales; numeric stage 7 opens Motion and 8 opens Results. |
+| B — Prepare and check marks agree | **PASS** | Reproduced both reported failures before editing (below). `prepare-readiness.spec.ts` covers 100→101→100 with no durable write, a genuinely unsaved change, semantic recovery, deck.missing Prepare-enabled/Submit-disabled, +90° from below writing `PANEL_RP, 2, 2, 3`, warning-only missed path, failed readiness + Retry, and one action owner. `tests/test_readiness_actions.py` asserts the server decision. Existing fixture-concurrency, archive and compatibility tests still pass. |
+| C — response axis in the actual plot | **PASS** | `force-axis.spec.ts` reads the Plotly trace and the downloaded second CSV row after switching door/body steps, including direction readout, RP, W/t basis, Reverse Y and a `(0,1)` body axis distinct from `(0,-1)`. Retained licensed replay below reproduces the brief's numeric example exactly. |
+| D — projected cuts in Components | **PASS** | `tests/test_partition.py` covers solid 50+50, hollow two-wall 42+42, one-wall draft, second-stroke 42+42, y=3 20+64, concave U 9+9+58, crossing 4×25, duplicates, no-hit/mixed, stale base, shared interface and deck/mesh conformity. `partition.spec.ts` and `gate-e.spec.ts` drive the real Edge viewport at DPR 1 and DPR 2 after pan **and** zoom, assign two materials, regenerate the mesh and inspect child elsets and `*Solid Section`. `hollow-cut-incomplete.png` and `hollow-cut-valid.png` show the one-region draft and the two-region commit. |
+
+### Reproduced before editing
+
+| Reported failure | Reproduction | After |
+|---|---|---|
+| Reporting width 100→101→100 left Prepare disabled as “Unsaved changes” | Real Edge session on an isolated prepared model: after returning to 100 mm the button stayed disabled and the browser issued no durable write | Prepare is enabled again from semantic persisted-value equality; no Save and no write. `prepare-readiness.spec.ts` asserts the same values and zero non-display writes |
+| A valid +Y motion from below the seal was rejected by a signed-travel predicate | Synthetic door at y = −2 mm, stroke 3 mm, θ = +90°; readiness said `ready` but the UI disabled Prepare with “Set a negative prescribed Y travel…” | The v4 rule validates stroke/angle/duration on both sides; the deck writes `PANEL_RP, 2, 2, 3` and the rerun prepare action succeeds |
+
+### Delivered behaviour
+
+- The workflow is Import → Components → Materials → Mesh → Mounting → Contact → Motion → Results.
+  Stages are stored by stable ID; legacy numeric 7 decodes to Motion and 8 to Results. The old Review
+  stage body and duplicate summaries are gone; thickness is a read-only solver fact in Motion.
+- Prepare and Submit are one compact group beneath the two-column left workflow. The group carries the
+  prepared/stale state, deck inspection/download, run name, CPUs, launcher state and active run. Save
+  revision remains in the header. The viewport stays white and stationary while panes scroll.
+- Readiness is action-specific on the server (`can_prepare`, `can_submit`, `setup_issues`,
+  `submit_issues`, per-action findings and `stage_states`) and is reused by the sidebar, the action
+  group and the API. A missing/stale deck blocks Submit only. Root causes are reported with owning
+  stage, artifact, revision/mesh identity, a localized reason and a target.
+- Components owns region selection, roles and projected partitions. Selecting a region highlights it
+  and does not route away. The partition tool draws arbitrary two-click guides in the viewport,
+  supports multiple pending guides, undo/cancel/precision entry, a one-region draft, a visible no-hit,
+  and an accessible two-click alternative. Preview and commit share the saved base and seed, so the
+  previewed child IDs are the persisted child IDs.
+- The partition engine projects each guide's supporting line onto canonical analytic boundaries,
+  selects only the material intervals the finite stroke touches, nodes seam-seam crossings, builds the
+  planar arrangement, and maps cells back to analytic line/arc/spline edges. It preserves neighbouring
+  bonded loops, assigns cavities to the correct child, excludes the internal seam from exterior
+  contact, and validates area, closure and disjointness.
+- RunView's direction readout follows the selected step instead of always reading the closing block,
+  shows role/RP/direction/angle/force basis, labels legacy provenance as unknown, marks Reverse Y as a
+  display-only inversion and preserves missing force as a gap rather than JavaScript `-null → -0`.
+
+### Verification actually run
+
+- `.\.venv\Scripts\python.exe -m pytest -q --junitxml=pytest-results.xml`: **296 passed, 1 skipped**
+  (the opt-in Abaqus-Python extractor roundtrip), exit 0.
+- `npm --prefix apps/web run test:i18n`: **862 keys** in both dictionaries.
+- `npm --prefix apps/web run test:encoding`: **44** source files, no known mojibake.
+- `npm --prefix apps/web run typecheck`: pass.
+- `npm --prefix apps/web run build`: release **`f17b356730d6`**, entry `index-4Io9K-QL.js`, API 3.
+- `npm --prefix apps/web run test:browser`: **113 passed, 3 skipped** (two opt-in retained replays and
+  the gated screenshot capture) on the final release.
+- `scripts/schema.py`: regenerated once; a second run was byte-identical
+  (`C317BA95362BCACFA32BD4EDE1C4F64041DF67977E7A39EC788B1E7CBD845721`).
+- `git diff --check`: clean.
+
+### Evidence
+
+- `.local/evidence/action-group-left.png`: left workflow plus the full Prepare/Input-ready/Submit group.
+- `.local/evidence/hollow-cut-incomplete.png`: one radial cut, **One material region remains**, Apply
+  disabled, 54.558 mm².
+- `.local/evidence/hollow-cut-valid.png`: second cut, **Cut preview ready**, 1.849 + 52.711 mm², Apply
+  enabled.
+- `.local/evidence/axis-replay.json` and `axis-replay-{closing,bodyseating}.png`: retained licensed run
+  `76b20d84-dc96-4d24-8059-85ed8a3942ad` replayed through the built UI. Closing used d = (0.6, −0.8),
+  final RF = (0.0130300671, −0.0774725974) N, dot = 0.0697961181 N, displayed total force
+  **6.979611814 N** at W/t = 100; Body seating used d = (0,1) and 21 samples. All 31 + 21 Plotly Y
+  values matched independent arithmetic (max absolute difference 0); the exported force row matched
+  the trace to 4.7×10⁻¹² (closing) and 2.2×10⁻⁷ (body). This is retained replay, not a new solve.
+- Deck and mesh inspection is asserted in `partition.spec.ts` (three `*Solid Section`, child REGION
+  elsets, shared interface nodes, internal seam absent from `SEAL_EXTERIOR`) and in the Gate A journey
+  (4-region exported INP with `PANEL_RP, 2, 2, -6.5`).
+
+### Known gaps after this delivery
+
+1. No new licensed solve was run. The force-axis evidence is a replay of retained licensed artifacts; it
+   establishes the viewer relationship for that run, not physical correlation.
+2. Physical correlation, numerical sensitivity and self-contact participation remain **BLOCKED**.
+3. Partition targeting is one material region per operation (the API rejects multi-face scope). Multiple
+   guides and two-or-more children on that region are supported.
+4. Hosted Windows CI was not run for this working tree.
+
 ## A10. Second UI and 2D engineering pass · 2026-11-24
 
 Baseline `aa2964b4e1ed4640f2a4e28c8a2a74e1e7a37393`, equal to `origin/main`; the working tree held only
@@ -39,7 +130,7 @@ cases and the installed Abaqus 2024 launcher; it is recorded separately in
 | C Contact / oblique / preview | **PASS** software + licensed oblique; self-contact participation **BLOCKED** | Distinct μ in INP and metadata; U=(3,−4); preview endpoint/restore |
 | D Width / force / two-row curve | **PASS** | Browser download bytes incl. missing component/force and measured zero; (−3,4)→−500 N, per-mm 5 N/mm, legacy t=2→500 N |
 | E Interactive cut | **PASS** | Real WebGL clicks, DPR 1/2, panic/cancel with zero writes, curved arc; licensed bonded partition |
-| F Playback | **PASS** | median 243.1 ms, p95 error 30 ms, worst 257 ms, 31 frames/62 transitions; host 917.95×378 and slider 833.95 px stable; camera constant |
+| F Playback | **PASS** | Retained `.local/gate-f-measurements.json`: median 243.1 ms, p95 absolute error 30.1 ms, worst 266.6 ms, 31 frames/62 transitions; host 917.95×378 and slider 833.95 px stable; camera constant |
 | G Release / engineering | **PASS locally; hosted CI and physical correlation not run** | Full suites, schema regeneration stable, build `6a8527d475c5`; licensed runs recorded separately |
 
 ### Verification actually run

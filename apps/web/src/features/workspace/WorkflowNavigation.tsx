@@ -11,7 +11,7 @@ import {
   Lock,
   MoveVertical,
   Pin,
-  Play,
+  TriangleAlert,
 } from 'lucide-react'
 import { useTranslate } from '../../i18n'
 import type { TranslationKey } from '../../i18n'
@@ -27,7 +27,6 @@ export const STAGE_ICONS: Record<StageId, typeof FileInput> = {
   mounting: Pin,
   contact: Link2,
   motion: MoveVertical,
-  review: Play,
   results: Activity,
 }
 
@@ -39,7 +38,6 @@ export const STAGE_LABELS: Record<StageId, TranslationKey> = {
   mounting: 'workspace.step.mounting',
   contact: 'workspace.step.contact',
   motion: 'workspace.step.motion',
-  review: 'workspace.step.review',
   results: 'workspace.step.results',
 }
 
@@ -54,19 +52,23 @@ export function WorkflowNavigation({
   states,
   onSelect,
 }: {
-  stage: number
-  states: StepStatus[]
-  onSelect: (index: number) => void
+  stage: StageId
+  states: Record<StageId, StepStatus>
+  onSelect: (id: StageId) => void
 }) {
   const t = useTranslate()
   return (
     <nav className="steps" aria-label={t('workspace.workflow')}>
-      {WORKFLOW_STEPS.map(({ id, nameKey, icon: Icon }, index) => {
-        const status = states[index] ?? { state: 'incomplete' as const }
+      {WORKFLOW_STEPS.map(({ id, nameKey, icon: Icon }) => {
+        const status = states[id] ?? { state: 'incomplete' as const }
         const state = status.state
         const label = t(nameKey)
-        const current = stage === index
-        const reason = status.hint ? t(status.hint) : undefined
+        const current = stage === id
+        const reason = status.code
+          ? t(('readiness.' + status.code) as TranslationKey)
+          : status.hint
+            ? t(status.hint)
+            : undefined
         return (
           <button
             key={id}
@@ -74,16 +76,21 @@ export function WorkflowNavigation({
             data-stage={id}
             className={current ? 'selected' : ''}
             data-state={state}
+            data-warning={status.warning || undefined}
             data-current={current || undefined}
             aria-current={current ? 'step' : undefined}
             title={reason}
-            onClick={() => onSelect(index)}
+            onClick={() => onSelect(id)}
           >
             <Icon />
             <span className="step-name">{label}</span>
             <span className="step-state" aria-hidden="true">
               {state === 'complete' ? (
-                <CheckCircle2 className="state-complete" />
+                status.warning ? (
+                  <TriangleAlert className="state-warning" />
+                ) : (
+                  <CheckCircle2 className="state-complete" />
+                )
               ) : state === 'blocked' ? (
                 <Lock className="state-blocked" />
               ) : (

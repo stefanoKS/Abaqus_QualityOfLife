@@ -160,10 +160,18 @@ test('reverse axes refit an automatic axis and mirror a zoomed one', async ({ pa
 
   // A deliberate zoom is preserved as the same physical portion, mirrored.
   const plot = page.locator('.plot')
-  const box = (await plot.boundingBox())!
-  await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.3)
+  await plot.scrollIntoViewIfNeeded()
+  let box = null
+  for (let attempt = 0; attempt < 20 && !box; attempt++) {
+    const first = await plot.boundingBox()
+    await page.waitForTimeout(120)
+    const second = await plot.boundingBox()
+    if (first && second && JSON.stringify(first) === JSON.stringify(second)) box = second
+  }
+  expect(box).not.toBeNull()
+  await page.mouse.move(box!.x + box!.width * 0.7, box!.y + box!.height * 0.3)
   await page.mouse.down()
-  await page.mouse.move(box.x + box.width * 0.35, box.y + box.height * 0.75)
+  await page.mouse.move(box!.x + box!.width * 0.35, box!.y + box!.height * 0.75, { steps: 10 })
   await page.mouse.up()
   await expect.poll(async () => (await axis('xaxis')).autorange).not.toBe(true)
   const zoomed = await axis('xaxis')

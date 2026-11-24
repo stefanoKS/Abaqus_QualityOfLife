@@ -1,10 +1,16 @@
 """One revision-specific readiness calculation for every surface.
 
-The workflow sidebar, the workspace footer, Review / Run and the HTTP API all ask
-this module the same question: *what is the next action that actually unblocks
-this revision, and why?* Each finding carries a stable reason code, the owning
-stage, the affected action and the artifact it refers to, so the browser can
+The workflow sidebar, the workspace action group and the HTTP API all ask this
+module the same question: *what is the next action that actually unblocks this
+revision, and why?* Each finding carries a stable reason code, the owning
+stage, the affected actions and the artifact it refers to, so the browser can
 translate the explanation without guessing from prose.
+
+The decision is action-specific. ``can_prepare`` covers only engineering setup
+inputs (roles, materials, mesh artifact, reviewed fixture, motion, contact).
+A missing or stale deck never blocks preparation. ``can_submit`` adds the
+current prepared deck. Geometry warnings such as ``motion.path_misses_seal``
+stay warnings under the existing policy and never disable an action.
 
 This is deliberately conservative. A previous mesh never makes a changed
 revision ready, an empty drawing is never Import-complete, and a deck prepared
@@ -21,11 +27,13 @@ from packages.engineering.roles import findings as role_findings
 from packages.engineering.roles import step_plan
 from services import store
 
-# Severity vocabulary: only ``blocker`` prevents the next engineering action.
+# Severity vocabulary: only ``blocker`` prevents an action.
 BLOCKER = "blocker"
 WARNING = "warning"
 INFO = "info"
 
+# Stable stage identities shared with the browser. ``action`` owns Prepare and
+# Submit; it is not a navigation stage any more.
 STAGE_ACTION = {
     "import": "import",
     "components": "assign_roles",
@@ -34,9 +42,11 @@ STAGE_ACTION = {
     "mounting": "select_fixed_nodes",
     "contact": "review_contact",
     "motion": "review_motion",
-    "review": "prepare_or_submit",
+    "action": "prepare_or_submit",
     "results": "open_results",
 }
+
+ACTION_STAGES = {"import", "components", "materials", "mesh", "mounting", "contact", "motion"}
 
 # A clearance rejection is a motion defect: the deck writer refuses the same
 # condition, so readiness names it before the engineer tries to prepare a deck.
@@ -49,7 +59,14 @@ CLEARANCE_FINDINGS = {
 }
 
 
-def finding(code, stage, severity, params=None, artifact=None):
+def finding(code, stage, severity, params=None, artifact=None, actions=None):
+    if actions is None:
+        if severity != BLOCKER:
+            actions = []
+        elif stage == "action":
+            actions = ["submit"]
+        else:
+            actions = ["prepare", "submit"]
     return {
         "code": code,
         "stage": stage,
@@ -57,6 +74,7 @@ def finding(code, stage, severity, params=None, artifact=None):
         "severity": severity,
         "artifact": artifact,
         "params": params or {},
+        "actions": list(actions),
     }
 
 
@@ -81,8 +99,52 @@ def _mesh_state(project, setup, jobs):
     return active, latest, compat
 
 
+def _motion_issues(setup):
+    """Validate the stored effective motion under its own schema policy.
+
+    Version 4 is stroke + direction angle; a positive delta-Y is valid when the
+    measured geometry permits it. Only a historical version uses its signed
+    travel field, and even then the sign is a geometry question for the deck
+    writer, not an unconditional readiness rejection.
+    """
+    issues = []
+    v4 = setup.schema_version >= 4
+
+    def check(motion, label):
+        try:
+            duration = float(motion.duration)
+            if not duration > 0:
+                raise ValueError("duration")
+            if v4:
+                stroke = float(motion.stroke)
+                angle = float(motion.angle)
+                if not (stroke >= 0 and stroke < float("inf")):
+                    raise ValueError("stroke")
+                if not (abs(angle) <= 360):
+                    raise ValueError("angle")
+            else:
+                travel = float(motion.travel)
+                if not abs(travel) <= 10000:
+                    raise ValueError("travel")
+        except (TypeError, ValueError):
+            issues.append(
+                finding(
+                    "motion.invalid",
+                    "motion",
+                    BLOCKER,
+                    {"label": label},
+                    artifact="revision",
+                )
+            )
+
+    check(setup.motion, "door")
+    if setup.analysis.mode == "body_then_door":
+        check(setup.motion.body, "body")
+    return issues
+
+
 def _assembly(active, setup, findings):
-    """Measured door/body clearance for the Motion and Review diagnostics.
+    """Measured door/body clearance for the Motion diagnosis.
 
     Returns ``None`` before a compatible mesh exists. A real geometric
     rejection becomes a motion blocker carrying the same stable code the deck
@@ -105,7 +167,11 @@ def _assembly(active, setup, findings):
         # for measured contact.
         for role in ("door", "body"):
             part = result.get(role)
-            if part and part.get("path") == "missed":
+            if (
+                part
+                and not part.get("reaches_initial_gap")
+                and part.get("path") in {"missed", "approaching"}
+            ):
                 findings.append(
                     finding(
                         "motion.path_misses_seal",
@@ -150,6 +216,7 @@ def evaluate(rid):
     head_row = next((p for p in heads if p["id"] == project), None)
     head_id = head_row["revision"] if head_row else str(rid)
     is_head = head_id == str(rid)
+    archived = bool(revision.get("archived") or revision.get("group_archived"))
     jobs = [j for j in store.jobs(("MESH", "DECK", "ABAQUS")) if j["project"] == project]
     mesh_jobs = [j for j in jobs if j["mode"] == "MESH"]
     deck_jobs = [j for j in jobs if j["mode"] == "DECK" and j["revision"] == str(rid)]
@@ -158,7 +225,9 @@ def evaluate(rid):
 
     if setup.is_empty:
         findings.append(finding("drawing.missing", "import", BLOCKER))
-        return _document(revision, setup, findings, {}, None, head_id)
+        return _document(
+            revision, setup, findings, {}, None, head_id, None, archived=archived
+        )
 
     if setup.dimension != "2D":
         findings.append(finding("drawing.extrusion_preview", "import", BLOCKER))
@@ -192,6 +261,8 @@ def evaluate(rid):
         )
     if not setup.materials:
         findings.append(finding("material.none", "materials", BLOCKER))
+
+    findings.extend(_motion_issues(setup))
 
     active, latest, compat = _mesh_state(project, setup, mesh_jobs)
     artifact = (
@@ -251,28 +322,67 @@ def evaluate(rid):
     # depend on the assembled geometry, and a zero travel is a valid hold.
     assembly = _assembly(active if mesh_usable else None, setup, findings)
 
-    deck = next((j for j in deck_jobs if j["status"] == "Completed"), None)
-    if deck is None:
-        findings.append(finding("deck.missing", "review", BLOCKER))
+    # The newest deck for this revision is the only submittable one. Deck state
+    # belongs to Submit; it never disables Prepare.
+    latest_deck = deck_jobs[0] if deck_jobs else None
+    current_deck = None
+    if latest_deck is None:
+        findings.append(
+            finding(
+                "deck.missing",
+                "action",
+                BLOCKER,
+                actions=["submit"],
+            )
+        )
+    elif latest_deck["status"] in {"Queued", "Running", "Cancel requested"}:
+        findings.append(
+            finding(
+                "deck.preparing",
+                "action",
+                BLOCKER,
+                {"job": latest_deck["id"], "status": latest_deck["status"]},
+                artifact="job:" + latest_deck["id"],
+                actions=["submit"],
+            )
+        )
+    elif latest_deck["status"] != "Completed":
+        findings.append(
+            finding(
+                "deck.failed",
+                "action",
+                BLOCKER,
+                {"job": latest_deck["id"], "status": latest_deck["status"]},
+                artifact="job:" + latest_deck["id"],
+                actions=["submit"],
+            )
+        )
     else:
-        if deck.get("mesh") and active and deck["mesh"] != active["id"]:
+        current_deck = latest_deck
+        if current_deck.get("mesh") and active and current_deck["mesh"] != active["id"]:
             findings.append(
                 finding(
                     "deck.superseded_mesh",
-                    "review",
+                    "action",
                     BLOCKER,
-                    {"deck": deck["id"], "mesh": deck["mesh"], "active": active["id"]},
-                    artifact="job:" + deck["id"],
+                    {
+                        "deck": current_deck["id"],
+                        "mesh": current_deck["mesh"],
+                        "active": active["id"],
+                    },
+                    artifact="job:" + current_deck["id"],
+                    actions=["submit"],
                 )
             )
-        if deck.get("fixture_hash") and fixture and deck["fixture_hash"] != fixture["hash"]:
+        if current_deck.get("fixture_hash") and fixture and current_deck["fixture_hash"] != fixture["hash"]:
             findings.append(
                 finding(
                     "deck.stale_fixture",
-                    "review",
+                    "action",
                     BLOCKER,
-                    {"deck": deck["id"]},
-                    artifact="job:" + deck["id"],
+                    {"deck": current_deck["id"]},
+                    artifact="job:" + current_deck["id"],
+                    actions=["submit"],
                 )
             )
 
@@ -281,7 +391,7 @@ def evaluate(rid):
         findings.append(
             finding(
                 "run.active",
-                "review",
+                "action",
                 INFO,
                 {"job": latest_run["id"], "status": latest_run["status"]},
                 artifact="job:" + latest_run["id"],
@@ -291,7 +401,7 @@ def evaluate(rid):
         findings.append(
             finding(
                 "run.failed",
-                "review",
+                "action",
                 WARNING,
                 {"job": latest_run["id"]},
                 artifact="job:" + latest_run["id"],
@@ -302,9 +412,20 @@ def evaluate(rid):
         findings.append(
             finding(
                 "revision.historical",
-                "review",
+                "action",
                 WARNING,
                 {"number": revision["number"]},
+                artifact="revision:" + str(rid),
+                actions=["prepare", "submit"],
+            )
+        )
+    if archived:
+        findings.append(
+            finding(
+                "project.archived",
+                "action",
+                BLOCKER,
+                {},
                 artifact="revision:" + str(rid),
             )
         )
@@ -317,18 +438,112 @@ def evaluate(rid):
         "materials": len(setup.materials),
         "mesh": active["id"] if active else None,
         "mesh_digest": active.get("mesh_digest") if active else None,
+        "mesh_compat": compat,
         "mesh_artifact": artifact,
         "fixture_count": fixture_count,
         "fixture_hash": fixture["hash"] if fixture else None,
-        "deck": deck["id"] if deck else None,
+        "deck": current_deck["id"] if current_deck else None,
+        "deck_status": latest_deck["status"] if latest_deck else None,
+        "deck_mesh": current_deck.get("mesh") if current_deck else None,
+        "deck_fixture_hash": current_deck.get("fixture_hash") if current_deck else None,
         "run": latest_run["id"] if latest_run else None,
+        "revision": str(rid),
+        "head": head_id,
+        "archived": archived,
+        "head_revision": is_head,
     }
-    return _document(revision, setup, findings, counts, latest_run, head_id, assembly)
+    return _document(
+        revision,
+        setup,
+        findings,
+        counts,
+        latest_run,
+        head_id,
+        assembly,
+        archived=archived,
+    )
 
 
-def _document(revision, setup, findings, counts, latest_run, head_id, assembly=None):
+def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, can_prepare,
+                  can_submit, latest_run):
+    """Sidebar badges from the same revision snapshot as the actions."""
+    # Missing-but-actionable inputs read as "incomplete"; a genuine
+    # incompatibility reads as "blocked".
+    incomplete_codes = {
+        "drawing.missing",
+        "mesh.missing",
+        "mounting.missing",
+        "material.unassigned",
+        "material.none",
+        "motion.invalid",
+        "components.roles",
+        "deck.missing",
+    }
+    by_stage = {}
+    for item in findings:
+        if item["severity"] == BLOCKER:
+            by_stage.setdefault(item["stage"], item)
+    warning = {}
+    for item in findings:
+        if item["severity"] == WARNING:
+            warning.setdefault(item["stage"], item)
+
+    def state(stage, complete, incomplete_code=None, blocked_code=None):
+        blocked = by_stage.get(stage)
+        if blocked:
+            return {
+                "state": "incomplete" if blocked["code"] in incomplete_codes else "blocked",
+                "code": blocked["code"],
+            }
+        if blocked_code:
+            return {"state": "blocked", "code": blocked_code}
+        if complete:
+            entry = {"state": "complete"}
+            if stage in warning:
+                entry["warning"] = warning[stage]["code"]
+            return entry
+        return {"state": "incomplete", "code": incomplete_code}
+
+    states = {
+        "import": {
+            "state": "incomplete" if setup.is_empty else "complete",
+            **({"code": "drawing.missing"} if setup.is_empty else {}),
+        },
+        "components": state("components", geometry_ready, "components.roles"),
+        "materials": state(
+            "materials",
+            all(face.material for face in setup.faces if not face.cavity)
+            and bool([face for face in setup.faces if not face.cavity]),
+            "material.unassigned",
+        ),
+        "mesh": state("mesh", mesh_usable, "mesh.missing", "mesh.missing" if not geometry_ready else None),
+        "mounting": state(
+            "mounting",
+            fixture_count > 0,
+            "mounting.missing",
+            "mesh.missing" if not mesh_usable else None,
+        ),
+        "contact": state("contact", True, "contact.invalid"),
+        "motion": state("motion", not by_stage.get("motion"), "motion.invalid"),
+        "action": (
+            {"state": "complete", "code": "action.submitReady"}
+            if can_submit
+            else {"state": "blocked", "code": "action.prepareRequired"}
+            if not can_prepare
+            else {"state": "incomplete", "code": "deck.missing"}
+        ),
+        "results": {
+            "state": "complete" if latest_run and latest_run.get("status") == "Completed" else "incomplete",
+            "code": "results.missing",
+        },
+    }
+    return states
+
+
+def _document(revision, setup, findings, counts, latest_run, head_id, assembly=None, *, archived=False):
     blockers = [f for f in findings if f["severity"] == BLOCKER]
-    if setup.is_empty:
+    empty = setup.is_empty
+    if empty:
         state = "empty"
     elif latest_run and latest_run["status"] in {"Queued", "Running", "Cancel requested"}:
         state = "running"
@@ -339,6 +554,36 @@ def _document(revision, setup, findings, counts, latest_run, head_id, assembly=N
     else:
         state = "ready"
     first = blockers[0] if blockers else None
+
+    def actions_for(name):
+        return [
+            item
+            for item in findings
+            if item["severity"] == BLOCKER and name in item.get("actions", [])
+        ]
+
+    prepare_issues = actions_for("prepare")
+    submit_issues = actions_for("submit")
+    head = counts.get("head_revision", True) if counts else True
+    dim2d = setup.dimension == "2D"
+    can_prepare = bool(
+        not empty
+        and dim2d
+        and head
+        and not archived
+        and not prepare_issues
+    )
+    can_submit = bool(can_prepare and not submit_issues)
+
+    roles = [c.role for c in setup.components]
+    geometry_ready = (
+        bool(setup.faces)
+        and bool(roles)
+        and "unassigned" not in roles
+        and roles.count("moving_panel") == 1
+    )
+    mesh_usable = (counts or {}).get("mesh_artifact") == "ok"
+    fixture_count = (counts or {}).get("fixture_count", 0) or 0
     return {
         "revision": str(revision["id"]),
         "project": revision["project"],
@@ -351,6 +596,25 @@ def _document(revision, setup, findings, counts, latest_run, head_id, assembly=N
             {"stage": first["stage"], "action": first["action"]} if first else None
         ),
         "counts": counts,
+        # Action-specific decisions: a missing deck blocks Submit only.
+        "can_prepare": can_prepare,
+        "can_submit": can_submit,
+        "setup_issues": prepare_issues,
+        "submit_issues": submit_issues,
+        "actions": {
+            "prepare": {"allowed": can_prepare, "issues": prepare_issues},
+            "submit": {"allowed": can_submit, "issues": submit_issues},
+        },
+        "stage_states": _stage_states(
+            setup,
+            findings,
+            fixture_count,
+            mesh_usable,
+            geometry_ready,
+            can_prepare,
+            can_submit,
+            latest_run,
+        ),
         # Measured assembly geometry; nothing here is solver evidence.
         "assembly": assembly,
         # The derived step sequence and role findings, so the browser shows the
@@ -368,4 +632,6 @@ def persisted_summary(document):
         "first_code": (document["first_blocker"] or {}).get("code"),
         "next_stage": (document["next_action"] or {}).get("stage"),
         "blocker_count": sum(1 for f in document["findings"] if f["severity"] == BLOCKER),
+        "can_prepare": document.get("can_prepare", False),
+        "can_submit": document.get("can_submit", False),
     }

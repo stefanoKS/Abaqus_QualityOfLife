@@ -1,5 +1,33 @@
 # Engineering validation
 
+## Force-axis replay of retained licensed run 76b20d84 · 2026-11-24 (no solver launch)
+
+The oblique two-panel run recorded below was replayed through the built UI from a **copy** of its
+retained artifacts. No Abaqus license was checked out, no solver process was started and the original
+artifacts were not modified. This check answers only whether the viewer plots and exports the stored
+measured components on the selected step's own projection axis.
+
+| Item | Closing | Body seating |
+|---|---|---|
+| Role / instance / RP label | door / `PANEL-1` / 275 | body / `BODY-1` / 322 |
+| Direction d (global XY) | (0.6, −0.8), −53.1301° | (0, 1), 90° |
+| Final signed raw RF (N) | (0.0130300671, −0.0774725974) | (−2.0×10⁻¹³, 1178.3289795) |
+| Final dot product RF·d (N) | 0.0697961181 | 1178.3289795 |
+| Reporting basis | total width, W = 100 mm, t = 1 mm | same |
+| Final displayed force (N) | **6.979611814** | **117832.8979** |
+| Plot samples checked | 31 | 21 |
+| Max absolute plotted-vs-independent difference | 0 | 0 |
+| Max absolute exported-row-vs-trace difference | 4.68×10⁻¹² | 2.19×10⁻⁷ |
+
+The exported second row was read from the two-row CSV download after switching the **Curve step**
+selector. The independent arithmetic used the stored `rf1`/`rf2` and the step direction, multiplied
+once by W/t. Reverse Y was off for these readings.
+
+**Limits.** This is agreement between the stored measured components, the plotted trace and the exported
+row for one retained run. It is not a new solve, not a mesh/time sensitivity study and not physical
+correlation. The very large body-seating value is the run's recorded reaction under the represented
+100 mm width, not an independently validated contact force.
+
 ## Second UI and 2D engineering pass — licensed execution · 2026-11-24
 
 Three small disposable synthetic cases were run through the normal API -> worker -> Abaqus 2024 solver ->

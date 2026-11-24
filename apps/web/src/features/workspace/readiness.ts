@@ -1,8 +1,11 @@
 import type { Translate, TranslationKey } from '../../i18n'
+import type { StageId } from './stages'
 
 /**
  * One revision-readiness document, calculated by the API and shared by the
- * sidebar, the workspace header, Review and the direct API acceptance tests.
+ * sidebar, the action group and the direct API acceptance tests. Preparation
+ * and submission are separate decisions: a missing or stale deck never blocks
+ * preparation.
  */
 export interface ReadinessFinding {
   code: string
@@ -11,6 +14,8 @@ export interface ReadinessFinding {
   severity: 'blocker' | 'warning' | 'info'
   artifact: string | null
   params: Record<string, string | number>
+  /** Actions this finding prevents: ``prepare`` and/or ``submit``. */
+  actions?: string[]
 }
 
 /** One measured rigid-profile placement on the assembled mesh. */
@@ -42,6 +47,17 @@ export interface AssemblyAssessment {
   details?: Record<string, string | number>
 }
 
+export interface ActionDecision {
+  allowed: boolean
+  issues: ReadinessFinding[]
+}
+
+export interface StageState {
+  state: 'complete' | 'incomplete' | 'blocked'
+  code?: string
+  warning?: string
+}
+
 export interface Readiness {
   revision: string
   project: string
@@ -52,6 +68,12 @@ export interface Readiness {
   first_blocker: ReadinessFinding | null
   next_action: { stage: string; action: string } | null
   counts: Record<string, unknown>
+  can_prepare: boolean
+  can_submit: boolean
+  setup_issues: ReadinessFinding[]
+  submit_issues: ReadinessFinding[]
+  actions: { prepare: ActionDecision; submit: ActionDecision }
+  stage_states: Record<StageId, StageState>
   /** Null before a compatible mesh exists. */
   assembly?: AssemblyAssessment | null
   updated: string

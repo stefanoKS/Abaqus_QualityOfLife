@@ -21,10 +21,6 @@ function wsfix(inp: string) {
 
 async function openReview(page: Page, revision: Revision) {
   await page.goto('/#workspace/' + revision.id)
-  await page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Review / Run' })
-    .click()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeVisible()
 }
 

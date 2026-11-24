@@ -9,6 +9,7 @@ import importlib.util
 import json
 import multiprocessing
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -36,6 +37,39 @@ def _claim_in_child(root, barrier, queue, hold):
         queue.put(("conflict", str(error)))
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows double-click entry point")
+def test_cmd_propagates_failure_and_keeps_double_click_readable(tmp_path):
+    launcher_path = tmp_path / "start-abaqus-qol.cmd"
+    shutil.copyfile(ROOT / launcher_path.name, launcher_path)
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(tmp_path / ".venv")],
+        check=True,
+    )
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "serve.py").write_text(
+        "import sys\nprint('startup result')\nsys.exit(0 if '--status' in sys.argv else 3)\n",
+        encoding="utf-8",
+    )
+
+    def launch(*args):
+        return subprocess.run(
+            [os.environ["COMSPEC"], "/d", "/c", launcher_path.name, *args],
+            cwd=tmp_path, input=b"\n", capture_output=True, timeout=20,
+        )
+
+    flagged = launch("--no-browser")
+    assert flagged.returncode == 3
+    clicked = launch()
+    assert clicked.returncode == 3
+    # PAUSE is localized, so only compare the presence of its extra prompt.
+    assert clicked.stdout.startswith(flagged.stdout)
+    assert clicked.stdout[len(flagged.stdout):].strip()
+    assert launch("--status").returncode == 0
+
+
 spec = importlib.util.spec_from_file_location("serve", ROOT / "scripts" / "serve.py")
 serve = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(serve)

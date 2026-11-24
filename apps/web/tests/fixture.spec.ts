@@ -37,10 +37,7 @@ async function openMeshStage(page: Page, revision: Revision) {
 }
 
 async function openReviewStage(page: Page) {
-  await page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Review / Run' })
-    .click()
+  await expect(page.getByTestId('action-group')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeVisible()
 }
 
@@ -213,7 +210,6 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
   await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
   await openReviewStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
 
@@ -232,10 +228,6 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
     .click()
   await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 30000 })
   // The prepared deck was for the previous revision, so it is not submittable.
-  await page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Review / Run' })
-    .click()
   await expect(page.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
   const before = await (await request.get('/api/meshes')).json()
   expect(before.filter((j: Job) => j.revision === revision.id)).toHaveLength(1)
@@ -253,7 +245,7 @@ test('a motion edit reuses the mesh and a remesh forces fixture review', async (
     'These mesh inputs changed. Generate the mesh again.',
     { timeout: 30000 },
   )
-  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await expect(page.getByText('Fixed nodes (WSFIX)')).toHaveCount(0)
 
   await generateMesh(page)
@@ -324,10 +316,6 @@ test('a pending selection blocks preparation until it is saved or discarded', as
   await expect(
     page.getByText(/\d+ 節点を選択中です。保存するまで解析には使われません。/),
   ).toBeVisible()
-  await page
-    .getByRole('navigation', { name: 'ワークフロー' })
-    .getByRole('button', { name: '解析条件確認・実行' })
-    .click()
   await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeDisabled()
 })
 
@@ -345,7 +333,6 @@ test('an explicit remesh in the same revision starts a fresh review', async ({ p
   await dragBox(page, await at(page, -10, -0.6), await at(page, 10, 1.4))
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
   await openReviewStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
 
@@ -374,12 +361,8 @@ test('an explicit remesh in the same revision starts a fresh review', async ({ p
   await expect(page.getByTestId('fixture-count')).toHaveText('0')
   await openReviewStage(page)
   await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
-  await expect(page.getByTestId('deck-status')).toHaveCount(0)
+  await expect(page.getByTestId('deck-status')).toContainText('Prepare the input deck again')
 
-  await page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Review / Run' })
-    .click()
   await expect(page.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
 })
 
@@ -398,13 +381,8 @@ test('a submitted setup replays the fixed nodes archived in its deck', async ({ 
   const archived = await count(page)
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
   await openReviewStage(page)
-  await page.getByRole('navigation', { name: 'Workflow' }).getByRole('button', { name: 'Review / Run' }).click()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
-  await page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Review / Run' })
-    .click()
   await page.getByLabel('Run name').fill('Archived fixture run')
   await page.getByRole('button', { name: 'Submit Abaqus analysis' }).click()
   await page.waitForURL('**/#diagnostics/*')

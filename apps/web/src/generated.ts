@@ -481,10 +481,11 @@ export interface paths {
         put?: never;
         /**
          * Partition Preview
-         * @description Validate a cut from the current draft; nothing is persisted.
+         * @description Validate projected guides against a saved base; nothing is persisted.
          *
-         *     Preview and commit call the same domain function, so the line the engineer
-         *     reviews is the geometry that will be saved.
+         *     Preview and commit call the same domain function and the same seed, so the
+         *     child IDs the operator reviews are the IDs that are saved. A draft setup is
+         *     not accepted as the preview authority: partition requires a saved revision.
          */
         post: operations["partition_preview_api_partition_preview_post"];
         delete?: never;
@@ -504,7 +505,7 @@ export interface paths {
         put?: never;
         /**
          * Partition Model
-         * @description Persist one straight material partition as a new revision.
+         * @description Persist one projected material partition as a new revision.
          *
          *     The generic ``PUT`` topology guard stays untouched; a partition is its own
          *     validated operation. The base revision is checked transactionally, and a
@@ -1872,7 +1873,20 @@ export interface components {
              * Format: uuid
              */
             base: string;
-            cut: components["schemas"]["PartitionCut"];
+            cut?: components["schemas"]["PartitionCut"] | null;
+            /** Face */
+            face?: string | null;
+            /** Strokes */
+            strokes?: [
+                [
+                    number,
+                    number
+                ],
+                [
+                    number,
+                    number
+                ]
+            ][];
         };
         /**
          * PartitionCut
@@ -1892,10 +1906,33 @@ export interface components {
                 number
             ];
         };
-        /** PartitionPreview */
+        /**
+         * PartitionPreview
+         * @description Authoritative preview of projected viewport guides.
+         *
+         *     ``cut`` keeps the historical two-boundary-point request. ``strokes`` are
+         *     the raw model-space endpoints of the operator's drawn guides; the server
+         *     projects them onto the target material. ``base`` makes preview and commit
+         *     use the same revision identity so derived child IDs agree.
+         */
         PartitionPreview: {
             setup: components["schemas"]["Project-Input"];
-            cut: components["schemas"]["PartitionCut"];
+            cut?: components["schemas"]["PartitionCut"] | null;
+            /** Face */
+            face?: string | null;
+            /** Strokes */
+            strokes?: [
+                [
+                    number,
+                    number
+                ],
+                [
+                    number,
+                    number
+                ]
+            ][];
+            /** Base */
+            base?: string | null;
         };
         /** Plane */
         "Plane-Input": {

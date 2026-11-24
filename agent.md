@@ -1,5 +1,67 @@
 # Abaqus QOL implementation handoff
 
+## Left-panel setup, deck readiness, force axis and projected seal cuts — delivered · 2026-11-24
+
+Baseline local HEAD `b8252a4`, remote main `aa2964b`. The pre-existing Windows launcher, startup-test,
+handoff and guide edits were preserved. All writes used disposable data roots and unused ports; the
+operator instance, database, drawings and retained licensed artifacts were not modified. **No new
+licensed solver was launched.**
+
+The four gates in the [execution brief](docs/setup-readiness-partition-handoff.txt) are implemented and
+verified: **A PASS, B PASS, C PASS, D PASS**. The gate table, blocker before/after table, test counts and
+evidence are in
+[implementation-report.md](docs/implementation-report.md#a11-left-panel-setup-deck-readiness-force-axis-and-projected-seal-cuts--2026-11-24).
+The retained licensed replay is recorded in
+[engineering-validation.md](docs/engineering-validation.md#force-axis-replay-of-retained-licensed-run-76b20d84--2026-11-24-no-solver-launch).
+
+Both reported Prepare failures were reproduced before editing: the 100→101→100 reporting-width revert
+left Prepare disabled as “Unsaved changes”, and a valid +Y motion from below the seal (door at y=−2 mm,
+3 mm at +90°) was rejected by the legacy signed-travel predicate. Readiness is now action-specific on the
+server (`can_prepare` / `can_submit`), a missing/stale deck blocks Submit only, and semantic equality
+clears unsaved state on revert.
+
+### Delivered in this pass
+
+- Review/Run is gone: workflow is Import → Components → Materials → Mesh → Mounting → Contact → Motion →
+  Results, with stable stage IDs (legacy 7 → Motion, 8 → Results). Prepare/Submit live in one compact
+  left **Analysis actions** group with deck inspection/download, run name, CPUs, launcher state and the
+  active-run link. Motion owns W, force normalization and read-only solver thickness.
+- Components owns roles, region selection and projected partition. Arbitrary two-click viewport guides
+  are projected onto analytic boundaries; the authoritative server arrangement supports one or more
+  seams, two-or-more children, a one-region draft, no-hit/mixed diagnostics and preview/commit-identical
+  child IDs. Models, meshes, decks and prior child regions remain readable.
+- RunView reports the selected step's role, RP, direction/angle and force basis; legacy provenance stays
+  unknown rather than borrowing the closing direction. Reverse Y is visibly display-only; missing force
+  stays a gap.
+
+### Tests actually run (this machine, isolated data)
+
+- `pytest -q`: **296 passed, 1 skipped** (opt-in Abaqus-Python roundtrip), exit 0.
+- `test:i18n`: **862 keys** both languages. `test:encoding`: 44 files. `typecheck`: pass.
+- `build`: release **`f17b356730d6`**, entry `index-4Io9K-QL.js`, API 3.
+- `test:browser`: **113 passed, 3 skipped** (two opt-in retained replays and the gated screenshot
+  capture). Gate A full DXF journey; Gate B width/angled/warning/failure-retry; Gate C trace+CSV; Gate D
+  DPR 1 and DPR 2 after pan+zoom plus the hollow single-wall→second-wall flow.
+- `scripts/schema.py`: second generation byte-identical (`C317BA95…`). `git diff --check`: clean.
+- Evidence: `.local/evidence/{action-group-left,hollow-cut-incomplete,hollow-cut-valid}.png`,
+  `axis-replay.json` and `axis-replay-{closing,bodyseating}.png`.
+
+**Next executable slice.** Run hosted Windows CI on the tested tree; demonstrate self-contact
+participation or leave it BLOCKED; obtain independent reference measurements and agreed tolerances
+before any physical claim. A future partition slice can add an explicit multi-face target scope.
+
+**Outstanding dependencies.** No new licensed solve was run. Physical correlation, numerical sensitivity
+and self-contact participation remain BLOCKED. The force-axis pass is retained replay, not new solver
+evidence. Hosted Windows CI for this tree is outstanding.
+
+## Windows startup and delivery audit · 2026-11-24
+
+Checked local commit `b8252a4` against remote main `aa2964b`. Port 8765 initially served release `5cac5e2a1e92` from a second checkout. The launcher detected the conflict, but its batch wrapper expanded `%ERRORLEVEL%` before Python ran and returned success. A failed double-click now keeps the diagnostic visible and flag-based invocations return the child's exit code. The idle instance was switched with operator approval. Edge opened the Japanese Dashboard at the normal root URL on release `6a8527d475c5`. All 6 group, 15 model and 69 job IDs matched the pre-switch inventory.
+
+Fresh verification: 59 Python tests passed across startup, units and phase-two domain tests. Fourteen browser tests passed across Gates A, D, E and motion preview on an isolated manufactured-worker service. Typecheck, translation parity (806 keys) and encoding (43 files) passed. The retained full Python report contains 279 passes and one skip. The prior full browser count is the delivering agent's report. The three retained solver status files record completion, the ODBs exist, and all three original INP hashes match the engineering record. No new licensed solve was run. The retained playback trace differs from the original report on the worst interval; the trace values are recorded below.
+
+**Next executable slice.** Run hosted Windows CI once the changes reach a tested remote SHA, including the batch wrapper regression below. DPR-2 pan/zoom partition coverage, self-contact occurrence, sensitivity and independent physical correlation remain open.
+
 ## Second UI and 2D engineering pass — delivered · 2026-11-24
 
 Baseline `aa2964b4e1ed4640f2a4e28c8a2a74e1e7a37393`, matching `origin/main`; only the execution brief,
@@ -41,7 +103,7 @@ Licensed execution (three synthetic cases) is recorded separately in
 - `test:i18n`: **806 keys** both languages. `test:encoding`: 43 files. `typecheck`: pass.
 - `build`: release **`6a8527d475c5`**, entry `index-CfGm1X5y.js`, API 3.
 - `test:browser`: **103 passed, 3 skipped** (two opt-in replays, gated screenshot capture).
-- Gate F measured median 243.1 ms, p95 error 30 ms, worst 257 ms over 62 transitions; host/slider/camera
+- Gate F's retained trace records median 243.1 ms, p95 error 30.1 ms, worst 266.6 ms over 62 transitions; host/slider/camera
   stable. See `.local/gate-f-measurements.json`.
 - Before/after screenshots: `.local/screenshots/{before,after}` at 2560/1440/390 in both locales.
 - Licensed runs: vertical `b3859d0a…`, oblique `76b20d84…`, partition `bbe7a44c…`; all solver and extraction

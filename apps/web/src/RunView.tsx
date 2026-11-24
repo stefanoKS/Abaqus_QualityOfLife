@@ -33,8 +33,9 @@ interface HistoryRow {
   step?: string | null
   step_id?: string | null
   displacement: number
-  force: number
-  total_force_N?: number
+  /** Null when the projection needs a component the extractor never measured. */
+  force: number | null
+  total_force_N?: number | null
   u1?: number | null
   u2?: number | null
   rf1?: number | null
@@ -46,10 +47,23 @@ interface Closing {
   /** User-facing component name/alias captured when the run was extracted. */
   panel_name?: string
   instance?: string
+  reference_label?: number
   direction?: number[]
+  angle_deg?: number
   distance_mm?: number
+  delta_mm?: number[]
   measure_from_step_start?: boolean
-  steps?: { name: string; id?: string; role: string }[]
+  steps?: {
+    name: string
+    id?: string
+    role: string
+    instance?: string
+    reference_label?: number
+    direction?: number[]
+    angle_deg?: number
+    distance_mm?: number
+    delta_mm?: number[]
+  }[]
 }
 
 interface Index {
@@ -75,7 +89,13 @@ interface Index {
     id?: string
     role: string
     instance?: string
+    reference_label?: number
     direction?: number[]
+    angle_deg?: number
+    distance_mm?: number
+    delta_mm?: number[]
+    travel_mm?: number
+    stroke_mm?: number
   }[]
   history_components?: string[]
 }
@@ -120,7 +140,13 @@ const isStressField = (field: FieldId) => STRESS_FIELDS.includes(field)
 function displayedCurve(history: HistoryRow[], reverseX: boolean, reverseY: boolean) {
   return {
     x: history.map((row) => (reverseX ? -row.displacement : row.displacement)),
-    y: history.map((row) => (reverseY ? -row.force : row.force)),
+    // A missing measurement stays a gap: JavaScript's -null would become -0 and
+    // silently invent a measured zero. NaN is Plotly's gap marker.
+    y: history.map((row) => {
+      const force = row.force
+      if (force === null || force === undefined || !Number.isFinite(force)) return Number.NaN
+      return reverseY ? -force : force
+    }),
   }
 }
 
@@ -486,6 +512,32 @@ export function RunView({
   )
   const curveStepName = curveStepEntry?.name ?? curveStep
   const stepRole = curveStepEntry?.role
+  // The readout follows the SELECTED step. It must never display the closing
+  // door direction while Body seating is on screen.
+  const stepBlock = stepRole === 'body' ? index?.body : index?.closing
+  const stepDirection = curveStepEntry?.direction ?? stepBlock?.direction ?? null
+  const stepAngle = curveStepEntry?.angle_deg ?? stepBlock?.angle_deg
+  const stepReference =
+    curveStepEntry?.reference_label ??
+    (stepRole === 'body' ? index?.body?.reference_label : index?.closing?.reference_label)
+  const stepInstance =
+    curveStepEntry?.instance ?? (stepRole === 'body' ? 'BODY-1' : 'PANEL-1')
+  const stepProvenance = curveStepEntry
+    ? 'step'
+    : stepBlock
+      ? 'legacy'
+      : 'unknown'
+  const forceBasisText =
+    index?.reporting_width_basis === 'legacy_thickness' || index?.force_basis === 'legacy_unscaled'
+      ? t('run.forceBasisLegacy')
+      : index?.force_normalization === 'per_mm'
+        ? t('run.forceBasisPerMm', {
+            thickness: String(index.thickness_mm ?? index.thickness),
+          })
+        : t('run.forceBasisTotal', {
+            width: String(index?.reporting_width_mm ?? index?.thickness ?? '—'),
+            thickness: String(index?.thickness_mm ?? index?.thickness ?? '—'),
+          })
   const historyRows = useMemo(
     () =>
       curveStep
@@ -1038,13 +1090,47 @@ export function RunView({
                     ylabel={
                       stepRole === 'body'
                         ? t('run.bodyReaction', { unit: index.force_unit })
-                        : index.closing
+                        : index.closing && stepProvenance !== 'unknown'
                           ? t('run.doorReaction', { unit: index.force_unit })
-                          : t('run.panelRF2', { unit: index.force_unit })
+                          : stepDirection
+                            ? t('run.projectedReaction', { unit: index.force_unit })
+                            : t('run.panelRF2', { unit: index.force_unit })
                     }
                     active={activeSample}
                     onPick={plotPick}
                   />
+                  <div className="force-basis" data-testid="force-basis">
+                    <p data-testid="selected-step">
+                      {t('run.selectedStep', {
+                        step: curveStepName ?? '—',
+                        role: t(stepRole === 'body' ? 'run.roleBody' : 'run.roleDoor'),
+                      })}
+                    </p>
+                    <p data-testid="selected-rp">
+                      {t('run.referencePoint', {
+                        instance: stepInstance,
+                        label: String(stepReference ?? '—'),
+                      })}
+                    </p>
+                    {stepDirection ? (
+                      <p data-testid="selected-direction">
+                        {t('run.projectionDirection', {
+                          dx: Number(stepDirection[0]).toFixed(3),
+                          dy: Number(stepDirection[1]).toFixed(3),
+                          angle:
+                            stepAngle === undefined ? '—' : Number(stepAngle).toFixed(1),
+                        })}
+                      </p>
+                    ) : (
+                      <p data-testid="selected-direction">{t('run.projectionUnknown')}</p>
+                    )}
+                    <p data-testid="force-basis-text">{forceBasisText}</p>
+                    {reverseY && (
+                      <p className="error-text" data-testid="reverse-y-indicator">
+                        {t('run.reverseYActive')}
+                      </p>
+                    )}
+                  </div>
                   <fieldset className="sign-controls">
                     <legend>{t('run.displaySigns')}</legend>
                     <label className="check">
@@ -1070,7 +1156,7 @@ export function RunView({
                   </button>
                   <small data-testid="export-basis">
                     {t('run.exportBasis', {
-                      panel: stepRole === 'body' ? 'BODY-1' : 'PANEL-1',
+                      panel: stepInstance,
                       step: curveStepName ?? 'Closing',
                       unit: index.force_unit,
                       width: String(index.reporting_width_mm ?? index.thickness),
@@ -1099,10 +1185,18 @@ export function RunView({
                   <dt>{t('run.forceUnit')}</dt>
                   <dd>{index.force_unit}</dd>
                 </div>
-                {index.closing?.direction && (
+                {stepDirection ? (
                   <div>
                     <dt>{t('run.closingDirection')}</dt>
-                    <dd>{index.closing.direction.map((v) => Number(v).toFixed(3)).join(', ')}</dd>
+                    <dd>
+                      {stepDirection.map((v) => Number(v).toFixed(3)).join(', ')}
+                      {stepAngle !== undefined ? ' · ' + Number(stepAngle).toFixed(1) + '°' : ''}
+                    </dd>
+                  </div>
+                ) : (
+                  <div>
+                    <dt>{t('run.closingDirection')}</dt>
+                    <dd>{t('run.directionUnknown')}</dd>
                   </div>
                 )}
                 <div>

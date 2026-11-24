@@ -107,7 +107,6 @@ test('zero travel holds, drafts keep geometry, and the deck has true zeros', asy
   // readiness before reviewing the measured assembly.
   await page.goto('/#workspace/' + revision.id)
   await page.reload()
-  await workflow.getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByText('Two hold steps (assembled positions preserved)')).toBeVisible()
   await expect(page.getByTestId('assembly-door')).toContainText('Hold (assembled position)')
   await expect(page.getByTestId('assembly-body')).toContainText('Hold (assembled position)')

@@ -121,7 +121,6 @@ test('Motion and Review show the measured assembly in both languages', async ({
   await expect(door).toContainText('上側')
 
   await page.locator('.lang-button').click()
-  await workflow.getByRole('button', { name: 'Review / Run' }).click()
   await expect(page.getByTestId('assembly-diagnostics')).toHaveAttribute(
     'data-state',
     'measured',

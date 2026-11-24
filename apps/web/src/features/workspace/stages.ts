@@ -1,7 +1,12 @@
 /**
- * One ordered list of workflow stages. Navigation, picking modes, mesh
+ * One ordered list of setup stages. Navigation, picking modes, mesh
  * visibility and panel rendering all read this table, so inserting a stage
  * cannot send the user to the wrong tool.
+ *
+ * Prepare and Submit are not a stage any more: they live in the always-visible
+ * action group under the left workflow. Historical numeric storage mapped
+ * 7 = Review/Run and 8 = Results; those decodes are kept here so an existing
+ * tab or saved selection reopens somewhere useful without shifting indexes.
  */
 export const STAGE_ORDER = [
   'import',
@@ -11,7 +16,6 @@ export const STAGE_ORDER = [
   'mounting',
   'contact',
   'motion',
-  'review',
   'results',
 ] as const
 
@@ -23,15 +27,28 @@ export const STAGE: Record<StageId, number> = STAGE_ORDER.reduce(
 )
 
 /** Stages that need the produced mesh on screen. */
-export const MESH_STAGES: StageId[] = ['mesh', 'mounting', 'contact', 'review']
+export const MESH_STAGES: StageId[] = ['mesh', 'mounting', 'contact', 'motion']
 
-export function stageId(index: number): StageId {
-  return STAGE_ORDER[index] ?? 'import'
+/**
+ * Decode a persisted stage. New values are stable IDs; old values were numeric
+ * indexes. Index 7 used to be Review/Run and becomes Motion (where the
+ * analysis settings now live); index 8 stays Results.
+ */
+export function decodeStage(value: string | null | undefined, fallback: StageId): StageId {
+  if (value === null || value === undefined || value === '') return fallback
+  if ((STAGE_ORDER as readonly string[]).includes(value)) return value as StageId
+  const index = Number(value)
+  if (!Number.isFinite(index)) return fallback
+  if (index === 7) return 'motion'
+  if (index === 8) return 'results'
+  return STAGE_ORDER[index] ?? fallback
 }
 
 /** The tool a stage expects, so entering it arms the matching picker. */
 export function stageMode(id: StageId): 'component' | 'face' | 'edge' | 'node' {
-  if (id === 'materials') return 'face'
+  // Components owns region selection and the partition target, so a face pick
+  // is the useful default there; the assembly tree still selects components.
+  if (id === 'components' || id === 'materials') return 'face'
   if (id === 'mesh') return 'edge'
   if (id === 'mounting') return 'node'
   return 'component'

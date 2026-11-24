@@ -187,14 +187,7 @@ export class ViewportRenderer {
   private fixture: Set<string> = new Set()
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null
   private guide: number[][] = []
-  private cut: {
-    boundary?: number[][]
-    start?: [number, number] | null
-    end?: [number, number] | null
-    hover?: [number, number] | null
-    phase?: 'start' | 'end' | 'previewed'
-    invalid?: boolean
-  } | null = null
+  private cut: ViewportCut | null = null
   private originPoint: ScreenPoint = [0, 0, 0]
   private dimension: '2D' | '3D' = '2D'
   private ctx: CanvasRenderingContext2D
@@ -556,8 +549,7 @@ export class ViewportRenderer {
     ctx.save()
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
-    // Eligible boundary: a quiet dashed guide so the operator sees where the
-    // canonical point will land without mistaking it for geometry.
+    // Historical boundary guide: a quiet dashed line when a caller supplies one.
     if (this.cut.boundary && this.cut.boundary.length > 1) {
       ctx.strokeStyle = 'rgba(255,150,44,0.55)'
       ctx.lineWidth = 1.4
@@ -571,48 +563,113 @@ export class ViewportRenderer {
       ctx.stroke()
       ctx.setLineDash([])
     }
-    const start = this.cut.start ? this.modelToScreen(this.cut.start[0], this.cut.start[1]) : null
-    const end = this.cut.end ? this.modelToScreen(this.cut.end[0], this.cut.end[1]) : null
-    const hover = this.cut.hover
-      ? this.modelToScreen(this.cut.hover[0], this.cut.hover[1])
-      : null
-    // Rubber band: from the accepted first point to the snapped candidate (or
-    // the accepted second point once previewed).
-    const second = end ?? (this.cut.phase === 'end' ? hover : null)
-    if (start && second) {
+    const line = (
+      a: [number, number],
+      b: [number, number],
+      colour: string,
+      dashed: boolean,
+      width: number
+    ) => {
+      const p = this.modelToScreen(a[0], a[1])
+      const q = this.modelToScreen(b[0], b[1])
       ctx.strokeStyle = '#ffffff'
-      ctx.lineWidth = 4
+      ctx.lineWidth = width + 2.4
+      ctx.setLineDash([])
       ctx.beginPath()
-      ctx.moveTo(start[0], start[1])
-      ctx.lineTo(second[0], second[1])
+      ctx.moveTo(p[0], p[1])
+      ctx.lineTo(q[0], q[1])
       ctx.stroke()
-      ctx.strokeStyle = this.cut.invalid ? '#b42318' : '#e07a12'
-      ctx.lineWidth = 2.2
-      ctx.setLineDash(this.cut.phase === 'previewed' ? [] : [8, 5])
+      ctx.strokeStyle = colour
+      ctx.lineWidth = width
+      ctx.setLineDash(dashed ? [7, 5] : [])
       ctx.beginPath()
-      ctx.moveTo(start[0], start[1])
-      ctx.lineTo(second[0], second[1])
+      ctx.moveTo(p[0], p[1])
+      ctx.lineTo(q[0], q[1])
       ctx.stroke()
       ctx.setLineDash([])
     }
-    // Handles: filled circles for accepted endpoints, a ring for the candidate.
-    const handle = (p: number[], filled: boolean, label: string) => {
+    const handle = (point: [number, number], filled: boolean) => {
+      const p = this.modelToScreen(point[0], point[1])
       ctx.beginPath()
-      ctx.arc(p[0], p[1], 7, 0, 2 * Math.PI)
+      ctx.arc(p[0], p[1], 5.5, 0, 2 * Math.PI)
       ctx.fillStyle = filled ? '#ff962c' : '#ffffff'
       ctx.fill()
-      ctx.lineWidth = 2.4
+      ctx.lineWidth = 2
       ctx.strokeStyle = this.cut?.invalid ? '#b42318' : '#10233f'
       ctx.stroke()
-      if (label) {
-        ctx.fillStyle = '#10233f'
-        ctx.font = '600 12px system-ui, sans-serif'
-        ctx.fillText(label, p[0] + 10, p[1] - 9)
+    }
+    // Completed pending guides stay visible as dashed ghosts.
+    for (const stroke of this.cut.strokes ?? []) {
+      line(stroke.a, stroke.b, '#e07a12', true, 1.8)
+      handle(stroke.a, true)
+      handle(stroke.b, true)
+    }
+    // Server-selected material intervals are solid: they are the prospective
+    // seam, while the dashed remainder is outside the target material.
+    for (const segment of this.cut.segments ?? []) {
+      line(segment.a, segment.b, '#0f6b57', false, 3)
+    }
+    const start = this.cut.start
+      ? this.modelToScreen(this.cut.start[0], this.cut.start[1])
+      : null
+    const end = this.cut.end
+      ? this.modelToScreen(this.cut.end[0], this.cut.end[1])
+      : null
+    const hover = this.cut.hover
+      ? this.modelToScreen(this.cut.hover[0], this.cut.hover[1])
+      : null
+    if (start) {
+      const target = end ?? hover
+      if (target) {
+        ctx.strokeStyle = '#ffffff'
+        ctx.lineWidth = 4
+        ctx.beginPath()
+        ctx.moveTo(start[0], start[1])
+        ctx.lineTo(target[0], target[1])
+        ctx.stroke()
+        ctx.strokeStyle = this.cut.invalid ? '#b42318' : '#e07a12'
+        ctx.lineWidth = 2.2
+        ctx.setLineDash([8, 5])
+        ctx.beginPath()
+        ctx.moveTo(start[0], start[1])
+        ctx.lineTo(target[0], target[1])
+        ctx.stroke()
+        ctx.setLineDash([])
       }
     }
-    if (start) handle(start, true, 'A')
-    if (end) handle(end, true, 'B')
-    if (hover && this.cut.phase !== 'previewed') handle(hover, false, '')
+    if (start) {
+      ctx.beginPath()
+      ctx.arc(start[0], start[1], 7, 0, 2 * Math.PI)
+      ctx.fillStyle = '#ff962c'
+      ctx.fill()
+      ctx.lineWidth = 2.4
+      ctx.strokeStyle = '#10233f'
+      ctx.stroke()
+      ctx.fillStyle = '#10233f'
+      ctx.font = '600 12px system-ui, sans-serif'
+      ctx.fillText('A', start[0] + 10, start[1] - 9)
+    }
+    if (end) {
+      ctx.beginPath()
+      ctx.arc(end[0], end[1], 7, 0, 2 * Math.PI)
+      ctx.fillStyle = '#ff962c'
+      ctx.fill()
+      ctx.lineWidth = 2.4
+      ctx.strokeStyle = '#10233f'
+      ctx.stroke()
+      ctx.fillStyle = '#10233f'
+      ctx.font = '600 12px system-ui, sans-serif'
+      ctx.fillText('B', end[0] + 10, end[1] - 9)
+    }
+    if (hover && !end) {
+      ctx.beginPath()
+      ctx.arc(hover[0], hover[1], 6, 0, 2 * Math.PI)
+      ctx.fillStyle = '#ffffff'
+      ctx.fill()
+      ctx.lineWidth = 2.2
+      ctx.strokeStyle = '#10233f'
+      ctx.stroke()
+    }
     ctx.restore()
   }
   private drawFixture(ctx: CanvasRenderingContext2D) {

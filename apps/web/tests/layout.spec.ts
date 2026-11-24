@@ -66,26 +66,21 @@ test('desktop shell fits the viewport, keeps panes adjacent and the viewport fix
   expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1)
   expect(Math.abs(after.height - before.height)).toBeLessThanOrEqual(1)
 
-  // Review actions are the first actionable group INSIDE the Properties pane.
-  await page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Review / Run' })
-    .click()
-  const properties = (await page.locator('.workgrid > .right').boundingBox())!
-  const actions = (await page.getByTestId('review-actions').boundingBox())!
+  // Prepare and Submit are one compact group beneath the left workflow, and are
+  // reachable without changing the stage.
+  const leftPane = (await page.locator('.workgrid > .left').boundingBox())!
+  const steps = (await page.locator('.workgrid > .left .steps').boundingBox())!
+  const actions = (await page.getByTestId('action-group').boundingBox())!
   const prepare = (await page.getByRole('button', { name: 'Prepare input deck' }).boundingBox())!
   const submit = (await page
     .getByRole('button', { name: 'Submit Abaqus analysis' })
     .boundingBox())!
-  const details = (await page
-    .getByRole('heading', { name: 'Closing analysis', exact: true })
-    .boundingBox())!
+  expect(actions.x).toBeGreaterThanOrEqual(leftPane.x - 1)
+  expect(actions.x + actions.width).toBeLessThanOrEqual(leftPane.x + leftPane.width + 1)
+  expect(actions.y).toBeGreaterThan(steps.y + steps.height - 1)
   expect(prepare.y).toBeLessThan(submit.y)
-  expect(actions.x).toBeGreaterThanOrEqual(properties.x - 1)
-  expect(actions.y).toBeGreaterThanOrEqual(properties.y - 1)
-  expect(prepare.y).toBeGreaterThanOrEqual(properties.y - 1)
-  expect(prepare.y).toBeLessThan(details.y + 1)
-  expect(submit.y).toBeLessThan(details.y + 1)
+  expect(prepare.x).toBeGreaterThanOrEqual(leftPane.x - 1)
+  expect(submit.x + submit.width).toBeLessThanOrEqual(leftPane.x + leftPane.width + 1)
   await expect(page.getByRole('button', { name: 'Go to Mesh' })).toHaveCount(0)
 
   // Wheel zoom and Fit/reset stay inside the fixed canvas.
@@ -120,12 +115,7 @@ test('narrow and zoomed layouts keep every control reachable', async ({ page, re
   await expect(page.getByTestId('vtk-viewport')).toBeVisible()
   await toggle.click()
   await expect(page.locator('.workgrid > .left')).toBeVisible()
-  // The stage actions remain reachable by scrolling, not clipped away.
-  const review = page
-    .getByRole('navigation', { name: 'Workflow' })
-    .getByRole('button', { name: 'Review / Run' })
-  await review.scrollIntoViewIfNeeded()
-  await review.click()
+  // The action group remains reachable by scrolling, not clipped away.
   const prepare = page.getByRole('button', { name: 'Prepare input deck' })
   await prepare.scrollIntoViewIfNeeded()
   await expect(prepare).toBeVisible()

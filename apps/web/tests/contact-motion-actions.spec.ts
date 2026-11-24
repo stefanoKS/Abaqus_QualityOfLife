@@ -92,26 +92,19 @@ test('independent coefficients persist and review actions live in Properties', a
   expect(saved.setup.contact.seal_self).toBe(0.81)
   expect(saved.setup.motion.stroke).toBe(0)
 
-  // Review/Run actions are the first group of the Properties pane.
-  await workflow.locator('[data-stage="review"]').click()
-  const actions = page.getByTestId('review-actions')
+  // Prepare and Submit live in one action group beneath the left workflow.
+  const actions = page.getByTestId('action-group')
   await expect(actions.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await expect(actions.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
-  const properties = (await page.locator('.workgrid > .right').boundingBox())!
-  const prepare = (await actions.locator('.review-prepare').boundingBox())!
-  const submit = (await actions.locator('.review-submit').boundingBox())!
-  const details = (await page
-    .getByRole('heading', { name: 'Closing analysis', exact: true })
-    .boundingBox())!
-  expect(prepare.x).toBeGreaterThanOrEqual(properties.x - 1)
-  expect(submit.x + submit.width).toBeLessThanOrEqual(properties.x + properties.width + 1)
-  expect(prepare.y).toBeLessThan(details.y + 1)
-  expect(submit.y).toBeLessThan(details.y + 1)
-  // No "Go to Mesh" shortcut remains in Review.
-  await expect(actions.getByRole('button', { name: 'Go to Mesh' })).toHaveCount(0)
+  const left = (await page.locator('.workgrid > .left').boundingBox())!
+  const prepare = (await actions.locator('[data-testid="prepare"]').boundingBox())!
+  const submit = (await actions.locator('[data-testid="submit"]').boundingBox())!
+  expect(prepare.x).toBeGreaterThanOrEqual(left.x - 1)
+  expect(submit.x + submit.width).toBeLessThanOrEqual(left.x + left.width + 1)
+  expect(prepare.y).toBeLessThan(submit.y)
   await expect(page.getByRole('button', { name: 'Go to Mesh' })).toHaveCount(0)
   await page.setViewportSize({ width: 700, height: 900 })
-  const prepareNarrow = (await actions.locator('.review-prepare').boundingBox())!
-  const submitNarrow = (await actions.locator('.review-submit').boundingBox())!
+  const prepareNarrow = (await actions.locator('[data-testid="prepare"]').boundingBox())!
+  const submitNarrow = (await actions.locator('[data-testid="submit"]').boundingBox())!
   expect(prepareNarrow.y).toBeLessThan(submitNarrow.y)
 })

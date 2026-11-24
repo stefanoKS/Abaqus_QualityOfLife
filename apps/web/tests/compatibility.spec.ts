@@ -66,8 +66,8 @@ test('a mismatched client cannot prepare or submit from Review', async ({ page, 
     json: { product: 'Abaqus QOL', status: 'ready', api: 2, release: 'legacy', frontend: 'index-OTHER.js' },
   }))
   await page.goto('/#workspace/' + revision.id)
-  await page.locator('[data-stage="review"]').click()
-  const actions = page.getByTestId('review-actions')
+  await page.locator('[data-stage="motion"]').click()
+  const actions = page.getByTestId('action-group')
   await expect(actions.getByRole('button', { name: 'Prepare input deck' })).toBeDisabled()
   await expect(actions.getByRole('button', { name: 'Submit Abaqus analysis' })).toBeDisabled()
   await expect(actions).toContainText('disabled')

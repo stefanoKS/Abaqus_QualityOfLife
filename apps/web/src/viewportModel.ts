@@ -137,13 +137,23 @@ export interface ViewportProps {
 
 export type ViewportCut = {
   active: boolean
+  /** Historical boundary guide; empty for the projected draw-anywhere tool. */
   boundary: number[][]
   start?: [number, number] | null
   end?: [number, number] | null
   phase?: 'start' | 'end' | 'previewed'
   invalid?: boolean
-  /** Snapped candidate under the pointer, drawn as a rubber-band end. */
+  /** Raw model-space candidate under the pointer. */
   hover?: [number, number] | null
+  /** Completed pending guides, drawn as a live ghost. */
+  strokes?: { a: [number, number]; b: [number, number] }[]
+  /**
+   * Material intervals the server selected for the pending guides. These are
+   * drawn solid; the untouched part of a stroke stays dashed.
+   */
+  segments?: { a: [number, number]; b: [number, number] }[]
+  /** Authoritative preview status, shown by the overlay. */
+  status?: string | null
 }
 
 export interface Surface {

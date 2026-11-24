@@ -523,20 +523,27 @@ def save(pid: UUID, body: Save):
 
 @app.post("/api/partition/preview")
 def partition_preview(body: PartitionPreview):
-    """Validate a cut from the current draft; nothing is persisted.
+    """Validate projected guides against a saved base; nothing is persisted.
 
-    Preview and commit call the same domain function, so the line the engineer
-    reviews is the geometry that will be saved.
+    Preview and commit call the same domain function and the same seed, so the
+    child IDs the operator reviews are the IDs that are saved. A draft setup is
+    not accepted as the preview authority: partition requires a saved revision.
     """
-    candidate, plan = engineering.partition.apply(
-        body.setup, body.cut.face, body.cut.start, body.cut.end, seed="preview"
+    face, strokes = _partition_request(body)
+    result = engineering.partition.arrange(
+        body.setup, face, strokes, seed=str(body.base) if body.base else "preview"
     )
-    return {"plan": plan, "setup": candidate, "display": engineering.display(candidate)}
+    candidate = result.pop("project", body.setup)
+    return {
+        "plan": result,
+        "setup": candidate.model_dump(mode="json"),
+        "display": engineering.display(candidate),
+    }
 
 
 @app.post("/api/projects/{pid}/partition", response_model=Revision)
 def partition_model(pid: UUID, body: PartitionApply):
-    """Persist one straight material partition as a new revision.
+    """Persist one projected material partition as a new revision.
 
     The generic ``PUT`` topology guard stays untouched; a partition is its own
     validated operation. The base revision is checked transactionally, and a
@@ -548,8 +555,9 @@ def partition_model(pid: UUID, body: PartitionApply):
     if previous["project"] != str(pid):
         raise store.Conflict("The base revision belongs to another model.")
     setup = Project.model_validate(previous["setup"])
-    candidate, _plan = engineering.partition.apply(
-        setup, body.cut.face, body.cut.start, body.cut.end, seed=str(body.base)
+    face, strokes = _partition_request(body)
+    candidate, _plan = engineering.partition.commit(
+        setup, face, strokes, seed=str(body.base)
     )
     payload = candidate.model_dump(mode="json")
     try:
@@ -561,6 +569,34 @@ def partition_model(pid: UUID, body: PartitionApply):
         if current["setup"] == payload:
             return revision_payload(current)
         raise
+
+
+def _action_message(document, action):
+    """Actionable server-side refusal carrying the stable readiness code."""
+    issues = document.get("submit_issues" if action == "submit" else "setup_issues") or []
+    if issues:
+        issue = issues[0]
+        return (
+            f"{issue['code']}: {issue['stage']} blocks {action} for revision "
+            f"{document.get('revision')}."
+        )
+    return f"Revision {document.get('revision')} is not ready to {action}."
+
+
+def _partition_request(body):
+    """One target face plus projected guides from the new or legacy request."""
+    if body.cut is not None:
+        return body.cut.face, [((body.cut.start[0], body.cut.start[1]), (body.cut.end[0], body.cut.end[1]))]
+    if not body.face:
+        raise ValueError("Choose the target material region before partitioning.")
+    if not body.strokes:
+        raise ValueError("Draw at least one straight guide in the viewport.")
+    if len(body.strokes) > 32:
+        raise ValueError("A partition accepts at most 32 guides.")
+    return body.face, [
+        ((float(stroke[0][0]), float(stroke[0][1])), (float(stroke[1][0]), float(stroke[1][1])))
+        for stroke in body.strokes
+    ]
 
 
 @app.post("/api/projects/{pid}/drawing", response_model=Job, status_code=202)
@@ -736,6 +772,15 @@ def create_deck(body: Deck):
         raise ValueError(
             "Input generation is available for 2D sections. The extrusion is a geometry preview."
         )
+    # The same action-specific decision the browser renders. Mesh artifact and
+    # fixture defects keep the store's specific 409 recovery messages; every
+    # other engineering setup blocker is refused here, before a job is queued.
+    document = readiness.evaluate(body.revision)
+    if not document.get("can_prepare", False):
+        delegated = {"mesh.missing", "mesh.artifact_missing", "mesh.artifact_corrupt", "mounting.missing"}
+        issues = [issue for issue in document.get("setup_issues", []) if issue["code"] not in delegated]
+        if issues:
+            raise ValueError(_action_message({**document, "setup_issues": issues}, "prepare"))
     return store.submit(
         str(body.revision),
         "Prepare input deck",

@@ -30,6 +30,17 @@ test('the body and door previews animate and return without mutating the setup',
   const camera = () => page.locator('.seal-vtk-host').getAttribute('data-camera')
   const translation = () =>
     page.getByTestId('vtk-viewport').getAttribute('data-preview-translation')
+  // Let the first container resize settle before recording the baseline camera.
+  await expect
+    .poll(
+      async () => {
+        const first = await camera()
+        await page.waitForTimeout(150)
+        return first === (await camera())
+      },
+      { timeout: 5000 },
+    )
+    .toBe(true)
   const cameraBefore = await camera()
   const actors = await page.getByTestId('vtk-viewport').getAttribute('data-scene-actors')
 

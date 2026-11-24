@@ -147,14 +147,30 @@ class PartitionCut(Contract):
     end: tuple[float, float]
 
 
+Stroke = tuple[tuple[float, float], tuple[float, float]]
+
+
 class PartitionPreview(Contract):
+    """Authoritative preview of projected viewport guides.
+
+    ``cut`` keeps the historical two-boundary-point request. ``strokes`` are
+    the raw model-space endpoints of the operator's drawn guides; the server
+    projects them onto the target material. ``base`` makes preview and commit
+    use the same revision identity so derived child IDs agree.
+    """
+
     setup: Project
-    cut: PartitionCut
+    cut: PartitionCut | None = None
+    face: str | None = Field(default=None, max_length=80)
+    strokes: list[Stroke] = Field(default_factory=list, max_length=32)
+    base: UUID | None = None
 
 
 class PartitionApply(Contract):
     base: UUID
-    cut: PartitionCut
+    cut: PartitionCut | None = None
+    face: str | None = Field(default=None, max_length=80)
+    strokes: list[Stroke] = Field(default_factory=list, max_length=32)
 
 
 class Revision(Contract):

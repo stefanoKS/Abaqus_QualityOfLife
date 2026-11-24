@@ -20,6 +20,19 @@ async function openSection(page: Page) {
     name: '2D engineering viewport',
   })
   await expect(viewport.locator('canvas')).toBeVisible()
+  // The first container resize re-fits the camera; wait for it to settle so a
+  // model-space coordinate maps to the same pixel the renderer uses.
+  const camera = () => page.locator('.seal-vtk-host').getAttribute('data-camera')
+  await expect
+    .poll(
+      async () => {
+        const first = await camera()
+        await page.waitForTimeout(120)
+        return first === (await camera())
+      },
+      { timeout: 5000 },
+    )
+    .toBe(true)
 
   async function screen(x: number, y: number) {
     const box = (await viewport.boundingBox())!

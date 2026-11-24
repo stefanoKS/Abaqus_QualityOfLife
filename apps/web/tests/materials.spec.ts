@@ -116,6 +116,9 @@ test('the comparison graph plots measured versions of the same library material'
   await page.getByRole('button', { name: 'Add row' }).click()
   await page.getByRole('button', { name: 'Save material' }).click()
   await expect(page.getByTestId('version-history')).toContainText('v2')
+  // The renamed duplicate must be present before its comparison checkbox is
+  // addressed.
+  await expect(row(page, 'Cellular EPDM copy')).toBeVisible()
 
   await page.getByLabel('Compare Cellular EPDM current version').first().check()
   await page.getByLabel('Compare Cellular EPDM copy current version').check()
@@ -175,7 +178,8 @@ test('workspace assigns a library material, adopts a newer version and reuses th
   await page.goto('/#workspace/' + revision.id)
   const workflow = page.getByRole('navigation', { name: 'Workflow' })
   await workflow.getByRole('button', { name: 'Components' }).click()
-  await page.getByRole('button', { name: 'Mounting foot', exact: true }).click()
+  await page.locator('.region-list button', { hasText: 'Mounting foot' }).first().click()
+  await page.getByTestId('assign-material').click()
   await page.getByLabel('Assign from the material library').selectOption(denseId)
   const assigned = page.getByTestId('library-newer')
   await expect(assigned).toHaveCount(0)
@@ -203,7 +207,6 @@ test('workspace assigns a library material, adopts a newer version and reuses th
   await workflow.getByRole('button', { name: 'Mounting' }).click()
   await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
   await page.getByRole('button', { name: 'Save fixed nodes' }).click()
-  await workflow.getByRole('button', { name: 'Review / Run' }).click()
   await page.getByRole('button', { name: 'Prepare input deck' }).click()
   await expect(page.getByTestId('deck-status')).toContainText('Input ready', {
     timeout: 60000,
@@ -219,7 +222,8 @@ test('workspace assigns a library material, adopts a newer version and reuses th
   // Reload so the workspace re-fetches the library current versions.
   await page.reload()
   await workflow.getByRole('button', { name: 'Components' }).click()
-  await page.getByRole('button', { name: 'Mounting foot', exact: true }).click()
+  await page.locator('.region-list button', { hasText: 'Mounting foot' }).first().click()
+  await page.getByTestId('assign-material').click()
   await expect(page.locator('.property-body')).toContainText('Dense EPDM')
   await expect(page.getByTestId('library-newer')).toBeVisible()
   await page.getByRole('button', { name: 'Adopt v3' }).click()

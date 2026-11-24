@@ -47,16 +47,17 @@ import { hasInvalidField, useAnyInvalidField } from './shared/components/draftGu
 import { AssemblyTree } from './features/workspace/AssemblyTree'
 import { AssemblyDiagnostics } from './features/workspace/AssemblyDiagnostics'
 import { componentLabel } from './features/workspace/componentLabel'
-import { WORKFLOW_STEPS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
-import { orderedStates } from './features/workspace/workflowStates'
+import { STAGE_LABELS, WorkflowNavigation } from './features/workspace/WorkflowNavigation'
+import { workflowStates } from './features/workspace/workflowStates'
 import { findingKey, findingVars, type Readiness } from './features/workspace/readiness'
+import { AnalysisActions } from './features/workspace/AnalysisActions'
 import { motionDelta, stepPlan } from './features/workspace/stepSequence'
 import {
   MESH_STAGES,
-  STAGE,
   STAGE_ORDER,
-  stageId,
+  decodeStage,
   stageMode,
+  type StageId,
 } from './features/workspace/stages'
 import { freshCard, materialIssues } from './features/materials/MaterialEditor'
 import { meshQuality, type MeshFile } from './features/mesh/meshQuality'
@@ -65,15 +66,72 @@ import { MeshReview } from './features/mesh/MeshReview'
 type Mesh = ViewMesh & MeshFile
 type Props = { initial: Revision; locked?: Job; notify: (msg: string) => void }
 
-type PartitionPlan = {
-  line: number[][]
-  child_a: string
-  child_b: string
-  area_a: number
-  area_b: number
-  split_edges: string[]
+/**
+ * Effective motion policy for the stored schema. Version 4 validates stroke,
+ * angle and duration (a hold at zero stroke is valid); older revisions keep
+ * their signed travel and duration. The sign is never an unconditional
+ * blocker: the deck writer tests the measured contact side and direction.
+ */
+function motionPolicyValid(project: Project): boolean {
+  const body = project.analysis.mode === 'body_then_door'
+  const check = (motion: {
+    stroke?: number
+    angle?: number
+    duration: number
+    travel?: number
+  }) => {
+    if (!(Number.isFinite(motion.duration) && motion.duration > 0)) return false
+    if (project.schema_version >= 4)
+      return (
+        Number.isFinite(motion.stroke) &&
+        (motion.stroke as number) >= 0 &&
+        Number.isFinite(motion.angle) &&
+        Math.abs(motion.angle as number) <= 360
+      )
+    return Number.isFinite(motion.travel)
+  }
+  if (!check(project.motion)) return false
+  if (body && !check(project.motion.body)) return false
+  return true
+}
+
+type PartitionGuide = {
+  index: number
+  status: 'selected' | 'no_hit'
   start: number[]
   end: number[]
+  intervals: number[][][]
+  length_mm: number
+}
+
+type PartitionChild = {
+  id: string | null
+  name: string | null
+  area: number
+  material: string | null
+}
+
+type PartitionPlan = {
+  face: string
+  status: 'valid' | 'one_region' | 'mixed' | 'redundant'
+  guides: PartitionGuide[]
+  unused_guides: number[]
+  seams: string[]
+  split_edges: string[]
+  children: PartitionChild[]
+  areas: number[]
+  area_parent: number
+  area_children: number
+  child_count: number
+  /** Historical two-child aliases, kept for older callers. */
+  child_a?: string | null
+  child_b?: string | null
+  area_a?: number
+  area_b?: number
+  cut_edge?: string | null
+  line?: number[][]
+  start?: number[]
+  end?: number[]
 }
 
 const PARTITION_CODES = [
@@ -87,6 +145,7 @@ const PARTITION_CODES = [
   'cut_outside_face',
   'cut_crosses_hole',
   'cut_disjoint',
+  'cut_no_hit',
   'sliver_cut',
   'tangent_cut',
   'ambiguous_loop',
@@ -95,38 +154,79 @@ const PARTITION_CODES = [
   'overlapping_children',
   'invalid_result',
   'unsupported_curve',
+  'one_region',
+  'mixed',
+  'redundant',
 ]
+
+/**
+ * Stages whose persisted values differ between the draft and the saved
+ * revision. Material-only face edits belong to Materials; topology belongs to
+ * Components. Used only to place the local "Unsaved" badge; the server owns
+ * readiness.
+ */
+function changedStages(a: Project, b: Project): Set<StageId> {
+  const changed = new Set<StageId>()
+  const differs = (left: unknown, right: unknown) =>
+    JSON.stringify(left) !== JSON.stringify(right)
+  if (differs([a.name, a.source, a.dimension, a.formulation, a.plane, a.extrusion], [b.name, b.source, b.dimension, b.formulation, b.plane, b.extrusion]))
+    changed.add('import')
+  const topology = (p: Project) =>
+    p.faces.map((face) => [face.id, face.name, face.component, face.cavity, face.loops])
+  if (differs([a.components, a.vertices, a.edges, topology(a)], [b.components, b.vertices, b.edges, topology(b)]))
+    changed.add('components')
+  const materials = (p: Project) => [p.materials, p.faces.map((face) => [face.id, face.material])]
+  if (differs(materials(a), materials(b))) changed.add('materials')
+  if (differs([a.mesh], [b.mesh])) changed.add('mesh')
+  if (differs([a.selections, a.mounting], [b.selections, b.mounting])) changed.add('mounting')
+  if (differs([a.contact], [b.contact])) changed.add('contact')
+  if (differs([a.motion, a.analysis], [b.motion, b.analysis])) changed.add('motion')
+  return changed
+}
 
 export default function Workspace({ initial, locked, notify }: Props) {
   const { t } = useI18n()
   const compatibility = useCompatibility()
   const [rev, setRev] = useState(initial),
     [p, setP] = useState(initial.setup)
-  const [stage, setStage] = useState(() => {
+  const [stage, setStage] = useState<StageId>(() => {
     // An empty model opens at Import. The stage is remembered per revision and
     // per model so a save-induced remount cannot send the user back to step one.
+    // Legacy numeric indexes are decoded explicitly (7 = old Review/Run).
+    const fallback: StageId = initial.setup.source.kind === 'empty' ? 'import' : 'components'
     try {
       const saved =
         sessionStorage.getItem('stage:' + initial.id) ??
         sessionStorage.getItem('stage-project:' + initial.project)
-      if (saved !== null) return Math.max(0, Math.min(STAGE_ORDER.length - 1, Number(saved) || 0))
+      return decodeStage(saved, fallback)
     } catch {
       // Storage denial falls back to the explicit default.
+      return fallback
     }
-    return initial.setup.source.kind === 'empty' ? STAGE.import : STAGE.components
   }),
-    [mode, setMode] = useState<SelectionMode>(() => {
-      const id = stageId(stage)
-      return id === 'materials' ? 'face' : id === 'mesh' ? 'edge' : id === 'mounting' ? 'node' : 'component'
-    })
+    [mode, setMode] = useState<SelectionMode>(() => stageMode(stage))
   const [pick, select] = useState<Picked | null>(() => {
-    // A restored stage must restore a matching selection, or its editor would
-    // render without an entity after a save-triggered remount.
+    // A restored stage or a just-saved partition restores its matching
+    // selection, or the editor would render without an entity after a remount.
+    try {
+      const stored = sessionStorage.getItem('pick:' + initial.id)
+      if (stored) {
+        const parsed = JSON.parse(stored) as Picked
+        const face = initial.setup.faces.find((item) => item.id === parsed.id)
+        const edge = initial.setup.edges.find((item) => item.id === parsed.id)
+        if (parsed.kind === 'face' && face)
+          return { kind: 'face', id: face.id, entity: face.id, component: face.component }
+        if (parsed.kind === 'edge' && edge)
+          return { kind: 'edge', id: edge.id, entity: edge.id, component: edge.component }
+      }
+    } catch {
+      // A denied or stale selection falls back to the stage default.
+    }
     const face = p.faces[0]
-    if (stage === STAGE.materials && face)
+    if ((stage === 'components' || stage === 'materials') && face)
       return { kind: 'face', id: face.id, entity: face.id, component: face.component }
     const edge = p.edges[0]
-    if (stage === STAGE.mesh && edge)
+    if (stage === 'mesh' && edge)
       return { kind: 'edge', id: edge.id, entity: edge.id, component: edge.component }
     return p.components[0]
       ? { kind: 'component', id: p.components[0].id, component: p.components[0].id }
@@ -137,14 +237,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
   const [meshJobs, setMeshJobs] = useState<Job[]>([]),
     [deckJobs, setDeckJobs] = useState<Job[]>([]),
     [meshFile, setMeshFile] = useState<Mesh | null>(null),
-    [showMesh, setShowMesh] = useState(() => MESH_STAGES.includes(stageId(stage)))
+    [showMesh, setShowMesh] = useState(() => MESH_STAGES.includes(stage))
   // A just-queued deck must become the visible deck before submission, or the
   // server would correctly reject an older deck as superseded.
   const [pendingDeck, setPendingDeck] = useState<string | null>(null)
-  const [reviewAction, setReviewAction] = useState<'prepare' | 'submit' | null>(null)
+  const [actionBusy, setActionBusy] = useState<'prepare' | 'submit' | null>(null)
   // Fixed-node fixture review: a pending selection is shown but not stored until
   // Save, so a rectangle can be corrected before it becomes WSFIX.
-  const [fixtureMode, setFixtureMode] = useState(() => stageId(stage) === 'mounting'),
+  const [fixtureMode, setFixtureMode] = useState(() => stage === 'mounting'),
     [pendingFixture, setPendingFixture] = useState<string[] | null>(null),
     [boxOperation, setBoxOperation] = useState<'replace' | 'add' | 'subtract'>('replace')
   const [working, setBusy] = useState(false),
@@ -153,24 +253,35 @@ export default function Workspace({ initial, locked, notify }: Props) {
     [generation, refresh] = useState(0)
   const [cap, setCap] = useState<Record<string, string>>({}),
     [related, setRelated] = useState<Job[]>([]),
-    [readiness, setReadiness] = useState<Readiness | null>(null)
+    [readiness, setReadiness] = useState<Readiness | null>(null),
+    [readinessError, setReadinessError] = useState(false),
+    [readinessLoading, setReadinessLoading] = useState(true)
   const [runName, setRunName] = useState(() => t('review.defaultRunName')),
     [cpus, setCpus] = useState(1)
   // Narrow and zoomed layouts can collapse the workflow/properties panes so the
   // canvas and the primary actions remain reachable without clipping.
   const [panesOpen, setPanesOpen] = useState(true)
-  // Straight two-point material partition. The primary interaction is on the
-  // white viewport; the XY fields remain as optional precision entry.
-  const [cutStart, setCutStart] = useState({ x: 0, y: 0 })
-  const [cutEnd, setCutEnd] = useState({ x: 0, y: 0 })
-  const [cutPhase, setCutPhase] = useState<'idle' | 'start' | 'end' | 'previewed'>('idle')
-  const [cutPointA, setCutPointA] = useState<[number, number] | null>(null)
-  const [cutPointB, setCutPointB] = useState<[number, number] | null>(null)
+  // Projected material partition. The operator draws arbitrary two-click
+  // strokes on the white viewport while staying in Components; the XY fields
+  // are an optional accessible precision alternative. Pending guides remain a
+  // draft until Apply commits one revision.
+  const [cutTarget, setCutTarget] = useState<string | null>(null)
+  const [cutArmed, setCutArmed] = useState(false)
+  const [cutDraft, setCutDraft] = useState<{
+    a: [number, number]
+    b: [number, number] | null
+  } | null>(null)
+  const [cutStrokes, setCutStrokes] = useState<
+    { a: [number, number]; b: [number, number] }[]
+  >([])
   const [cutHover, setCutHover] = useState<[number, number] | null>(null)
   const [cutPrecision, setCutPrecision] = useState(false)
+  const [cutStart, setCutStart] = useState({ x: 0, y: 0 })
+  const [cutEnd, setCutEnd] = useState({ x: 0, y: 0 })
   const [cutPlan, setCutPlan] = useState<PartitionPlan | null>(null)
-  const [cutDisplay, setCutDisplay] = useState<Display | null>(null)
   const [cutError, setCutError] = useState('')
+  const [cutBusy, setCutBusy] = useState(false)
+  const cutRequest = useRef(0)
   // Prescribed-motion preview: a display-only animation of the rigid profile.
   const [preview, setPreview] = useState<{ role: 'door' | 'body' } | null>(null)
   const [previewProgress, setPreviewProgress] = useState(0)
@@ -194,7 +305,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
     locked ? null : sessionStorage.getItem('import:' + initial.id),
   )
   const busy = working || !!drawingJob
-  const dirty = p !== rev.setup
+  // Semantic persisted-value equality: returning exactly to the saved values
+  // must clear the dirty state even though the object identity changed.
+  const dirty = useMemo(
+    () => JSON.stringify(p) !== JSON.stringify(rev.setup),
+    [p, rev.setup],
+  )
   const problem = useCallback(
     (e: unknown) => {
       setIssue(err(e))
@@ -226,8 +342,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
           }
           clear()
           try {
-            sessionStorage.setItem('stage:' + next.id, String(STAGE.components))
-            sessionStorage.setItem('stage-project:' + next.project, String(STAGE.components))
+            sessionStorage.setItem('stage:' + next.id, 'components')
+            sessionStorage.setItem('stage-project:' + next.project, 'components')
           } catch {
             // The remount falls back to Components for a drawing-backed model.
           }
@@ -240,7 +356,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
           setMeshFile(null)
           setPendingFixture(null)
           message(t('import.done'))
-          setStage(STAGE.components)
+          setStage('components')
         } else if (['Cancelled', 'Failed', 'Unknown / worker disconnected'].includes(job.status)) {
           throw new Error(job.diagnostic || job.status)
         } else timer = setTimeout(check, 500)
@@ -262,12 +378,20 @@ export default function Workspace({ initial, locked, notify }: Props) {
   }, [problem])
   useEffect(() => {
     try {
-      sessionStorage.setItem('stage:' + rev.id, String(stage))
-      sessionStorage.setItem('stage-project:' + rev.project, String(stage))
+      sessionStorage.setItem('stage:' + rev.id, stage)
+      sessionStorage.setItem('stage-project:' + rev.project, stage)
     } catch {
       // Remembering the step is a convenience; the workflow stays usable without it.
     }
   }, [stage, rev.id, rev.project])
+  useEffect(() => {
+    try {
+      if (pick) sessionStorage.setItem('pick:' + rev.id, JSON.stringify(pick))
+      else sessionStorage.removeItem('pick:' + rev.id)
+    } catch {
+      // Restoring the selected entity is a convenience, never a workflow gate.
+    }
+  }, [pick, rev.id])
   useEffect(() => {
     // A submitted setup is replayed through the mesh job its deck recorded, and
     // only when every recorded digest agrees. The newest compatible mesh is never
@@ -369,21 +493,22 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // A changed or cleared selection must block preparation and submission until
   // it is saved or discarded.
   const fixturePending = pendingFixture !== null
-  // Zero travel is a valid hold; only a non-positive duration (or a blank
-  // numeric draft, handled separately) blocks the motion step.
-  const motionValid = p.motion.travel <= 0 && p.motion.duration > 0
+  // Version 4 stores a nonnegative stroke and a direction angle, so a positive
+  // delta-Y is valid when the measured geometry permits it. Only a historical
+  // revision is judged by its signed travel field; the deck writer still owns
+  // the geometric direction check.
+  const motionValid = motionPolicyValid(p)
+  // The server treats the newest deck for the revision as the only submittable
+  // one. A deck prepared before the fixture or mesh changed is stale.
+  const newestDeck = deckJobs.find((j) => j.revision === rev.id) ?? null
   const deck = pendingDeck
     ? (deckJobs.find((j) => j.id === pendingDeck) ?? null)
-    : (deckJobs.find(
-        (j) => j.revision === rev.id && j.mesh === compatibleMesh?.id && j.status === 'Completed',
-      ) ?? null)
-  // The server treats the newest deck for the revision as the only submittable one.
-  const newestDeck = deckJobs.find((j) => j.revision === rev.id) ?? null
-  // A deck prepared before the fixture changed is stale even for the same mesh.
+    : newestDeck
   const deckReady =
     !!deck &&
     deck.status === 'Completed' &&
     deck.id === newestDeck?.id &&
+    deck.mesh === compatibleMesh?.id &&
     !!fixture &&
     deck.fixture_hash === fixture.hash
   useEffect(() => {
@@ -434,17 +559,69 @@ export default function Workspace({ initial, locked, notify }: Props) {
       })
     return () => ac.abort()
   }, [deck?.id, problem])
-  // The API owns the readiness calculation so the header, Review and a direct
-  // API request cannot disagree about the next engineering action.
+  // The API owns the readiness calculation so the sidebar, the action group and
+  // a direct API request cannot disagree about Prepare or Submit. A short
+  // debounce keys the read to the mesh/deck/fixture identity, so idle polling
+  // does not re-evaluate a large mesh on every tick.
+  const readinessRequest = useRef(0)
+  const readinessKey = [
+    rev.id,
+    compatibleMesh?.id ?? '',
+    compatibleMesh?.mesh_digest ?? '',
+    fixture?.hash ?? '',
+    newestDeck?.id ?? '',
+    newestDeck?.status ?? '',
+    newestDeck?.mesh ?? '',
+    newestDeck?.fixture_hash ?? '',
+    related[0]?.id ?? '',
+    related[0]?.status ?? '',
+    pendingDeck ?? '',
+    pendingFixture ? pendingFixture.length : '',
+    // The draft itself is covered by the local overlay; only its dimension and
+    // schema affect server eligibility.
+    p.dimension,
+    p.schema_version,
+  ].join('|')
   useEffect(() => {
+    const requestId = ++readinessRequest.current
     const ac = new AbortController()
-    request<Readiness>('/api/revisions/' + rev.id + '/readiness', 'GET', undefined, ac.signal)
-      .then(setReadiness)
-      .catch(() => {
-        if (!ac.signal.aborted) setReadiness(null)
-      })
-    return () => ac.abort()
-  }, [rev.id, generation])
+    setReadinessLoading(true)
+    const timer = setTimeout(() => {
+      request<Readiness>('/api/revisions/' + rev.id + '/readiness', 'GET', undefined, ac.signal)
+        .then((next) => {
+          if (ac.signal.aborted || requestId !== readinessRequest.current) return
+          // Guard a late response from a previous revision or save.
+          if (next.revision !== rev.id) return
+          setReadiness(next)
+          setReadinessError(false)
+          setReadinessLoading(false)
+        })
+        .catch(() => {
+          if (ac.signal.aborted || requestId !== readinessRequest.current) return
+          setReadinessError(true)
+          setReadinessLoading(false)
+        })
+    }, 180)
+    return () => {
+      clearTimeout(timer)
+      ac.abort()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [readinessKey, generation])
+  // A stale tab returning to focus synchronizes with another tab's fixture,
+  // mesh or deck transition without waiting for the next idle poll.
+  useEffect(() => {
+    const bump = () => refresh((g) => g + 1)
+    const visible = () => {
+      if (!document.hidden) bump()
+    }
+    window.addEventListener('focus', bump)
+    document.addEventListener('visibilitychange', visible)
+    return () => {
+      window.removeEventListener('focus', bump)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [])
   useEffect(() => {
     const ac = new AbortController()
     request<LibrarySummary[]>('/api/materials', 'GET', undefined, ac.signal)
@@ -478,11 +655,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
   const chosen = pick?.source ?? pick?.entity ?? pick?.id
   const face = p.faces.find((f) => f.id === chosen),
     edge = p.edges.find((e) => e.id === chosen)
-  // A pending cut belongs to one face; changing selection invalidates it.
-  useEffect(() => {
-    setCutPlan(null)
-    setCutError('')
-  }, [face?.id])
   const component = p.components.find(
     (c) => c.id === (pick?.component ?? face?.component ?? edge?.component ?? pick?.id),
   )
@@ -511,22 +683,17 @@ export default function Workspace({ initial, locked, notify }: Props) {
     () => p.materials.filter((material) => materialIssues(material).errors.length > 0),
     [p.materials],
   )
-  const steps = useMemo(
-    () => WORKFLOW_STEPS.map((step) => t(step.nameKey)),
-    [t],
-  )
+  const dirtyStages = useMemo(() => changedStages(p, rev.setup), [p, rev.setup])
   const states = useMemo(
     () =>
-      orderedStates({
-        project: p,
-        mesh: meshJob,
-        compatibleMesh,
-        fixture,
-        deck: deckReady ? deck : null,
-        runs: related,
-        contactChanged: JSON.stringify(p.contact) !== JSON.stringify(rev.setup.contact),
+      workflowStates({
+        readiness,
+        loading: readinessLoading && !readiness,
+        dirtyStages,
+        fixturePending,
+        invalidDraft: invalidField,
       }),
-    [p, rev.setup.contact, meshJob, compatibleMesh, fixture, deck, deckReady, related],
+    [readiness, readinessLoading, dirtyStages, fixturePending, invalidField],
   )
   const plan = useMemo(() => stepPlan(p), [p])
   const twoStep = plan.mode === 'body_then_door'
@@ -573,32 +740,30 @@ export default function Workspace({ initial, locked, notify }: Props) {
         ),
     [p.components, p.analysis.mode, p.motion.offset, p.motion.body.offset],
   )
-  // Eligible cut boundary: the selected face's outer loop as tessellated model
-  // points. Arc/spline samples are within the display chord tolerance, and the
-  // server snaps the canonical point with its own 0.05 mm tolerance.
+  // Projected cut target: the selected face wins; a component with one material
+  // face is an unambiguous target. A multi-face component asks the operator to
+  // narrow the target explicitly in the region list.
   const cutFace = face && !face.cavity ? face : null
-  const cutBoundary = useMemo(() => {
-    if (!cutFace) return []
-    const edges = new Map(
-      (display?.primitives ?? [])
-        .filter((primitive) => primitive.kind === 'edge')
-        .map((primitive) => [primitive.entity, primitive]),
-    )
-    const points: number[][] = []
-    for (const token of cutFace.loops[0] ?? []) {
-      const primitive = edges.get(token.replace(/^-/, ''))
-      if (!primitive) continue
-      const ordered = token.startsWith('-')
-        ? [...primitive.points].reverse()
-        : primitive.points
-      for (const point of ordered) {
-        const last = points[points.length - 1]
-        if (last && Math.hypot(last[0] - point[0], last[1] - point[1]) < 1e-9) continue
-        points.push([point[0], point[1]])
-      }
-    }
-    return points
-  }, [cutFace, display])
+  const cutCandidates = useMemo(
+    () =>
+      p.faces.filter(
+        (item) => !item.cavity && (!component || item.component === component.id),
+      ),
+    [p.faces, component],
+  )
+  const activeCutFace =
+    p.faces.find((item) => item.id === cutTarget && !item.cavity) ??
+    cutFace ??
+    (cutCandidates.length === 1 ? cutCandidates[0] : null)
+  // A pending partition belongs to one face; changing the target invalidates
+  // the draft but never writes anything.
+  useEffect(() => {
+    setCutPlan(null)
+    setCutError('')
+    setCutStrokes([])
+    setCutDraft(null)
+    setCutArmed(false)
+  }, [activeCutFace?.id])
   const previewComponent = preview
     ? p.components.find(
         (component) =>
@@ -700,15 +865,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
     // Synchronous source of truth, not a possibly stale render value.
     if (hasInvalidField()) throw new Error(t('validation.invalidDraft'))
   }
-  function changeStage(i: number) {
+  function changeStage(id: StageId) {
     // An invalid numeric draft is not silently committed or discarded by leaving
     // the step: keep it visible and make the engineer correct it or press Escape.
     if (invalidField || hasInvalidField()) {
       notify(t('validation.invalidDraft'))
       return
     }
-    const id = stageId(i)
-    setStage(i)
+    if (cutArmed) resetCut()
+    setStage(id)
     setShowMesh(MESH_STAGES.includes(id))
     setFixtureMode(id === 'mounting')
     target(stageMode(id))
@@ -740,85 +905,95 @@ export default function Workspace({ initial, locked, notify }: Props) {
     }
     return true
   }
-  function partitionMessage(message: string) {
-    const code = message.split(':')[0].trim()
+  function partitionMessage(text: string) {
+    const code = text.split(':')[0].trim()
     return PARTITION_CODES.includes(code)
       ? t(('partition.error.' + code) as TranslationKey)
-      : message
+      : text
   }
   function setCutPoints(a: [number, number] | null, b: [number, number] | null) {
     if (a) setCutStart({ x: Number(a[0].toFixed(6)), y: Number(a[1].toFixed(6)) })
     if (b) setCutEnd({ x: Number(b[0].toFixed(6)), y: Number(b[1].toFixed(6)) })
   }
   function startCut() {
-    setCutPhase('start')
-    setCutPointA(null)
-    setCutPointB(null)
-    setCutHover(null)
-    setCutPlan(null)
-    setCutDisplay(null)
-    setCutError('')
+    if (!activeCutFace) {
+      notify(t('partition.chooseTarget'))
+      return
+    }
+    if (dirty) {
+      notify(t('partition.saveFirst'))
+      return
+    }
+    resetCut()
+    setCutArmed(true)
+    setCutPrecision(false)
+    setCutPoints([0, 0], [0, 0])
+    message(t('partition.drawHint'))
   }
   function resetCut() {
-    setCutPhase('idle')
-    setCutPointA(null)
-    setCutPointB(null)
+    setCutArmed(false)
+    setCutDraft(null)
+    setCutStrokes([])
     setCutHover(null)
     setCutPlan(null)
-    setCutDisplay(null)
     setCutError('')
+    cutRequest.current += 1
   }
-  function backCut() {
-    if (cutPhase === 'previewed') {
+  function undoCut() {
+    const next = cutStrokes.slice(0, -1)
+    setCutStrokes(next)
+    setCutDraft(null)
+    cutRequest.current += 1
+    if (next.length) void previewStrokes(next)
+    else {
       setCutPlan(null)
-      setCutDisplay(null)
-      setCutPointB(null)
       setCutError('')
-      setCutPhase('end')
-    } else if (cutPhase === 'end') {
-      setCutPointA(null)
-      setCutPointB(null)
-      setCutPlan(null)
-      setCutPhase('start')
     }
   }
-  async function previewCutAt(a: [number, number], b: [number, number]) {
-    if (!face) return
+  async function previewStrokes(strokes: { a: [number, number]; b: [number, number] }[]) {
+    if (!activeCutFace) return
+    const requestId = ++cutRequest.current
+    setCutBusy(true)
     try {
-      const result = await request<{ plan: PartitionPlan; display: Display }>(
-        '/api/partition/preview',
-        'POST',
-        { setup: p, cut: { face: face.id, start: [a[0], a[1]], end: [b[0], b[1]] } },
-      )
-      setCutError('')
+      const result = await request<{ plan: PartitionPlan }>('/api/partition/preview', 'POST', {
+        // Preview and commit use the same saved base and target, so derived child
+        // IDs agree. A draft is never the preview authority.
+        setup: rev.setup,
+        base: rev.id,
+        face: activeCutFace.id,
+        strokes: strokes.map((stroke) => [
+          [stroke.a[0], stroke.a[1]],
+          [stroke.b[0], stroke.b[1]],
+        ]),
+      })
+      if (requestId !== cutRequest.current) return
       setCutPlan(result.plan)
-      setCutDisplay(result.display)
-      setCutPhase('previewed')
+      setCutError('')
     } catch (e) {
+      if (requestId !== cutRequest.current) return
       setCutPlan(null)
-      setCutDisplay(null)
       setCutError(partitionMessage(err(e)))
-      setCutPhase('end')
+    } finally {
+      if (requestId === cutRequest.current) setCutBusy(false)
     }
   }
   function placeCutPoint(point: [number, number]) {
-    if (cutPhase === 'start') {
-      setCutPointA(point)
+    if (!cutArmed) return
+    if (!cutDraft) {
+      setCutDraft({ a: point, b: null })
       setCutPoints(point, null)
-      setCutPointB(null)
-      setCutPlan(null)
       setCutError('')
-      setCutPhase('end')
       return
     }
-    if (cutPhase === 'end' && cutPointA) {
-      setCutPointB(point)
-      setCutPoints(cutPointA, point)
-      void previewCutAt(cutPointA, point)
-    }
+    const stroke = { a: cutDraft.a, b: point }
+    const next = [...cutStrokes, stroke]
+    setCutDraft(null)
+    setCutStrokes(next)
+    setCutPoints(stroke.a, stroke.b)
+    void previewStrokes(next)
   }
-  async function previewTypedCut() {
-    if (!face) return
+  function addTypedCut() {
+    if (!activeCutFace) return
     if (!cutDraftValid()) {
       setCutPlan(null)
       return
@@ -826,41 +1001,58 @@ export default function Workspace({ initial, locked, notify }: Props) {
     const values = cutPoints()
     const a: [number, number] = [values[0], values[1]]
     const b: [number, number] = [values[2], values[3]]
-    setCutPointA(a)
-    setCutPointB(b)
-    await previewCutAt(a, b)
+    if (Math.hypot(b[0] - a[0], b[1] - a[1]) <= 1e-6) {
+      setCutError(t('partition.error.degenerate_cut'))
+      return
+    }
+    const next = [...cutStrokes, { a, b }]
+    setCutStrokes(next)
+    setCutDraft(null)
+    void previewStrokes(next)
   }
   async function applyCut() {
-    if (!face || !cutPlan) return
-    const plan = cutPlan
-    if (cutPhase !== 'previewed') return
+    if (!activeCutFace || !cutPlan || cutPlan.status !== 'valid') return
+    if (!cutStrokes.length) return
+    setCutBusy(true)
     try {
       const saved = await request<Revision>(
         '/api/projects/' + rev.project + '/partition',
         'POST',
         {
           base: rev.id,
-          cut: {
-            face: face.id,
-            start: [plan.start[0], plan.start[1]],
-            end: [plan.end[0], plan.end[1]],
-          },
+          face: activeCutFace.id,
+          strokes: cutStrokes.map((stroke) => [
+            [stroke.a[0], stroke.a[1]],
+            [stroke.b[0], stroke.b[1]],
+          ]),
         },
       )
       replaceRoute('workspace/' + saved.id)
       setRev(saved)
       setP(saved.setup)
+      const child = cutPlan.children[0]
+      const component = activeCutFace.component
       resetCut()
-      select({
-        kind: 'face',
-        id: plan.child_a,
-        entity: plan.child_a,
-        component: face.component,
-      })
+      if (child?.id) {
+        // Persist the selection before the route remount so the persisted
+        // child region opens highlighted in Components.
+        try {
+          sessionStorage.setItem(
+            'pick:' + saved.id,
+            JSON.stringify({ kind: 'face', id: child.id, entity: child.id, component }),
+          )
+          sessionStorage.setItem('stage:' + saved.id, 'components')
+        } catch {
+          // The remount falls back to the first region.
+        }
+        select({ kind: 'face', id: child.id, entity: child.id, component })
+      }
       message(t('partition.applied', { number: saved.number }))
       refresh((g) => g + 1)
     } catch (e) {
       setCutError(partitionMessage(err(e)))
+    } finally {
+      setCutBusy(false)
     }
   }
   async function execute(fn: () => Promise<unknown>) {
@@ -890,7 +1082,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
   }
   async function prepareDeck() {
     assertNumericDrafts()
-    if (!compatibleMesh || !fixtureReviewed || pendingDeck) return
+    // The server rechecks the same decision; this is the visible gate only.
+    if (!readiness?.can_prepare || dirty || !compatibleMesh || !fixtureReviewed || pendingDeck)
+      return
     const job = await request<Job>('/api/decks', 'POST', {
       revision: rev.id,
       token: crypto.randomUUID(),
@@ -942,7 +1136,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
   }
   async function submit() {
     assertNumericDrafts()
-    if (!deckReady || !deck) return
+    if (!readiness?.can_submit || !deckReady || !deck) return
     const r = await request<Job>('/api/runs', 'POST', {
       name: runName,
       revision: rev.id,
@@ -1042,25 +1236,57 @@ export default function Workspace({ initial, locked, notify }: Props) {
     : invalidMaterials.length
       ? invalidMaterials.map((m) => m.name).join(' · ')
       : ''
-  const preparationBlocker = readiness?.findings.find(
-    (finding) => finding.severity === 'blocker' && !finding.code.startsWith('deck.'),
-  )
-  const prepareReason = !compatibility.ok ? t('compat.writesDisabled')
-    : archivedModel ? t('workspace.archivedReadOnly')
-    : dimension ? t('workspace.extrusionPreview')
-      : dirty ? t('status.unsaved')
-        : blockedReason || (fixturePending ? t('hint.fixturePending')
-          : !compatibleMesh ? t('hint.meshRequired')
-            : !fixtureReviewed ? t('hint.fixtureRequired')
-              : !motionValid ? t('hint.motion')
-                : !readiness || readiness.revision !== rev.id ? t('actions.checking')
-                  : preparationBlocker ? t(findingKey(preparationBlocker.code), findingVars(preparationBlocker, t))
-                    : '')
-  const submitReason = prepareReason || (!deckReady ? t('hint.deckRequired')
-    : !runName.trim() ? t('actions.runNameRequired')
-      : !Number.isInteger(cpus) || cpus < 1 || cpus > 32 ? t('actions.cpuRequired')
-      : cap.abaqus !== 'Configured' ? cap.abaqus || t('actions.checking') : '')
-  const activeRun = related.find((run) => anyActive([run]))
+  // One action-specific decision from the saved revision. Deck state belongs to
+  // Submit; it never disables Prepare.
+  const readinessMismatch = !readiness || readiness.revision !== rev.id
+  const prepareIssue = readiness?.setup_issues?.[0] ?? null
+  const submitIssue = readiness?.submit_issues?.[0] ?? null
+  function issueText(issue: { code: string; stage: string; params: Record<string, string | number> }) {
+    const text = t(findingKey(issue.code), findingVars(issue as never, t))
+    const label = STAGE_LABELS[issue.stage as StageId]
+    return label ? text + ' · ' + t(label) : text
+  }
+  const prepareReason = locked
+    ? t('actions.submittedSetup')
+    : !compatibility.ok
+      ? t('compat.writesDisabled')
+      : archivedModel
+        ? t('workspace.archivedReadOnly')
+        : dimension
+          ? t('workspace.extrusionPreview')
+          : blockedReason
+            ? blockedReason
+            : dirty
+              ? t('status.unsaved')
+              : fixturePending
+                ? t('hint.fixturePending')
+                : readinessLoading && !readiness
+                  ? t('actions.checking')
+                  : readinessError
+                    ? t('actions.readinessUnavailable')
+                    : readinessMismatch
+                      ? t('actions.checking')
+                      : !readiness!.can_prepare
+                        ? prepareIssue
+                          ? issueText(prepareIssue)
+                          : t('actions.notReady')
+                        : ''
+  const submitReason = prepareReason
+    ? prepareReason
+    : !readiness!.can_submit
+      ? submitIssue
+        ? issueText(submitIssue)
+        : t('actions.notReady')
+      : !deckReady
+        ? t('hint.deckRequired')
+        : !runName.trim()
+          ? t('actions.runNameRequired')
+          : !Number.isInteger(cpus) || cpus < 1 || cpus > 32
+            ? t('actions.cpuRequired')
+            : cap.abaqus !== 'Configured'
+              ? cap.abaqus || t('actions.checking')
+              : ''
+  const activeRun = related.find((run) => anyActive([run])) ?? null
   return (
     <main className="workspace page">
       <div className="crumb">
@@ -1122,10 +1348,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 <Save />
                 {t('workspace.saveRevision')}
               </button>
-              <button className="primary" onClick={() => changeStage(STAGE.review)}>
-                <Play />
-                {t('workspace.reviewRun')}
-              </button>
             </>
           )}
         </div>
@@ -1140,21 +1362,22 @@ export default function Workspace({ initial, locked, notify }: Props) {
           {t('materials.err.finite')} — {blockedReason}
         </p>
       )}
-      {!locked && !dirty && readiness?.first_blocker && (
-        <div className="readiness-banner" aria-live="polite" data-testid="next-action">
-          <span>{t(findingKey(readiness.first_blocker.code), findingVars(readiness.first_blocker, t))}</span>
-          <button
-            type="button"
-            onClick={() =>
-              changeStage(
-                (STAGE as Record<string, number>)[readiness.first_blocker!.stage] ?? stage,
-              )
-            }
-          >
-            {t('workspace.resolveBlocker')}
-          </button>
-        </div>
-      )}
+      {!locked &&
+        !dirty &&
+        readiness?.first_blocker &&
+        (STAGE_ORDER as readonly string[]).includes(readiness.first_blocker.stage) && (
+          <div className="readiness-banner" aria-live="polite" data-testid="next-action">
+            <span>{issueText(readiness.first_blocker)}</span>
+            <button
+              type="button"
+              onClick={() =>
+                changeStage(readiness.first_blocker!.stage as StageId)
+              }
+            >
+              {t('workspace.resolveBlocker')}
+            </button>
+          </div>
+        )}
       <button
         type="button"
         className="pane-toggle"
@@ -1199,7 +1422,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
             }
             onPick={(kind, id, componentId) => {
               setMode(kind)
-              setStage(STAGE[kind === 'face' ? 'materials' : kind === 'edge' ? 'mesh' : 'components'])
+              // Components owns region selection. Choosing a face no longer
+              // routes to Materials automatically; the explicit "Assign
+              // material" action does that.
+              setStage(kind === 'edge' ? 'mesh' : 'components')
               select({ kind, id, entity: id, component: componentId })
             }}
             onRename={(id, alias) =>
@@ -1208,6 +1434,46 @@ export default function Workspace({ initial, locked, notify }: Props) {
                 if (target) target.alias = alias
               })
             }
+          />
+          <AnalysisActions
+            locked={locked}
+            archived={archivedModel}
+            pendingDeck={!!pendingDeck}
+            preparing={actionBusy === 'prepare'}
+            submitting={actionBusy === 'submit'}
+            deck={deck}
+            deckReady={deckReady}
+            prepareReason={prepareReason}
+            submitReason={submitReason}
+            runName={runName}
+            setRunName={setRunName}
+            cpus={cpus}
+            setCpus={setCpus}
+            cap={cap}
+            activeRun={activeRun}
+            readinessError={readinessError}
+            readinessLoading={readinessLoading}
+            onRetry={() => refresh((g) => g + 1)}
+            onPrepare={() => {
+              void execute(async () => {
+                setActionBusy('prepare')
+                try {
+                  await prepareDeck()
+                } finally {
+                  setActionBusy(null)
+                }
+              })
+            }}
+            onSubmit={() => {
+              void execute(async () => {
+                setActionBusy('submit')
+                try {
+                  await submit()
+                } finally {
+                  setActionBusy(null)
+                }
+              })
+            }}
           />
         </aside>
         <section className="canvas-card card">
@@ -1286,14 +1552,20 @@ export default function Workspace({ initial, locked, notify }: Props) {
           <div className="viewport-wrap">
             <Viewport
               dimension={p.dimension}
-              display={cutPhase === 'previewed' && cutDisplay ? cutDisplay : display}
+              display={display}
               mode={mode}
               selection={pick}
               onSelect={(hit) => {
                 select(hit)
                 message('')
-                if (hit?.kind === 'face' && stage === STAGE.components) setStage(STAGE.materials)
-                if (hit?.kind === 'edge' && stage === STAGE.components) setStage(STAGE.mesh)
+                if (hit?.kind === 'face') {
+                  // Selecting a region highlights it and narrows the partition
+                  // target. It never routes away from Components or opens the
+                  // material editor implicitly.
+                  if (stage === 'components') setCutTarget(hit.id)
+                  else if (stage !== 'materials') setStage('components')
+                }
+                if (hit?.kind === 'edge' && stage === 'components') setStage('mesh')
               }}
               colors={colors}
               hidden={hidden}
@@ -1307,14 +1579,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
               onBoxSelect={boxSelect}
               previewTranslation={previewTranslation}
               cut={
-                stage === STAGE.materials && cutPhase !== 'idle'
+                stage === 'components' && cutArmed
                   ? {
                       active: true,
-                      boundary: cutBoundary,
-                      start: cutPointA,
-                      end: cutPointB,
-                      phase: cutPhase,
+                      boundary: [],
+                      start: cutDraft?.a ?? null,
+                      end: cutDraft?.b ?? null,
+                      phase: cutDraft ? (cutDraft.b ? 'previewed' : 'end') : 'start',
                       invalid: !!cutError,
+                      hover: cutHover,
+                      strokes: cutStrokes,
+                      segments: (cutPlan?.guides ?? []).flatMap((guide) =>
+                        guide.intervals.map((interval) => ({
+                          a: interval[0] as [number, number],
+                          b: interval[1] as [number, number],
+                        })),
+                      ),
+                      status: cutPlan?.status ?? null,
                     }
                   : null
               }
@@ -1352,53 +1633,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
             {t('workspace.properties')}
           </div>
           <div className="property-body">
-        {stage === STAGE.review && !locked && (
-          <div className="review-actions in-properties" data-testid="review-actions">
-            <section className="review-action card">
-              <h2>{t('mesh.prepareDeck')}</h2>
-              <p>{pendingDeck || reviewAction === 'prepare' ? t('mesh.preparingDeck') : prepareReason || (deckReady ? t('mesh.inputReady') : t('actions.readyPrepare'))}</p>
-              <small>{t('review.prepareNeverMesh')}</small>
-              <button className="review-prepare" disabled={busy || !!prepareReason || !!pendingDeck}
-                title={prepareReason || undefined} onClick={() => execute(async () => {
-                  setReviewAction('prepare')
-                  try { await prepareDeck() } finally { setReviewAction(null) }
-                })}>
-                <FileText /> {t('mesh.prepareDeck')}
-              </button>
-              {deck && (
-                <div className="build-info" data-testid="deck-status">
-                  <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
-                  {deckReady ? (
-                    <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
-                      <FileText /> {t('mesh.inspectDeck')}
-                    </a>
-                  ) : <small>{t('mesh.deckStaleHint')}</small>}
-                </div>
-              )}
-            </section>
-            <section className="review-action card">
-              <h2>{t('review.submitLicensed')}</h2>
-              <p>{reviewAction === 'submit' ? t('actions.submitting') : submitReason || t('actions.readySubmit')}</p>
-              {activeRun && <small>{t('actions.activeRun', { state: labelFrom(t, 'state', activeRun.status) })}</small>}
-              <label>{t('review.runName')}
-                <input maxLength={100} value={runName} onChange={(e) => setRunName(e.target.value)} />
-              </label>
-              <NumberInput label={t('review.cpus')} value={cpus} min={1} max={32} step="1"
-                rangeHint="1 – 32" onChange={setCpus} />
-              <small>{cap.abaqus}</small>
-              <button className="review-submit" disabled={busy || !!submitReason || !!pendingDeck}
-                title={submitReason || undefined} onClick={() => execute(async () => {
-                  setReviewAction('submit')
-                  try { await submit() } finally { setReviewAction(null) }
-                })}>
-                <Play /> {t('review.submitLicensed')}
-              </button>
-            </section>
-                    </div>
-        )}
-            <div className="eyebrow">{steps[stage]}</div>
+            <div className="eyebrow">{t(STAGE_LABELS[stage])}</div>
             <fieldset disabled={!!locked || busy}>
-              {stage === STAGE.import && (
+              {stage === 'import' && (
                 <>
                   <h2>{t('import.title')}</h2>
                   <label>
@@ -1471,9 +1708,15 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </small>
                 </>
               )}
-              {stage === STAGE.components && (
+              {stage === 'components' && (
                 <>
-                  <h2>{component ? componentLabel(component) : t('components.select')}</h2>
+                  <h2>
+                    {face
+                      ? face.name
+                      : component
+                        ? componentLabel(component)
+                        : t('components.select')}
+                  </h2>
                   {component && (
                     <span className="role-tag" data-testid="component-role">
                       {t(('role.' + component.role) as TranslationKey)}
@@ -1520,27 +1763,236 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     </>
                   )}
                   <h3>{t('components.sectionRegions')}</h3>
+                  <p className="quality-note subtle">{t('components.selectRegionHint')}</p>
                   <div className="region-list">
                     {p.faces
                       .filter((f) => !component || f.component === component.id)
                       .map((f) => (
                         <button
                           key={f.id}
+                          type="button"
+                          className={activeCutFace?.id === f.id ? 'selected' : ''}
+                          aria-pressed={activeCutFace?.id === f.id}
                           onClick={() => {
-                            setStage(STAGE.materials)
                             setMode('face')
                             select({ kind: 'face', id: f.id, entity: f.id, component: f.component })
+                            setCutTarget(f.id)
                           }}
                         >
                           <span className="swatch" style={{ background: colors[f.id] }} />
                           {f.name}
-                          <ChevronRight />
+                          {f.cavity && <small>{t('materials.cavity')}</small>}
                         </button>
                       ))}
                   </div>
+                  {activeCutFace ? (
+                    <section className="partition-block" data-testid="partition-editor">
+                      <h3>{t('partition.title')}</h3>
+                      <p className="partition-target" data-testid="partition-target">
+                        {t('partition.target', { name: activeCutFace.name })}
+                      </p>
+                      <p>{t('partition.help')}</p>
+                      {!cutArmed ? (
+                        <button
+                          type="button"
+                          className="primary wide"
+                          data-testid="cut-region"
+                          disabled={busy || !!locked || dimension}
+                          title={dimension ? t('workspace.extrusionPreview') : undefined}
+                          onClick={startCut}
+                        >
+                          <ScanLine />
+                          {t('partition.cutRegion')}
+                        </button>
+                      ) : (
+                        <>
+                          <p
+                            className={cutError ? 'error-text' : 'cut-status'}
+                            role={cutError ? 'alert' : 'status'}
+                            data-testid="cut-status"
+                            data-phase={
+                              cutPlan
+                                ? 'previewed'
+                                : cutDraft?.b
+                                  ? 'previewed'
+                                  : cutDraft
+                                    ? 'end'
+                                    : 'start'
+                            }
+                          >
+                            {cutError ||
+                              (cutDraft
+                                ? cutDraft.b
+                                  ? t('partition.previewPending')
+                                  : t('partition.pickEnd')
+                                : cutStrokes.length
+                                  ? cutBusy
+                                    ? t('partition.previewPending')
+                                    : t('partition.pickAnother')
+                                  : t('partition.pickStart'))}
+                          </p>
+                          {cutHover && !cutDraft?.b && (
+                            <p className="motion-vector" data-testid="cut-hover">
+                              {t('partition.candidate', {
+                                x: cutHover[0].toFixed(3),
+                                y: cutHover[1].toFixed(3),
+                              })}
+                            </p>
+                          )}
+                          {(cutStrokes.length > 0 || cutDraft) && (
+                            <ol className="cut-guides" data-testid="cut-guides">
+                              {cutStrokes.map((stroke, index) => (
+                                <li key={index}>
+                                  {t('partition.guide', {
+                                    index: index + 1,
+                                    x1: stroke.a[0].toFixed(2),
+                                    y1: stroke.a[1].toFixed(2),
+                                    x2: stroke.b[0].toFixed(2),
+                                    y2: stroke.b[1].toFixed(2),
+                                  })}
+                                </li>
+                              ))}
+                              {cutDraft && (
+                                <li className="draft">
+                                  {t('partition.guideDraft', {
+                                    x: cutDraft.a[0].toFixed(2),
+                                    y: cutDraft.a[1].toFixed(2),
+                                  })}
+                                </li>
+                              )}
+                            </ol>
+                          )}
+                          <div className="actions">
+                            <button
+                              type="button"
+                              onClick={undoCut}
+                              disabled={!cutStrokes.length || cutBusy}
+                            >
+                              {t('partition.undo')}
+                            </button>
+                            <button
+                              type="button"
+                              className="primary"
+                              data-testid="apply-partition"
+                              onClick={() => execute(applyCut)}
+                              disabled={
+                                busy || cutBusy || cutPlan?.status !== 'valid' || !cutStrokes.length
+                              }
+                            >
+                              {t('partition.apply')}
+                            </button>
+                            <button type="button" onClick={resetCut}>
+                              {t('partition.cancel')}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        className="link-button"
+                        aria-expanded={cutPrecision}
+                        onClick={() => {
+                          if (!cutArmed) startCut()
+                          setCutPrecision((open) => !open)
+                        }}
+                      >
+                        {t('partition.precisionEntry')}
+                      </button>
+                      {cutPrecision && (
+                        <div className="cut-points">
+                          <NumberInput
+                            label={t('partition.startX')}
+                            unit="mm"
+                            value={cutStart.x}
+                            onChange={(x) => setCutStart((v) => ({ ...v, x }))}
+                          />
+                          <NumberInput
+                            label={t('partition.startY')}
+                            unit="mm"
+                            value={cutStart.y}
+                            onChange={(y) => setCutStart((v) => ({ ...v, y }))}
+                          />
+                          <NumberInput
+                            label={t('partition.endX')}
+                            unit="mm"
+                            value={cutEnd.x}
+                            onChange={(x) => setCutEnd((v) => ({ ...v, x }))}
+                          />
+                          <NumberInput
+                            label={t('partition.endY')}
+                            unit="mm"
+                            value={cutEnd.y}
+                            onChange={(y) => setCutEnd((v) => ({ ...v, y }))}
+                          />
+                          <button
+                            type="button"
+                            onClick={addTypedCut}
+                            disabled={busy || cutBusy}
+                          >
+                            {t('partition.addGuide')}
+                          </button>
+                        </div>
+                      )}
+                      {cutPlan && (
+                        <div
+                          className="build-info"
+                          data-testid="partition-plan"
+                          data-status={cutPlan.status}
+                        >
+                          <strong>
+                            {cutPlan.status === 'valid'
+                              ? t('partition.previewReady')
+                              : cutPlan.status === 'one_region'
+                                ? t('partition.oneRegion')
+                                : cutPlan.status === 'mixed'
+                                  ? t('partition.mixed')
+                                  : t('partition.redundant')}
+                          </strong>
+                          <small>
+                            {t('partition.childAreas', {
+                              count: String(cutPlan.child_count),
+                              areas: cutPlan.areas.map((area) => area.toFixed(3)).join(' · '),
+                            })}
+                          </small>
+                          {cutPlan.unused_guides.length > 0 && (
+                            <small className="error-text">
+                              {t('partition.unused', {
+                                guides: cutPlan.unused_guides
+                                  .map((index) => index + 1)
+                                  .join(', '),
+                              })}
+                            </small>
+                          )}
+                          {cutPlan.status === 'one_region' && (
+                            <small>{t('partition.oneRegionHint')}</small>
+                          )}
+                          <small>
+                            {t('partition.intersections', {
+                              count: cutPlan.split_edges.length,
+                            })}
+                          </small>
+                        </div>
+                      )}
+                    </section>
+                  ) : (
+                    <p className="notice" data-testid="partition-choose-target">
+                      {t('partition.chooseTarget')}
+                    </p>
+                  )}
+                  {activeCutFace && (
+                    <button
+                      type="button"
+                      className="wide"
+                      data-testid="assign-material"
+                      onClick={() => changeStage('materials')}
+                    >
+                      <Layers3 />
+                      {t('components.assignMaterial')}
+                    </button>
+                  )}
                 </>
               )}
-              {stage === STAGE.materials && (
+              {stage === 'materials' && (
                 <>
                   <h2>{face?.name ?? t('materials.select')}</h2>
                   {face && (
@@ -1570,123 +2022,6 @@ export default function Workspace({ initial, locked, notify }: Props) {
                           ))}
                         </select>
                       </label>
-                      {!face.cavity && !locked && !dimension && (
-                        <section className="partition-block" data-testid="partition-editor">
-                          <h3>{t('partition.title')}</h3>
-                          <p>{t('partition.help')}</p>
-                          {cutPhase === 'idle' ? (
-                            <button
-                              type="button"
-                              className="primary wide"
-                              data-testid="cut-region"
-                              disabled={busy}
-                              onClick={startCut}
-                            >
-                              <ScanLine />
-                              {t('partition.cutRegion')}
-                            </button>
-                          ) : (
-                            <>
-                              <p
-                                className={cutError ? 'error-text' : 'cut-status'}
-                                role={cutError ? 'alert' : 'status'}
-                                data-testid="cut-status"
-                                data-phase={cutPhase}
-                              >
-                                {cutError ||
-                                  (cutPhase === 'start'
-                                    ? t('partition.pickStart')
-                                    : cutPhase === 'end'
-                                      ? t('partition.pickEnd')
-                                      : t('partition.previewReady'))}
-                              </p>
-                              {cutPhase !== 'previewed' && cutHover && (
-                                <p className="motion-vector" data-testid="cut-hover">
-                                  {t('partition.candidate', {
-                                    x: cutHover[0].toFixed(3),
-                                    y: cutHover[1].toFixed(3),
-                                  })}
-                                </p>
-                              )}
-                              <div className="actions">
-                                <button type="button" onClick={backCut} disabled={cutPhase === 'start'}>
-                                  {t('partition.back')}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="primary"
-                                  onClick={() => execute(applyCut)}
-                                  disabled={busy || cutPhase !== 'previewed' || !cutPlan}
-                                >
-                                  {t('partition.apply')}
-                                </button>
-                                <button type="button" onClick={resetCut}>
-                                  {t('partition.cancel')}
-                                </button>
-                              </div>
-                            </>
-                          )}
-                          <button
-                            type="button"
-                            className="link-button"
-                            aria-expanded={cutPrecision}
-                            onClick={() => setCutPrecision((open) => !open)}
-                          >
-                            {t('partition.precisionEntry')}
-                          </button>
-                          {cutPrecision && (
-                            <div className="cut-points">
-                              <NumberInput
-                                label={t('partition.startX')}
-                                unit="mm"
-                                value={cutStart.x}
-                                onChange={(x) => setCutStart((v) => ({ ...v, x }))}
-                              />
-                              <NumberInput
-                                label={t('partition.startY')}
-                                unit="mm"
-                                value={cutStart.y}
-                                onChange={(y) => setCutStart((v) => ({ ...v, y }))}
-                              />
-                              <NumberInput
-                                label={t('partition.endX')}
-                                unit="mm"
-                                value={cutEnd.x}
-                                onChange={(x) => setCutEnd((v) => ({ ...v, x }))}
-                              />
-                              <NumberInput
-                                label={t('partition.endY')}
-                                unit="mm"
-                                value={cutEnd.y}
-                                onChange={(y) => setCutEnd((v) => ({ ...v, y }))}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => execute(previewTypedCut)}
-                                disabled={busy}
-                              >
-                                {t('partition.preview')}
-                              </button>
-                            </div>
-                          )}
-                          {cutPlan && (
-                            <div className="build-info" data-testid="partition-plan">
-                              <strong>{t('partition.previewReady')}</strong>
-                              <small>
-                                {t('partition.areas', {
-                                  a: cutPlan.area_a.toFixed(3),
-                                  b: cutPlan.area_b.toFixed(3),
-                                })}
-                              </small>
-                              <small>
-                                {t('partition.intersections', {
-                                  count: cutPlan.split_edges.length,
-                                })}
-                              </small>
-                            </div>
-                          )}
-                        </section>
-                      )}
                       {mat && (
                         <>
                           <h3>{t('materials.assigned')}</h3>
@@ -1784,12 +2119,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {stage === STAGE.mounting && !dimension && (
+              {stage === 'mounting' && !dimension && (
                 <>
                   <h2>{t('mounting.title')}</h2>
                   <p>{t('mounting.help')}</p>
                   {!compatibleMesh && (
-                    <button className="primary wide" onClick={() => changeStage(STAGE.mesh)}>
+                    <button className="primary wide" onClick={() => changeStage('mesh')}>
                       <Grid2X2 />
                       {t('mounting.generateFirst')}
                     </button>
@@ -1810,7 +2145,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <small>{t('mounting.newFixtureOnly')}</small>
                 </>
               )}
-      {stage === STAGE.contact && !dimension && (
+      {stage === 'contact' && !dimension && (
                 <>
                   <h2>{t('contact.title')}</h2>
                   <Facts
@@ -1885,7 +2220,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <small>{t('contact.noFixtureAction')}</small>
                 </>
               )}
-              {stage === STAGE.motion && !dimension && (
+              {stage === 'motion' && !dimension && (
                 <>
                   <h2>{t('motion.title')}</h2>
                   <div className="step-plan" data-testid="step-plan">
@@ -1913,6 +2248,34 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       </p>
                     ))}
                   </div>
+                  <Facts
+                    rows={[
+                      [
+                        t('review.stepSequence'),
+                        plan.mode === 'door_only'
+                          ? p.motion.stroke === 0
+                            ? t('review.stepDoorHold')
+                            : t('review.stepDoorOnly')
+                          : p.motion.body.stroke === 0 && p.motion.stroke === 0
+                            ? t('review.stepHoldOnly')
+                            : p.motion.stroke === 0
+                              ? t('review.stepBodyThenHold')
+                              : t('review.stepBodyThenDoor'),
+                      ],
+                      ...(plan.mode === 'body_then_door'
+                        ? [
+                            [
+                              t('review.bodyTravel'),
+                              t('review.bodyMotionSummaryV2', {
+                                stroke: String(p.motion.body.stroke),
+                                angle: String(p.motion.body.angle),
+                                duration: String(p.motion.body.duration),
+                              }),
+                            ] as [string, string],
+                          ]
+                        : []),
+                    ]}
+                  />
                   {twoStep && (
                     <>
                       <h3>{t('motion.step1Body')}</h3>
@@ -2055,9 +2418,62 @@ export default function Workspace({ initial, locked, notify }: Props) {
                     assessment={readiness?.assembly ?? null}
                     dirty={dirty}
                   />
+                  {/* Analysis settings live with Motion; the viewport is not
+                      touched. Solver thickness stays read-only so a navigation
+                      change can never rewrite a revision's physical meaning. */}
+                  <div className="analysis-settings" data-testid="analysis-settings">
+                    <h3>{t('motion.analysisSettings')}</h3>
+                    <NumberInput
+                      label={t('review.reportingWidth')}
+                      unit="mm"
+                      min={1e-9}
+                      max={1e6}
+                      value={p.analysis.reporting_width}
+                      onChange={(v) =>
+                        edit((n) => {
+                          n.analysis.reporting_width = v
+                        })
+                      }
+                    />
+                    <small data-testid="reporting-width-help">
+                      {t('review.reportingWidthHelp')}
+                    </small>
+                    <label>
+                      {t('review.forceReporting')}
+                      <select
+                        value={p.analysis.force_normalization}
+                        onChange={(e) =>
+                          edit((n) => {
+                            n.analysis.force_normalization = e.target.value as 'total' | 'per_mm'
+                          })
+                        }
+                      >
+                        <option value="total">{t('review.totalReaction')}</option>
+                        <option value="per_mm">{t('review.perMm')}</option>
+                      </select>
+                    </label>
+                    <Facts
+                      rows={[
+                        [
+                          t('motion.solverThickness'),
+                          t('motion.solverThicknessValue', {
+                            value: String(p.analysis.thickness),
+                          }),
+                        ],
+                      ]}
+                    />
+                    <small>{t('motion.solverThicknessHelp')}</small>
+                    {p.analysis.reporting_width_basis === 'legacy_thickness' && (
+                      <p className="notice" data-testid="legacy-force-basis">
+                        {t('review.legacyForceBasis', {
+                          width: String(p.analysis.reporting_width),
+                        })}
+                      </p>
+                    )}
+                  </div>
                 </>
               )}
-      {dimension && stage !== STAGE.results && (
+      {dimension && stage !== 'results' && (
                 <>
                   <h3>{t('extrusion.title')}</h3>
                   <NumberInput
@@ -2086,7 +2502,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   <small>{t('extrusion.previewOnly')}</small>
                 </>
               )}
-              {stage === STAGE.mesh && !dimension && (
+              {stage === 'mesh' && !dimension && (
                 <>
                   <h2>{t('mesh.title')}</h2>
                   <NumberInput
@@ -2181,130 +2597,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   </fieldset>
                 </>
               )}
-              {stage === STAGE.review && !dimension && (
-                <>
-                  <h2>{t('review.title')}</h2>
-                  <Facts
-                    rows={[
-                      [t('review.formulation'), t('review.planeStress')],
-                      [t('review.step'), t('review.implicitDynamic')],
-                      [t('review.geometry'), t('review.nonlinear')],
-                    ]}
-                  />
-                  <Facts
-                    rows={[
-                      [
-                        t('review.mounting'),
-                        fixture
-                          ? t('review.fixtureSummary', { count: fixture.count })
-                          : t('hint.fixtureRequired'),
-                      ],
-                      [
-                        t('review.contact'),
-                        p.contact.friction !== null
-                          ? t('review.contactSummaryLegacy', {
-                              friction: String(p.contact.friction),
-                            })
-                          : t('review.contactSummaryPairs', {
-                              door: String(p.contact.door_seal),
-                              body: String(p.contact.body_seal),
-                              self: String(p.contact.seal_self),
-                            }),
-                      ],
-                      [t('review.panels'), participantNames.join(', ') || t('contact.none')],
-                      [
-                        t('review.stepSequence'),
-                        plan.mode === 'door_only'
-                          ? p.motion.stroke === 0
-                            ? t('review.stepDoorHold')
-                            : t('review.stepDoorOnly')
-                          : p.motion.body.stroke === 0 && p.motion.stroke === 0
-                            ? t('review.stepHoldOnly')
-                            : p.motion.stroke === 0
-                              ? t('review.stepBodyThenHold')
-                              : t('review.stepBodyThenDoor'),
-                      ],
-                      ...(plan.mode === 'body_then_door'
-                        ? [
-                            [
-                              t('review.bodyTravel'),
-                              t('review.bodyMotionSummaryV2', {
-                                stroke: String(p.motion.body.stroke),
-                                angle: String(p.motion.body.angle),
-                                duration: String(p.motion.body.duration),
-                              }),
-                            ] as [string, string],
-                          ]
-                        : []),
-                    ]}
-                  />
-                  {!twoStep && bodyNames.length > 0 && (
-                    <p className="notice" data-testid="body-excluded">
-                      {t('body.excluded')}
-                    </p>
-                  )}
-                  <NumberInput
-                    label={t('review.thickness')}
-                    unit="mm"
-                    min={1e-9}
-                    value={p.analysis.thickness}
-                    onChange={(v) =>
-                      edit((n) => {
-                        n.analysis.thickness = v
-                      })
-                    }
-                  />
-                  <small>{t('review.thicknessHelp')}</small>
-                  <NumberInput
-                    label={t('review.reportingWidth')}
-                    unit="mm"
-                    min={1e-9}
-                    max={1e6}
-                    value={p.analysis.reporting_width}
-                    onChange={(v) =>
-                      edit((n) => {
-                        n.analysis.reporting_width = v
-                      })
-                    }
-                  />
-                  <small data-testid="reporting-width-help">{t('review.reportingWidthHelp')}</small>
-                  <label>
-                    {t('review.forceReporting')}
-                    <select
-                      value={p.analysis.force_normalization}
-                      onChange={(e) =>
-                        edit((n) => {
-                          n.analysis.force_normalization = e.target.value as 'total' | 'per_mm'
-                        })
-                      }
-                    >
-                      <option value="total">{t('review.totalReaction')}</option>
-                      <option value="per_mm">{t('review.perMm')}</option>
-                    </select>
-                  </label>
-                  {p.analysis.reporting_width_basis === 'legacy_thickness' && (
-                    <p className="notice" data-testid="legacy-force-basis">
-                      {t('review.legacyForceBasis', {
-                        width: String(p.analysis.reporting_width),
-                      })}
-                    </p>
-                  )}
-                  {p.contact.friction === null && (
-                    <p className="motion-vector" data-testid="review-contact-pairs">
-                      {t('contact.pairSummary', {
-                        door: String(p.contact.door_seal),
-                        body: String(p.contact.body_seal),
-                        self: String(p.contact.seal_self),
-                      })}
-                    </p>
-                  )}
-                  <AssemblyDiagnostics
-                    assessment={readiness?.assembly ?? null}
-                    dirty={dirty}
-                  />
-                </>
-              )}
-              {stage === STAGE.mesh && !dimension && (
+              {stage === 'mesh' && !dimension && (
                 <>
                   <h3>{t('mesh.meshSection')}</h3>
                   {confirmRegenerate && compatibleMesh ? (
@@ -2351,30 +2644,23 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       {meshJob.diagnostic && <p className="error-text">{meshJob.diagnostic}</p>}
                     </div>
                   )}
-                  {quality && meshFile && compatibleMesh && !dirty && (
-                    <MeshReview
-                      quality={quality}
-                      project={p}
-                      clearance={placement?.initial_vertical_mesh_clearance_mm ?? null}
-                    />
+                  {compatibleMesh && !dirty && (
+                    <>
+                      <h3>{t('mesh.identity')}</h3>
+                      <Facts
+                        rows={[
+                          [t('review.meshNodes'), quality?.nodes ?? '—'],
+                          [t('review.meshElements'), quality?.elements ?? '—'],
+                          [
+                            t('review.fixedNodes'),
+                            fixture ? fixture.count : t('hint.fixtureRequired'),
+                          ],
+                        ]}
+                      />
+                      <p>{t('review.meshOwnedByMesh')}</p>
+                    </>
                   )}
-                </>
-              )}
-              {stage === STAGE.review && !dimension && compatibleMesh && !locked && (
-                <>
-                  <h3>{t('review.meshIdentity')}</h3>
-                  <Facts
-                    rows={[
-                      [t('review.meshNodes'), quality?.nodes ?? '—'],
-                      [t('review.meshElements'), quality?.elements ?? '—'],
-                      [
-                        t('review.fixedNodes'),
-                        fixture ? fixture.count : t('hint.fixtureRequired'),
-                      ],
-                    ]}
-                  />
-                  <p>{t('review.meshOwnedByMesh')}</p>
-                  {quality && meshFile && !dirty && (
+                  {quality && meshFile && compatibleMesh && !dirty && (
                     <MeshReview
                       quality={quality}
                       project={p}
@@ -2410,7 +2696,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   />
                 </>
               )}
-              {stage === STAGE.mounting && !dimension && !locked && compatibleMesh && !dirty && (
+              {stage === 'mounting' && !dimension && !locked && compatibleMesh && !dirty && (
                 <>
                   <h3>{t('mesh.fixedNodes')}</h3>
                   <p>{t('mesh.fixedNodesHelp')}</p>
@@ -2488,29 +2774,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   )}
                 </>
               )}
-              {stage === STAGE.review && !dimension && !compatibleMesh && (
-                <>
-                  <h3>{t('mesh.meshSection')}</h3>
-                  <p>{t('hint.meshRequired')}</p>
-                </>
-              )}
-              {stage === STAGE.review &&
-                !dimension &&
-                compatibleMesh &&
-                (dirty || !fixtureReviewed) &&
-                !locked && (
-                  <>
-                    <h3>{t('mesh.fixtureSection')}</h3>
-                    <p>{dirty ? t('status.unsaved') : t('review.fixtureNeedsReview')}</p>
-                    {!dirty && (
-                      <button className="wide" onClick={() => changeStage(STAGE.mounting)}>
-                        {t('review.goToMounting')}
-                      </button>
-                    )}
-                  </>
-                )}
             </fieldset>
-            {stage === STAGE.results && (
+            {stage === 'results' && (
               <>
                 <h2>{t('results.revisionResults')}</h2>
                 {related.length === 0 ? (

@@ -53,12 +53,13 @@ test('an in-progress region selection survives a language switch', async ({ page
     .getByRole('button', { name: 'Hollow bulb', exact: true })
     .click()
   await expect(page.getByRole('heading', { name: 'Hollow bulb' })).toBeVisible()
+  await page.getByTestId('assign-material').click()
   await page.getByLabel('Material card').selectOption('base_rubber')
-  await expect(page.getByText('Unsaved changes')).toBeVisible()
+  await expect(page.locator('.statusbar')).toContainText('Unsaved changes')
   await page.locator('.lang-button').click()
 
   // Same selected region and the same in-progress edit, now in Japanese.
   await expect(page.getByRole('heading', { name: 'Hollow bulb' })).toBeVisible()
   await expect(page.getByLabel('材料カード')).toHaveValue('base_rubber')
-  await expect(page.getByText('未保存の変更があります')).toBeVisible()
+  await expect(page.locator('.statusbar')).toContainText('未保存の変更があります')
 })

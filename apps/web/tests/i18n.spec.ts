@@ -79,10 +79,10 @@ test('engineer-entered values and the active step survive a language switch', as
   await page.goto('/#workspace/' + revision.id)
   const workflow = page.getByRole('navigation', { name: 'ワークフロー' })
   await workflow.getByRole('button', { name: '移動条件' }).click()
-  const travel = page.getByRole('spinbutton').first()
+  const travel = page.getByLabel('ドアパネルのストローク (mm)')
   await travel.fill('6.5')
   await travel.press('Tab')
-  await expect(page.getByText('未保存の変更があります')).toBeVisible()
+  await expect(page.locator('.statusbar')).toContainText('未保存の変更があります')
 
   await page.locator('.lang-button').click()
 
@@ -90,7 +90,7 @@ test('engineer-entered values and the active step survive a language switch', as
   await expect(page.getByRole('navigation', { name: 'Workflow' })).toBeVisible()
   const englishTravel = page.getByLabel('Door panel stroke (mm)')
   await expect(englishTravel).toHaveValue('6.5')
-  await expect(page.getByText('Unsaved changes')).toBeVisible()
+  await expect(page.locator('.statusbar')).toContainText('Unsaved changes')
   // The draft is still unsaved, so saving must remain available.
   await expect(page.getByRole('button', { name: 'Save revision' })).toBeEnabled()
   await page.getByRole('button', { name: 'Save revision' }).click()
@@ -199,10 +199,14 @@ test('Japanese Create, Import, Mesh, Mounting, Review and Results labels are rea
   await expect(page.getByLabel('矩形選択モード')).toBeVisible()
   await expect(page.getByLabel('矩形選択の動作')).toBeVisible()
 
-  await workflow.getByRole('button', { name: '解析条件確認・実行' }).click()
-  await expect(page.getByRole('heading', { name: 'メッシュ識別情報' })).toBeVisible()
+  await workflow.getByRole('button', { name: 'メッシュ' }).click()
+  await expect(page.getByRole('heading', { name: 'メッシュの同一性' })).toBeVisible()
   await expect(page.getByRole('button', { name: '入力デッキを作成' })).toBeVisible()
-  await expect(page.getByText('「入力デッキを作成」はメッシュ生成ジョブを一切投入しません。')).toBeVisible()
+  // The "Prepare never enqueues a mesh" explanation stays available to
+  // assistive technology without consuming the compact column.
+  expect(
+    await page.getByRole('button', { name: '入力デッキを作成' }).getAttribute('aria-describedby'),
+  ).toContain('prepare-note')
   // The language button names the destination language in readable Japanese UI.
   await expect(page.locator('.lang-button')).toHaveText('English')
 

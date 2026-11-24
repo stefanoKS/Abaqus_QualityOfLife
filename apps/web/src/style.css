@@ -1786,7 +1786,7 @@ input[type='color'] {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(174px, 198px) minmax(286px, 320px) minmax(0, 1fr);
+  grid-template-columns: minmax(268px, 300px) minmax(286px, 320px) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 10px;
   height: auto;
@@ -1820,7 +1820,7 @@ input[type='color'] {
 .left .steps {
   flex: 0 1 auto;
   overflow: auto;
-  max-height: 56%;
+  max-height: 28%;
 }
 .left .tree {
   flex: 1 1 auto;
@@ -2313,4 +2313,214 @@ button.destructive.solid:hover:not(:disabled) {
 .tree-row .tree-rename-open,
 .tree-row > button:last-child {
   flex: none;
+}
+
+/* --------------------------------------------- analysis action group (left) */
+.action-group {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 2px solid var(--color-primary-soft-strong, #f0c9a8);
+  max-height: 74%;
+  overflow: auto;
+}
+.action-group .action-title {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.action-fields {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+.action-fields h2.action-heading {
+  font-size: 0.95rem;
+  margin: 2px 0 0;
+}
+.action-group hr {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--color-border, #dbe3e6);
+  margin: 4px 0;
+}
+.action-reason {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--color-text-muted, #55686f);
+}
+.action-group button {
+  min-height: 32px;
+  padding: 6px 8px;
+  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.action-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.8rem;
+}
+.action-field input {
+  min-height: 28px;
+  padding: 3px 6px;
+}
+.action-group .number-field {
+  gap: 2px;
+  font-size: 0.8rem;
+}
+.action-deck {
+  padding: 4px 6px;
+  font-size: 0.78rem;
+}
+.action-links {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
+}
+.action-license {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+}
+.action-error {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-danger, #b42318);
+}
+.action-run {
+  font-size: 0.8rem;
+}
+.action-locked {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+.action-locked p {
+  margin: 0;
+}
+.state-warning {
+  color: #b45309;
+}
+
+/* ------------------------------------------------ projected partition strokes */
+.partition-target {
+  font-weight: 600;
+}
+.cut-guides {
+  margin: 4px 0;
+  padding-left: 1.2em;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+.cut-guides li.draft {
+  color: var(--color-text-muted, #55686f);
+  font-style: italic;
+}
+.partition-block .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.region-list button.selected {
+  outline: 2px solid var(--color-primary, #c2410c);
+  outline-offset: -2px;
+}
+.force-basis {
+  margin: 4px 0 10px;
+  font-size: 0.82rem;
+  color: var(--color-text-muted, #55686f);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.force-basis p {
+  margin: 0;
+}
+.action-subhead {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0;
+}
+.action-subhead svg {
+  width: 14px;
+  height: 14px;
+}
+.action-run-row {
+  display: flex;
+  gap: 4px;
+  align-items: flex-end;
+}
+.action-run-row .action-field {
+  min-width: 0;
+}
+.action-run-row .action-field:first-child {
+  flex: 1 1 58%;
+}
+.action-run-row .action-field:last-child {
+  flex: 1 1 42%;
+}
+.action-run-row input {
+  width: 100%;
+  min-width: 0;
+}
+/* Compact two-column workflow rail: every stage stays visible while the
+   analysis action group occupies the stable bottom of the left pane. */
+.left .steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px;
+  flex: 0 0 auto;
+  max-height: none;
+  overflow: visible;
+  padding: 5px 6px;
+}
+.left .steps button {
+  gap: 6px;
+  min-height: 38px;
+  padding: 5px 6px;
+  margin: 0;
+  font-size: 0.9375rem;
+}
+.left .steps button svg:first-child {
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+}
+.left .steps button.selected svg:last-child {
+  display: none;
+}
+.steps .step-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.left .action-group {
+  max-height: 68%;
+}
+.action-subhead .action-license {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+}
+.action-subhead .action-license svg {
+  width: 14px;
+  height: 14px;
 }
