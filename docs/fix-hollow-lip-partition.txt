@@ -1,0 +1,39 @@
+Fix the imported hollow-seal lip partition in the production application. Work in I:\GithubProjects\Abaqus_QualityOfLife. Implement, test and verify the repair through the normal Components workflow. The user needs to draw one short straight guide across a lip, keep the cavity empty, and assign the lip a different material while keeping it bonded to the rest of the seal.
+
+Read AGENTS.md, the newest agent.md entry, and docs/hollow-seal-partition-audit.md. The audit contains the failed browser request, the seven guide cases, and measured geometry. Record the starting commit, git status and serving release. The failure was confirmed at 9dd1965 on release f17b356730d6. Preserve current edits and the existing operator session. Use an isolated data directory and port for all imports, saves, remeshing and deck preparation. Keep real CAD and its derived geometry local. Use a manufactured fixture in ordinary CI.
+
+1. Establish and retain three failing regressions.
+   - On the reviewed native drawing, or on a disposable copy of test32 revision 4, select Components > Region 1 > Partition region. Click near (27, 6) and (27, 9) mm. The baseline returns HTTP 422 unsupported_curve on the outer fit-point spline with Apply disabled. Reproduce this using a generated fixture as well: use an open fit-point outer boundary, a protruding lip and a closed non-periodic fit-point cavity. Verify the import preserved both spline representations. An arc-only fixture cannot exercise this failure.
+   - On the 10 mm square with a centered 4 mm square cavity, represent its left outer edge as a geometrically straight, degree-one clamped spline. A horizontal guide from (-6, 0) to (6, 0) currently misses the left wall. The same guide at y = 0.001 mm finds both. Both cuts should produce two regions. The centered case should give 42 + 42 mm².
+   - On the ordinary line-bounded version of that hollow square, draw a full cap cut at y = 3 and a left-wall-only guide from (-6, 0) to (0, 0). The baseline claims valid even though a seam belongs to zero child faces. The corrected preview must identify the unfinished guide, retain the draft, and disable Apply. Direct commit must also refuse it without creating a revision.
+
+2. Repair the shared geometry path.
+   - Start in packages/engineering/partition.py at _sub_spline, _line_edge_hits and arrange. Reuse packages/engineering/spline.py's curve evaluator so trimming uses the same evaluated CAD shape, tangent conditions, weights and knots as import and display. Test an interior interval, end intervals, an existing vertex, the closed curve's parameter seam and an unchanged full span. Preserve source handles, signed loops, cavity ownership and adjacent faces. Store analytic child curves. The CAD shape must also survive serialize/reload. Distinguish a closed non-periodic fit-point curve from a truly periodic curve and report the actual supported cases.
+   - Detect roots exactly at sample and knot boundaries, deduplicate shared-vertex hits and distinguish tangencies and coincident spans from transverse crossings. Use the drawn segment to select which material intervals it touches. Extend only those intervals to their true boundary intersections. A short lip guide must stay local even if a longer line would hit another wall.
+   - After constructing material cells, validate every proposed seam piece against two distinct material children with opposite edge senses. Track its source guide through merging and splitting so the operator can fix an unfinished draft. One wall of a hollow section can legitimately leave a single connected region. Keep that guide available for a second stroke. A cut across a protruding lip can isolate a region in one stroke. A through-guide can split two walls while leaving a gap in the cavity.
+   - Use the same arrangement and decisions for preview and commit. Keep valid child IDs stable across preview, Apply and reload. Test stale-base refusal, commit retry and the absence of a saved revision after an invalid preview or rejected commit. Preserve existing line, arc and clamped spline behavior, existing material assignments and historical revision replay.
+
+3. Verify what the operator actually sees.
+   - Drive Edge through Components on an isolated instance built from the repaired checkout. Use two real viewport clicks, including after pan/zoom. Confirm the selected target, projected segments, preview status, and Apply state. Use Japanese and English for any changed guidance. For a lip cut, Apply once and reopen. Both the lip and the remaining section must be independently selectable. For a single-wall draft, add the opposite wall and Apply. For a mixed draft, exercise both recovery paths: remove the unused guide, or complete it with a second wall cut.
+   - Run the seven guide cases in the audit. If the reviewed local drawing is available, repeat the right-lip journey on it through the actual importer or on a disposable saved copy. Record which path you exercised. If it is unavailable, finish the manufactured tests and identify the real-drawing gate as unverified.
+
+4. Verify geometry, mesh and deck before declaring success.
+   - Check each trimmed curve against its corresponding parent interval, child-area conservation, disjoint interiors, hole ownership and unchanged neighboring geometry. For the reviewed right-lip cut the curve-based reference is approximately 2.432070 mm² lip + 95.823642 mm² remainder = 98.255711 mm². Use the exact reference coordinates in the domain test. Allow for pointer rounding in the browser and document the comparison tolerance and area method. Display tessellation can give slightly different areas.
+   - Assign different material cards to the two children and save. Generate the mesh, select fresh mounting nodes and prepare the INP. Assert that both sides share all interface nodes, the cavity stays free of elements within the boundary tolerance, the two elsets have distinct material sections, and the internal seam is excluded from exterior contact. Check the existing 0.02 mm FE boundary tolerance. Report observed node and element counts for the mesh you generate. Deck preparation is sufficient for this partition repair.
+
+5. Run the regressions and report evidence.
+   Start with these commands from the repository root, then run the complete standard suites. Include any new targeted tests in the run.
+
+   .\.venv\Scripts\python.exe -m pytest -q tests/test_partition.py tests/test_dwg.py
+   npm --prefix apps/web run build
+   npm --prefix apps/web run test:browser -- partition.spec.ts gate-e.spec.ts
+   .\.venv\Scripts\python.exe -m pytest -q
+   npm --prefix apps/web run test:i18n
+   npm --prefix apps/web run test:encoding
+   npm --prefix apps/web run typecheck
+   npm --prefix apps/web run test:browser
+   git diff --check
+
+   Update the existing assertion that expects all fit-point cuts to fail. Retain tests for inputs that remain unsupported. If API contracts change, regenerate frontend types with scripts/schema.py before typecheck. Record the checkout and running API/build identity used for final browser verification. Update agent.md, docs/implementation-report.md and both user guides for changed workflow guidance.
+
+   Return a PASS/FAIL/BLOCKED result for each of four gates: spline lip geometry, centered and mixed-draft topology, viewport Apply/reopen, and two-material mesh/deck. Supply the actual before/after preview response, measured areas and curve deviations, cavity and seam evidence, INP section assignments, test counts/skips, and local screenshot paths. State explicitly whether the repair was exercised on the reviewed native drawing and which build is usable.

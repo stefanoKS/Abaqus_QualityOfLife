@@ -271,7 +271,9 @@ physical gap.
    a stroke through both walls of a hollow seal selects both, producing two regions in one commit.
 3. The preview reports the authoritative region count and areas. A single radial cut that opens an
    annulus but leaves one connected region is kept as a draft and **Apply partition** stays disabled;
-   draw a second cut. A guide outside the target material is a visible no-hit. **Undo last guide**
+   draw a second cut. A guide outside the target material is a visible no-hit. A mixed draft also
+   identifies guides whose seams do not yet separate two children; remove the indicated guide or
+   complete the other wall. **Remove guide** removes an individual stroke, **Undo last guide**
    removes the latest draft stroke, **Cancel cut** clears the draft, and **Esc** cancels from the
    viewport. Precision XY entry is an optional accessible alternative; it adds a guide, it is not
    required.
@@ -284,7 +286,8 @@ physical gap.
    partitioned again.
 
 A rejected or incomplete arrangement leaves the revision count, setup and source drawing unchanged.
-Line, circular-arc and clamped control-point spline boundaries are supported; unsupported curve
+Line, circular-arc and clamped spline boundaries, including fit-point and closed non-periodic
+fit-point curves, are supported; genuinely periodic and unclamped spline
 variants are rejected by name rather than approximated. Partitioning is disabled on submitted (locked)
 snapshots, 3D previews and revisions with unsaved edits; save first.
 
@@ -393,9 +396,10 @@ output for design decisions or material-model validation.
   bonded partition seam is not exposed and rigid-to-rigid contact is excluded.
 - Partitioning accepts one projected operation with one or more straight guides on one
   material-bearing seal region at a time; it can produce two or more children. Line and
-  circular-arc boundaries and clamped control-point splines are split exactly; fit-point, closed or
-  periodic splines and tangent, sliver or mixed no-hit arrangements are rejected and leave the
-  revision unchanged. A one-region draft stays editable; undo the last draft guide or cancel it.
+  circular-arc boundaries and clamped control-point or fit-point splines are split analytically,
+  including closed non-periodic fit-point curves. Periodic or unclamped splines cannot be split.
+  Slivers and mixed arrangements containing missed or unfinished seams leave the revision unchanged.
+  A one-region draft stays editable; remove a guide, undo the last draft guide or cancel it.
   After Apply the new revision is immutable: continue from an earlier revision or delete through the
   normal deletion rules.
 - Fragments created by a cut have no FE-node fixture transfer: remesh and re-review the fixed nodes.

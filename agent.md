@@ -1,5 +1,40 @@
 # Abaqus QOL implementation handoff
 
+## Hollow lip partition repair · 2026-11-24
+
+The three audited defects were reproduced before production edits and retained as regressions. The
+canonical fit-point spline is now trimmed analytically, including existing knot cuts; centered
+spline-wall hits are retained and seam incidence is checked against distinct opposing child faces.
+The Components editor identifies unfinished guides and permits removal or completion.
+
+The reviewed native DWG was imported into a disposable isolated service. Real Edge clicks after
+pan/zoom, Apply, reopen, individual face picking, two materials, remesh, fresh fixture and INP
+preparation passed on API build `31b50f8034fdd144` / release `079e1658446f` at checkout `9dd1965`
+plus uncommitted edits. The operator instance remained on its old release and was not restarted.
+Exact spline areas, seven guide cases, pointer rounding, cavity, seam nodes, contact exclusion,
+boundary tolerance and section evidence are in [the implementation report](docs/implementation-report.md#a12-hollow-lip-partition-repair--2026-11-24).
+The local evidence screenshots are in the current session's `files` directory. No solver was run.
+
+Tests: targeted Python 48 passed; full Python 304 passed, 1 skipped; translation 863 keys, encoding
+44 files, typecheck and build passed; targeted browser including the native drawing journey passed
+8 tests. The full-browser run before the tangent-only follow-up had 114 passes, 4 skips and 2 failures. Material comparison
+passed in isolation; desktop Fit/reset failed again and reproduces the same camera scales against
+the original `f17b356730d6` frontend with the current API. The full browser suite was not rerun
+after the tangent follow-up.
+
+**Next executable slice:** investigate the separately reproduced desktop camera-fit regression, then
+rerun the full browser suite and hosted Windows CI on the resulting tree. Periodic and unclamped
+spline splits are not supported. Solver execution, numerical sensitivity,
+physical correlation and self-contact participation are separate, still-open validation work.
+
+## Native-DWG hollow lip partition audit · 2026-11-24
+
+The [execution-agent command](docs/fix-hollow-lip-partition.txt) is ready to copy into an implementation session. It includes reproducible failures, targeted and full regression commands, and the four release gates.
+
+The [reproduction and repair brief](docs/hollow-seal-partition-audit.md) supersedes the previous Gate D conclusion for imported fit-point geometry. On main at `9dd1965`, real Edge clicks against an isolated copy of the operator's saved hollow section returned HTTP 422 for a valid lip cut. Six material-intersecting guides failed. A diagnostic canonical-spline trim produced two material regions, a conforming lip mesh and distinct INP material sections. A single radial wall guide retained one region as expected.
+
+The next executable slice is to support shape-preserving trims on the open and closed fit-point boundaries seen in native imports, fix exact-sample misses, and reject dangling seams in mixed drafts. Gate the release on the native-style Components → cut → assign → remesh → deck workflow. The current 31 partition and two original-DWG inventory/deck tests passed during the audit. Production changes, repaired browser acceptance and broader periodic-curve coverage remain pending.
+
 ## Left-panel setup, deck readiness, force axis and projected seal cuts — delivered · 2026-11-24
 
 Baseline local HEAD `b8252a4`, remote main `aa2964b`. The pre-existing Windows launcher, startup-test,

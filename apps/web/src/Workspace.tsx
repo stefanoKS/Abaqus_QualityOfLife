@@ -939,8 +939,8 @@ export default function Workspace({ initial, locked, notify }: Props) {
     setCutError('')
     cutRequest.current += 1
   }
-  function undoCut() {
-    const next = cutStrokes.slice(0, -1)
+  function removeCut(index: number) {
+    const next = cutStrokes.filter((_, strokeIndex) => strokeIndex !== index)
     setCutStrokes(next)
     setCutDraft(null)
     cutRequest.current += 1
@@ -949,6 +949,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
       setCutPlan(null)
       setCutError('')
     }
+  }
+  function undoCut() {
+    removeCut(cutStrokes.length - 1)
   }
   async function previewStrokes(strokes: { a: [number, number]; b: [number, number] }[]) {
     if (!activeCutFace) return
@@ -1850,6 +1853,14 @@ export default function Workspace({ initial, locked, notify }: Props) {
                                     x2: stroke.b[0].toFixed(2),
                                     y2: stroke.b[1].toFixed(2),
                                   })}
+                                  <button
+                                    type="button"
+                                    className="link-button"
+                                    disabled={cutBusy}
+                                    onClick={() => removeCut(index)}
+                                  >
+                                    {t('partition.removeGuide', { index: index + 1 })}
+                                  </button>
                                 </li>
                               ))}
                               {cutDraft && (

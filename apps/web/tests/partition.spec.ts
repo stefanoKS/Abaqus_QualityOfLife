@@ -48,6 +48,61 @@ async function selectRegion(page: Page, name: RegExp | string) {
   await page.locator('.region-list button', { hasText: name }).first().click()
 }
 
+function manufacturedDxf(kind: 'lip' | 'box') {
+  const tags: (string | number)[] = [
+    0, 'SECTION', 2, 'HEADER', 9, '$ACADVER', 1, 'AC1024', 9, '$INSUNITS', 70, 4,
+    0, 'ENDSEC', 0, 'SECTION', 2, 'ENTITIES',
+  ]
+  let handle = 100
+  const line = (a: number[], b: number[], layer = '0') => {
+    tags.push(0, 'LINE', 5, (handle++).toString(16).toUpperCase(), 100, 'AcDbEntity', 8, layer,
+      100, 'AcDbLine', 10, a[0], 20, a[1], 30, 0, 11, b[0], 21, b[1], 31, 0)
+  }
+  const fit = (points: number[][], closed: boolean) => {
+    tags.push(0, 'SPLINE', 5, (handle++).toString(16).toUpperCase(), 100, 'AcDbEntity', 8, '0',
+      100, 'AcDbSpline', 70, closed ? 1 : 0, 71, 3, 72, 0, 73, 0, 74, points.length)
+    for (const point of points) tags.push(11, point[0], 21, point[1], 31, 0)
+  }
+  if (kind === 'lip') {
+    line([-5, -5], [5, -5])
+    fit([[5, -5], [7, -4], [7, -2], [5, -2], [5, 5], [-5, 5], [-5, -5]], false)
+    fit([[-2, -2], [2, -2], [2, 2], [-2, 2], [-2, -2]], true)
+  } else {
+    line([-5, -5], [5, -5])
+    line([5, -5], [5, 5])
+    line([5, 5], [-5, 5])
+    tags.push(0, 'SPLINE', 5, (handle++).toString(16).toUpperCase(), 100, 'AcDbEntity', 8, '0',
+      100, 'AcDbSpline', 70, 0, 71, 1, 72, 4, 73, 2, 74, 0,
+      40, 0, 40, 0, 40, 1, 40, 1, 10, -5, 20, 5, 30, 0, 10, -5, 20, -5, 30, 0)
+    line([-2, -2], [2, -2])
+    line([2, -2], [2, 2])
+    line([2, 2], [-2, 2])
+    line([-2, 2], [-2, -2])
+  }
+  line([-10, 14], [10, 14], 'PANEL')
+  tags.push(0, 'ENDSEC', 0, 'EOF')
+  return Buffer.from(tags.join('\n') + '\n')
+}
+
+async function importedManufactured(page: Page, request: import('@playwright/test').APIRequestContext, kind: 'lip' | 'box') {
+  const empty: Revision = await (await request.post('/api/projects', { data: { name: `Manufactured ${kind}` } })).json()
+  await page.goto('/#workspace/' + empty.id)
+  await page.locator('input[type=file]').setInputFiles({
+    name: `${kind}.dxf`, mimeType: 'application/dxf', buffer: manufacturedDxf(kind),
+  })
+  await expect(page.locator('.crumb')).toContainText('Revision 02', { timeout: 60000 })
+  const imported: Revision = await (await request.get('/api/revisions/' + page.url().split('/').pop())).json()
+  const target = imported.setup.faces.find((face) => !face.cavity)!
+  for (const component of imported.setup.components)
+    component.role = component.id === target.component ? 'seal' : 'moving_panel'
+  target.material = 'bulb_foam'
+  const response = await request.put('/api/projects/' + imported.project, {
+    data: { base: imported.id, setup: imported.setup },
+  })
+  expect(response.ok(), await response.text()).toBeTruthy()
+  return (await response.json()) as Revision
+}
+
 test('draw arbitrary guides in Components, apply once, then assign two materials and inspect the deck', async ({
   page,
   request,
@@ -257,4 +312,202 @@ test('a hollow seal keeps the draft after one radial cut and splits after the se
     (face) => face.name.startsWith('Hollow bulb') && face.loops.length === 2,
   )
   expect(holed.length).toBeLessThanOrEqual(1)
+})
+
+test('manufactured fit-point lip survives viewport apply and reopen', async ({ page, request }) => {
+  const saved = await importedManufactured(page, request, 'lip')
+  const splines = saved.setup.edges.filter((edge) => edge.kind === 'spline' && edge.component !== 'panel')
+  expect(splines.some((edge) => edge.spline?.fit_points.length && !edge.spline.closed)).toBeTruthy()
+  expect(splines.some((edge) => edge.spline?.fit_points.length && edge.spline.closed && !edge.spline.periodic)).toBeTruthy()
+  await page.goto('/#workspace/' + saved.id)
+  await selectRegion(page, 'Region 1')
+  await page.getByRole('button', { name: 'Partition region' }).click()
+  await drawGuide(page, [6, -5], [6, 0])
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'valid')
+  await page.getByRole('button', { name: 'Apply partition' }).click()
+  await expect(page.locator('.crumb')).toContainText('Revision 04')
+  await page.reload()
+  await selectRegion(page, 'Region 1 A')
+  await expect(page.getByTestId('partition-target')).toContainText('Region 1 A')
+  await selectRegion(page, 'Region 1 B')
+  await expect(page.getByTestId('partition-target')).toContainText('Region 1 B')
+})
+
+test('a centered through-guide crosses both walls including a straight spline', async ({ page, request }) => {
+  const saved = await importedManufactured(page, request, 'box')
+  await page.goto('/#workspace/' + saved.id)
+  await selectRegion(page, 'Region 1')
+  await page.getByRole('button', { name: 'Partition region' }).click()
+  const previewResponse = page.waitForResponse((response) =>
+    response.url().includes('/api/partition/preview') && response.request().method() === 'POST',
+  )
+  await drawGuide(page, [-6, 0], [6, 0])
+  const plan = (await (await previewResponse).json()).plan
+  expect(plan.status).toBe('valid')
+  expect(plan.guides[0].intervals).toHaveLength(2)
+  expect(plan.areas[0]).toBeCloseTo(42, 0)
+  expect(plan.areas[1]).toBeCloseTo(42, 0)
+  await page.getByRole('button', { name: 'Apply partition' }).click()
+  await expect(page.locator('.crumb')).toContainText('Revision 04')
+})
+
+test('mixed draft can remove or complete its unfinished wall guide', async ({ page, request }) => {
+  const revision = await example(request, 'Mixed hollow draft')
+  await page.goto('/#workspace/' + revision.id)
+  await selectRegion(page, 'Hollow bulb')
+  await page.getByRole('button', { name: 'Partition region' }).click()
+  await drawGuide(page, [-4, 11.6], [4, 11.6])
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'valid')
+  await drawGuide(page, [-9, 7], [-6, 7])
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'mixed')
+  await expect(page.getByTestId('partition-plan')).toContainText('unfinished guide(s): 2')
+  await expect(page.getByRole('button', { name: 'Apply partition' })).toBeDisabled()
+  await page.locator('.lang-button').click()
+  await expect(page.getByTestId('partition-plan')).toContainText('未完成')
+  await expect(page.getByRole('button', { name: 'ガイド 2 を削除' })).toBeVisible()
+  await page.locator('.lang-button').click()
+  await page.getByRole('button', { name: 'Remove guide 2' }).click()
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'valid')
+  await drawGuide(page, [-9, 7], [-6, 7])
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'mixed')
+  await drawGuide(page, [6, 7], [9, 7])
+  await expect(page.getByTestId('partition-plan')).toHaveAttribute('data-status', 'valid')
+  await page.getByRole('button', { name: 'Apply partition' }).click()
+  await expect(page.locator('.crumb')).toContainText('Revision 02')
+})
+
+test('reviewed native lip is selectable after viewport partition and reopen', async ({
+  page,
+  request,
+}) => {
+  test.skip(!process.env.SEAL_NATIVE_DWG, 'Requires the local reviewed drawing')
+  const empty: Revision = await (
+    await request.post('/api/projects', { data: { name: 'Isolated native lip' } })
+  ).json()
+  await page.goto('/#workspace/' + empty.id)
+  await page.locator('input[type=file]').setInputFiles(process.env.SEAL_NATIVE_DWG!)
+  await expect(page.locator('.crumb')).toContainText('Revision 02', { timeout: 60000 })
+  const imported: Revision = await (
+    await request.get('/api/revisions/' + page.url().split('/').pop())
+  ).json()
+  const seal = imported.setup.faces.find((face) => !face.cavity)!
+  const vertices = new Map(imported.setup.vertices.map((vertex) => [vertex.id, vertex.xyz]))
+  const other = imported.setup.components.filter((component) => component.id !== seal.component)
+  const meanY = (id: string) => {
+    const edges = imported.setup.edges.filter((edge) => edge.component === id)
+    return edges.reduce((sum, edge) => sum + vertices.get(edge.start)![1], 0) / edges.length
+  }
+  const door = other.reduce((a, b) => (meanY(a.id) > meanY(b.id) ? a : b))
+  for (const component of imported.setup.components) {
+    component.role = component.id === seal.component ? 'seal' : component.id === door.id ? 'moving_panel' : 'vehicle_body'
+  }
+  seal.material = 'bulb_foam'
+  const mountEdge = imported.setup.edges.find((edge) => edge.component === seal.component && edge.kind === 'line')!
+  imported.setup.selections.find((selection) => selection.id === 'mount')!.entities = [mountEdge.id]
+  const savedResponse = await request.put('/api/projects/' + imported.project, {
+    data: { base: imported.id, setup: imported.setup },
+  })
+  expect(savedResponse.ok()).toBeTruthy()
+  const revision: Revision = await savedResponse.json()
+  const health = await (await request.get('/api/health')).json()
+  console.log('native test build', JSON.stringify({ build: health.build, release: health.release, git: health.git }))
+  await page.goto('/#workspace/' + revision.id)
+  await selectRegion(page, 'Region 1')
+  await expect(page.getByTestId('partition-target')).toContainText('Region 1')
+  const viewport = page.getByRole('application')
+  const box = (await viewport.boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.down({ button: 'middle' })
+  await page.mouse.move(box.x + box.width / 2 + 20, box.y + box.height / 2 + 10, { steps: 4 })
+  await page.mouse.up({ button: 'middle' })
+  await page.getByRole('button', { name: 'Zoom in' }).click()
+  await page.getByRole('button', { name: 'Partition region' }).click()
+  const previewResponse = page.waitForResponse((response) =>
+    response.url().includes('/api/partition/preview') && response.request().method() === 'POST',
+  )
+  await drawGuide(page, [27, 6], [27, 9])
+  const preview = await previewResponse
+  expect(preview.status()).toBe(200)
+  const plan = (await preview.json()).plan
+  console.log('native preview', JSON.stringify({ status: plan.status, areas: plan.areas, guides: plan.guides }))
+  expect(plan.status).toBe('valid')
+  expect(plan.guides[0].intervals).toHaveLength(1)
+  await expect(page.getByRole('button', { name: 'Apply partition' })).toBeEnabled()
+  if (process.env.SEAL_EVIDENCE_DIR)
+    await page.screenshot({ path: process.env.SEAL_EVIDENCE_DIR + '\\native-lip-preview.png' })
+  await page.getByRole('button', { name: 'Apply partition' }).click()
+  await expect(page.locator('.crumb')).toContainText('Revision 04')
+  const partitionedId = page.url().split('/').pop()
+  const partitioned: Revision = await (await request.get('/api/revisions/' + partitionedId)).json()
+  expect(partitioned.setup.faces.filter((face) => face.name.startsWith('Region 1 ')).map((face) => face.id))
+    .toEqual(plan.children.map((child: { id: string }) => child.id))
+  await page.goto('/#workspace/' + partitionedId)
+  await selectRegion(page, 'Region 1 A')
+  await expect(page.getByTestId('partition-target')).toContainText('Region 1 A')
+  const lipPoint = await projectPoint(page, 27.5, 7.5)
+  await page.mouse.click(lipPoint.x, lipPoint.y)
+  await expect(page.getByTestId('partition-target')).toContainText('Region 1 B')
+  const remainderPoint = await projectPoint(page, 20, 8)
+  await page.mouse.click(remainderPoint.x, remainderPoint.y)
+  await expect(page.getByTestId('partition-target')).toContainText('Region 1 A')
+  await page.mouse.click(lipPoint.x, lipPoint.y)
+  await expect(page.getByTestId('partition-target')).toContainText('Region 1 B')
+  await page.getByTestId('assign-material').click()
+  await page.getByLabel('Material card').selectOption({ label: 'Dense EPDM' })
+  await page.getByRole('button', { name: 'Save revision' }).click()
+  await expect(page.locator('.crumb')).toContainText('Revision 05')
+  const finalRevision: Revision = await (
+    await request.get('/api/revisions/' + page.url().split('/').pop())
+  ).json()
+  expect(new Set(finalRevision.setup.faces.filter((face) => face.name.startsWith('Region 1 ')).map((face) => face.material)).size).toBe(2)
+  if (process.env.SEAL_EVIDENCE_DIR)
+    await page.screenshot({ path: process.env.SEAL_EVIDENCE_DIR + '\\native-lip-reopen.png' })
+  const workflow = page.getByRole('navigation', { name: 'Workflow' })
+  await workflow.getByRole('button', { name: 'Mesh' }).click()
+  await page.getByRole('button', { name: 'Generate mesh', exact: true }).click()
+  await expect(page.getByTestId('mesh-status')).toContainText('Mesh ready', { timeout: 60000 })
+  await workflow.getByRole('button', { name: 'Mounting' }).click()
+  await page.getByRole('button', { name: /Resolve .* mounting edges to nodes/ }).click()
+  await page.getByRole('button', { name: 'Save fixed nodes' }).click()
+  await expect(page.getByRole('button', { name: 'Prepare input deck' })).toBeEnabled()
+  await page.getByRole('button', { name: 'Prepare input deck' }).click()
+  await expect(page.getByTestId('deck-status')).toContainText('Input ready', { timeout: 60000 })
+  const meshes: Job[] = await (await request.get('/api/meshes')).json()
+  const meshJob = meshes.find((job) => job.revision === finalRevision.id && job.status === 'Completed')!
+  const mesh = await (await request.get('/api/jobs/' + meshJob.id + '/artifacts/mesh.json')).json()
+  const childIds = plan.children.map((child: { id: string }) => child.id)
+  const seamNodes = new Set<number>(mesh.edge_nodes[plan.seams[0]])
+  const nodesFor = (id: string) => new Set<number>(
+    (mesh.elements as { entity: string; nodes: number[] }[]).filter((element) => element.entity === id).flatMap((element) => element.nodes),
+  )
+  const firstNodes = nodesFor(childIds[0])
+  const secondNodes = nodesFor(childIds[1])
+  const common = [...firstNodes].filter((node) => secondNodes.has(node))
+  expect(new Set(common)).toEqual(seamNodes)
+  const decks: Job[] = await (await request.get('/api/decks')).json()
+  const deck = decks.find((job) => job.revision === finalRevision.id && job.status === 'Completed')!
+  const inp = await (await request.get('/api/jobs/' + deck.id + '/artifacts/analysis.inp')).text()
+  const sections = inp.split(/\r?\n/).filter((line) => line.startsWith('*Solid Section'))
+  expect(sections).toHaveLength(2)
+  expect(new Set(sections.map((line) => line.match(/material=([^,\s]+)/)?.[1])).size).toBe(2)
+  const surface = inp.split('*Surface, type=ELEMENT, name=SEAL_EXTERIOR')[1].split('*')[0]
+  const interfaceSides: string[] = []
+  for (const element of mesh.elements as { id: number; entity: string; nodes: number[] }[]) {
+    if (!childIds.includes(element.entity)) continue
+    for (let index = 0; index < element.nodes.length; index++) {
+      if (seamNodes.has(element.nodes[index]) && seamNodes.has(element.nodes[(index + 1) % element.nodes.length]))
+        interfaceSides.push(`${element.id}, S${index + 1}`)
+    }
+  }
+  expect(interfaceSides.length).toBeGreaterThan(0)
+  for (const side of interfaceSides) expect(surface.split(/\r?\n/)).not.toContain(side)
+  console.log('native mesh/deck', JSON.stringify({
+    nodes: mesh.nodes.length,
+    elements: mesh.elements.length,
+    byChild: childIds.map((id: string) => mesh.elements.filter((element: { entity: string }) => element.entity === id).length),
+    sharedNodes: common.length,
+    interfaceSides: interfaceSides.length,
+    boundaryDeviation: mesh.boundary.worst,
+    sections,
+  }))
 })

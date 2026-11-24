@@ -19,9 +19,12 @@ same policy, so an endpoint need not sit on the border any more.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import math
 
+import numpy as np
+from ezdxf.math import BSpline
 from shapely.geometry import LineString, Point, Polygon
 from shapely.ops import polygonize, unary_union
 
@@ -144,23 +147,49 @@ def _tangent(project, edge, t):
     return (dx / length, dy / length) if length > 0 else (1.0, 0.0)
 
 
+def _split_spline(bs, parameter):
+    knots = list(bs.knots())
+    existing = next((knot for knot in knots if abs(knot - parameter) <= 1e-12 * bs.max_t), None)
+    if existing is None:
+        return bs.split(parameter)
+    parameter = existing
+    missing = bs.order - knots.count(parameter)
+    refined = bs.knot_refinement([parameter] * missing) if missing else bs
+    knots = list(refined.knots())
+    span = bisect.bisect_right(knots, parameter)
+    index = span - bs.order
+    poles = refined.control_points
+    weights = list(refined.weights())
+    return (
+        BSpline(poles[:index], order=bs.order, knots=knots[:span], weights=weights[:index] or None),
+        BSpline(
+            poles[index:], order=bs.order, knots=[parameter] * bs.order + knots[span:],
+            weights=weights[index:] or None,
+        ),
+    )
+
+
 def _sub_spline(data, f0, f1):
-    if data.fit_points or data.closed or data.periodic:
+    if data.periodic:
         raise PartitionError(
             "unsupported_curve",
-            "Only a clamped control-point spline can be split exactly; use a line or arc cut.",
+            "Periodic splines cannot be split safely.",
         )
+    if f0 <= 1e-12 and f1 >= 1.0 - 1e-12:
+        return data.model_copy(deep=True)
     bs = spline_curve(data)
+    if not bs.is_clamped:
+        raise PartitionError("unsupported_curve", "Only clamped splines can be split safely.")
     max_t = bs.max_t
     t0, t1 = max_t * f0, max_t * f1
     if f0 <= 1e-12:
-        part = bs.split(t1)[0]
+        part = _split_spline(bs, t1)[0]
     elif f1 >= 1.0 - 1e-12:
-        part = bs.split(t0)[1]
+        part = _split_spline(bs, t0)[1]
     else:
-        right = bs.split(t0)[1]
+        right = _split_spline(bs, t0)[1]
         local = (t1 - t0) / (max_t - t0)
-        part = right.split(right.max_t * local)[0]
+        part = _split_spline(right, right.max_t * local)[0]
     poles = [tuple(p) for p in part.control_points]
     knots = list(part.knots())
     weights = [float(w) for w in part.weights()]
@@ -338,34 +367,46 @@ def _line_edge_hits(project, edge, origin, direction):
                 hits.append((min(1.0, max(0.0, t)), (px, py)))
         return hits
     bs = spline_curve(edge.spline)
+    if not bs.is_clamped:
+        raise PartitionError("unsupported_curve", "Only clamped splines can be intersected safely.")
     max_t = bs.max_t
-    steps = 512
-    values = []
-    for index in range(steps + 1):
-        u = max_t * index / steps
-        px, py, *_ = bs.point(u)
-        values.append((u, px, py, _cross(dx, dy, px - ox, py - oy)))
+    weights = list(bs.weights()) or [1.0] * bs.count
+    poles = [
+        (_cross(dx, dy, point.x - ox, point.y - oy) * weight, 0.0, 0.0)
+        for point, weight in zip(bs.control_points, weights)
+    ]
+    numerator = BSpline(poles, order=bs.order, knots=list(bs.knots()))
+    knots = sorted(set(float(knot) for knot in bs.knots()))
     hits = []
-    for (u0, x0, y0, f0), (u1, x1, y1, f1) in zip(values, values[1:]):
-        if f0 == 0.0 and u0 == 0.0:
-            hits.append((0.0, (x0, y0)))
+    for (lo, hi), bezier in zip(zip(knots, knots[1:]), numerator.bezier_decomposition()):
+        coefficients = [point.x for point in bezier]
+        if max(abs(value) for value in coefficients) <= 1e-12:
             continue
-        if f0 == 0.0 or f1 == 0.0 or f0 * f1 > 0:
-            continue
-        lo, hi = u0, u1
-        flo, fhi = f0, f1
-        for _ in range(80):
-            mid = (lo + hi) / 2
-            mx, my, *_ = bs.point(mid)
-            fm = _cross(dx, dy, mx - ox, my - oy)
-            if flo * fm <= 0:
-                hi, fhi = mid, fm
-            else:
-                lo, flo = mid, fm
-        u = (lo + hi) / 2
-        px, py, *_ = bs.point(u)
-        hits.append((u / max_t, (px, py)))
-    # A crossing exactly at the final endpoint is not reported twice.
+        degree = len(coefficients) - 1
+        power = [0.0] * (degree + 1)
+        for i, coefficient in enumerate(coefficients):
+            for j in range(i, degree + 1):
+                power[j] += (
+                    coefficient
+                    * math.comb(degree, i)
+                    * math.comb(degree - i, j - i)
+                    * (-1) ** (j - i)
+                )
+        roots = list(np.polynomial.polynomial.polyroots(power))
+        if abs(coefficients[0]) <= 1e-12:
+            roots.append(0.0)
+        if abs(coefficients[-1]) <= 1e-12:
+            roots.append(1.0)
+        for root in roots:
+            if abs(complex(root).imag) > 1e-7:
+                continue
+            fraction = float(complex(root).real)
+            if not -1e-9 <= fraction <= 1.0 + 1e-9:
+                continue
+            u = lo + (hi - lo) * min(1.0, max(0.0, fraction))
+            px, py, *_ = bs.point(u)
+            if abs(_cross(dx, dy, px - ox, py - oy)) <= 1e-7:
+                hits.append((u / max_t, (px, py)))
     return hits
 
 
@@ -408,6 +449,7 @@ def _material_intervals(project, face, start, end, parent):
             continue
         unique.append(hit)
     touched = []
+    material_spans = []
     for first, second in zip(unique, unique[1:]):
         if second["s"] - first["s"] <= TOUCH:
             continue
@@ -418,6 +460,7 @@ def _material_intervals(project, face, start, end, parent):
         probe = Point(mid)
         if not parent.contains(probe) or parent.boundary.distance(probe) <= WELD:
             continue
+        material_spans.append((first["s"], second["s"]))
         # The drawn segment must overlap this material interval by a positive
         # length. A stroke wholly inside the void, or beyond the wall, is a hit.
         lo, hi = sorted((0.0, length))
@@ -437,6 +480,15 @@ def _material_intervals(project, face, start, end, parent):
                 "length": second["s"] - first["s"],
             }
         )
+    for first, second in zip(material_spans, material_spans[1:]):
+        if abs(first[1] - second[0]) <= WELD and any(
+            interval["low_s"] - WELD <= first[1] <= interval["high_s"] + WELD
+            for interval in touched
+        ):
+            raise PartitionError(
+                "tangent_cut",
+                "The projected guide touches a boundary tangentially; move the guide away.",
+            )
     return direction, length, touched
 
 
@@ -492,14 +544,14 @@ def _merge_seams(selected):
                     "origin": origin,
                     "direction": direction,
                     "key": key,
-                    "guides": [interval.get("guide", 0)],
+                    "guide_ranges": [(low, high, interval.get("guide", 0))],
                 }
                 continue
             if low <= current["high"] + WELD:
                 if high > current["high"]:
                     current["high"] = high
                     current["high_hit"] = high_hit
-                current["guides"].append(interval.get("guide", 0))
+                current["guide_ranges"].append((low, high, interval.get("guide", 0)))
                 continue
             seams.append(current)
             current = {
@@ -510,7 +562,7 @@ def _merge_seams(selected):
                 "origin": origin,
                 "direction": direction,
                 "key": key,
-                "guides": [interval.get("guide", 0)],
+                "guide_ranges": [(low, high, interval.get("guide", 0))],
             }
         if current is not None:
             seams.append(current)
@@ -546,7 +598,7 @@ def _split_seams(seams):
             if hit is None:
                 continue
             for index in (i, j):
-                a, b = points[index]
+                a, b = points[index][:2]
                 if math.dist(hit, a) > WELD and math.dist(hit, b) > WELD:
                     points[index].append(hit)
     split = []
@@ -567,12 +619,12 @@ def _split_seams(seams):
 def _dedupe_strokes(strokes):
     seen = set()
     unique = []
-    for start, end in strokes:
+    for index, (start, end) in enumerate(strokes):
         key = tuple(sorted((tuple(round(v, 9) for v in start), tuple(round(v, 9) for v in end))))
         if key in seen:
             continue
         seen.add(key)
-        unique.append((start, end, key))
+        unique.append((start, end, key, index))
     return unique
 
 
@@ -611,7 +663,7 @@ def arrange(project, face_id, strokes, *, seed):
     parent = face_polygon(face, samples0)
     selected = []
     guide_reports = []
-    for index, (start, end, _key) in enumerate(unique):
+    for start, end, _key, index in unique:
         direction, length, intervals = _material_intervals(project, face, start, end, parent)
         if not intervals:
             guide_reports.append(
@@ -698,6 +750,9 @@ def arrange(project, face_id, strokes, *, seed):
                 "low_hit": low_hit,
                 "high_hit": high_hit,
                 "pieces": seam["pieces"],
+                "guide_ranges": seam["guide_ranges"],
+                "origin": seam["origin"],
+                "direction": seam["direction"],
             }
         )
         for hit in (low_hit, high_hit):
@@ -727,6 +782,9 @@ def arrange(project, face_id, strokes, *, seed):
             if deduped and abs(t - deduped[-1][0]) <= WELD:
                 continue
             deduped.append((t, vertex))
+        if not deduped:
+            new_edges.append(edge)
+            continue
         piece_ids = []
         previous_vertex, previous_t = edge.start, 0.0
         for t, vertex in deduped:
@@ -740,6 +798,7 @@ def arrange(project, face_id, strokes, *, seed):
         pieces[edge.id] = piece_ids
 
     seam_edges = []
+    seam_guides = {}
     for seam in seam_pieces:
         for a, b in seam["pieces"]:
             va = vertex_at(a)
@@ -756,6 +815,14 @@ def arrange(project, face_id, strokes, *, seed):
             )
             new_edges.append(edge)
             seam_edges.append(edge.id)
+            origin, direction = seam["origin"], seam["direction"]
+            sa = (a[0] - origin[0]) * direction[0] + (a[1] - origin[1]) * direction[1]
+            sb = (b[0] - origin[0]) * direction[0] + (b[1] - origin[1]) * direction[1]
+            low, high = sorted((sa, sb))
+            seam_guides[edge.id] = [
+                guide for start, end, guide in seam["guide_ranges"]
+                if min(high, end) - max(low, start) > TOUCH
+            ]
 
     # Rewrite every face loop so bonded interfaces stay conforming even when a
     # cut ends on a boundary shared with a neighbouring region.
@@ -896,6 +963,26 @@ def arrange(project, face_id, strokes, *, seed):
             )
         )
 
+    unfinished = set()
+    for edge_id in seam_edges:
+        uses = [
+            (child.id, token.startswith("-"))
+            for child in children
+            for loop in child.loops
+            for token in loop
+            if token.lstrip("-") == edge_id
+        ]
+        if len(uses) != 2 or uses[0][0] == uses[1][0] or uses[0][1] == uses[1][1]:
+            unfinished.update(seam_guides[edge_id])
+    if unfinished:
+        for guide in guide_reports:
+            if guide["index"] in unfinished:
+                guide["status"] = "unfinished"
+        return _plan_payload(
+            face, parent, guide_reports, status="mixed", cells=cells,
+            seams=seam_edges, split_edges=sorted(pieces), unused=sorted(unfinished),
+        )
+
     new_faces = []
     for item in project.faces:
         if item.id == face.id:
@@ -1017,7 +1104,7 @@ def _status_message(result):
     if status == "one_region":
         return "This guide opens the region but leaves one connected material region. Add another cut."
     if status == "mixed":
-        return "Some guides miss the target material. Remove or reposition them before applying."
+        return "Some guides miss the material or leave an unfinished seam. Remove or complete them before applying."
     if status == "redundant":
         return "This seam is already an internal boundary between two regions."
     return "The guide does not produce two or more material regions."

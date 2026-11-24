@@ -109,6 +109,33 @@ def hollow_section():
     return entities
 
 
+def test_imported_fit_point_lip_can_be_partitioned():
+    from packages.engineering.partition import commit
+
+    entities = [
+        {"handle": "L", "type": "LINE", "layer": "0", "start": [-5, -5, 0], "end": [5, -5, 0]},
+        {"handle": "O", "type": "SPLINE", "layer": "0", "degree": 3,
+         "controlPoints": [], "fitPoints": [[5, -5, 0], [7, -4, 0], [7, -2, 0],
+                                               [5, -2, 0], [5, 5, 0], [-5, 5, 0], [-5, -5, 0]],
+         "closed": False, "periodic": False},
+        {"handle": "H", "type": "SPLINE", "layer": "0", "degree": 3,
+         "controlPoints": [], "fitPoints": [[-2, -2, 0], [2, -2, 0], [2, 2, 0],
+                                               [-2, 2, 0], [-2, -2, 0]],
+         "closed": True, "periodic": False},
+    ]
+    project, _ = import_inventory(inventory(entities), "Manufactured lip")
+    face = next(face for face in project.faces if not face.cavity)
+    next(component for component in project.components if component.id == face.component).role = "seal"
+    splines = {edge.source_handle: edge.spline for edge in project.edges if edge.kind == "spline"}
+    assert splines["O"].fit_points and not splines["O"].closed
+    assert splines["H"].fit_points and splines["H"].closed and not splines["H"].periodic
+    candidate, info = commit(project, face.id, [((6, -5), (6, 0))], seed="lip")
+    assert info["status"] == "valid"
+    assert info["child_count"] == 2
+    children = [face for face in candidate.faces if face.id in {child["id"] for child in info["children"]}]
+    assert sorted(len(child.loops) for child in children) == [1, 2]
+
+
 def test_inventory_maps_hollow_seal_spline_door_and_body_lines():
     project, report = import_inventory(inventory(hollow_section()), "Hollow section")
     assert len([face for face in project.faces if not face.cavity]) == 1
@@ -283,6 +310,114 @@ def test_original_drawing_inventory_accounts_for_every_entity():
             assert entity["fitPoints"], "the drawing stores fit points, not control points"
             assert not entity["controlPoints"]
     assert all(entity["layer"] == "0" for entity in payload["entities"])
+
+
+@requires_original
+def test_original_lip_partition_geometry_and_mesh():
+    from shapely.geometry import Point, Polygon
+    from packages.engineering.geometry import face_polygon
+    from packages.engineering.model import Project
+    from packages.engineering.partition import PartitionError, _line_edge_hits, commit, preview
+    from packages.engineering.spline import curve
+
+    project, _ = import_inventory(dwg.read(ORIGINAL), "Local native partition")
+    target = next(face for face in project.faces if not face.cavity)
+    next(component for component in project.components if component.id == target.component).role = "seal"
+    target.material = "bulb_foam"
+    vertices = {vertex.id: vertex.xyz for vertex in project.vertices}
+    others = [component for component in project.components if component.id != target.component]
+    door = max(others, key=lambda component: sum(
+        vertices[edge.start][1] for edge in project.edges if edge.component == component.id
+    ) / sum(edge.component == component.id for edge in project.edges))
+    for component in others:
+        component.role = "moving_panel" if component.id == door.id else "vehicle_body"
+    cases = [
+        ([((27, 6), (27, 9))], "valid", 1),
+        ([((13.4, 6), (13.4, 9))], "valid", 1),
+        ([((10, 7.5), (30, 7.5))], "valid", 1),
+        ([((9, 12), (18, 12))], "one_region", 1),
+        ([((9, 12), (30, 12))], "valid", 2),
+        ([((9, 12), (18, 12)), ((22, 12), (30, 12))], "valid", 2),
+    ]
+    for strokes, status, count in cases:
+        plan = preview(project, target.id, strokes, seed="native")
+        assert plan["status"] == status
+        assert sum(len(guide["intervals"]) for guide in plan["guides"]) == count
+    with pytest.raises(PartitionError, match="cut_no_hit"):
+        preview(project, target.id, [((18, 14), (21, 14))], seed="native")
+
+    result, info = commit(project, target.id, [((27, 6), (27, 9))], seed="native")
+    result = Project.model_validate(result.model_dump(mode="json"))
+    children = [face for face in result.faces if face.id in {child["id"] for child in info["children"]}]
+    assert sorted(len(child.loops) for child in children) == [1, 2]
+    samples = sample_edges(result)
+    assert face_polygon(children[0], samples).intersection(face_polygon(children[1], samples)).area < 1e-8
+
+    def area(model, face):
+        edges = {edge.id: edge for edge in model.edges}
+        vertices = {vertex.id: vertex.xyz for vertex in model.vertices}
+        total = 0.0
+        for loop in face.loops:
+            points = []
+            for token in loop:
+                edge = edges[token.lstrip("-")]
+                if edge.kind == "spline":
+                    spline = curve(edge.spline)
+                    sampled = [tuple(spline.point(spline.max_t * i / 10000)) for i in range(10001)]
+                else:
+                    sampled = [vertices[edge.start], vertices[edge.end]]
+                if token.startswith("-"):
+                    sampled.reverse()
+                points.extend(sampled[:-1])
+            total += sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(points, points[1:] + points[:1])) / 2
+        return abs(total)
+
+    measured = sorted(area(result, child) for child in children)
+    assert measured == pytest.approx([2.432070, 95.823642], abs=1e-4)
+    assert sum(measured) == pytest.approx(area(project, target), abs=1e-4)
+    original = next(edge for edge in project.edges if edge.kind == "spline" and not edge.spline.closed and edge.component == target.component)
+    endpoints = info["guides"][0]["intervals"][0]
+    hits = _line_edge_hits(project, original, (27, 6), (0, 1))
+    intervals = [0.0] + sorted(
+        t for t, point in hits if any(math.dist(point, endpoint) < 1e-6 for endpoint in endpoints)
+    ) + [1.0]
+    parts = [edge for edge in result.edges if edge.source_handle == original.source_handle]
+    assert len(parts) == len(intervals) - 1
+    parent_curve = curve(original.spline)
+    worst = 0.0
+    for edge, lo, hi in zip(parts, intervals, intervals[1:]):
+        child_curve = curve(edge.spline)
+        for i in range(101):
+            fraction = i / 100
+            worst = max(worst, math.dist(
+                tuple(child_curve.point(child_curve.max_t * fraction)),
+                tuple(parent_curve.point(parent_curve.max_t * (lo + (hi - lo) * fraction))),
+            ))
+    assert worst < 1e-9
+    rounded, rounded_info = commit(
+        project, target.id,
+        [((26.98331976538329, 5.981999036157906), (26.995723734790698, 8.996442989076519))],
+        seed="pointer",
+    )
+    for label, model, plan in (("exact", result, info), ("pointer", rounded, rounded_info)):
+        regions = [face for face in model.faces if face.id in {child["id"] for child in plan["children"]}]
+        mesh = generate_mesh(model)
+        cavity = next(face for face in model.faces if face.cavity)
+        hole = face_polygon(cavity, sample_edges(model)).buffer(-0.02)
+        nodes = {node["id"]: node["xyz"] for node in mesh["nodes"]}
+        elements = [element for element in mesh["elements"] if element["entity"] in {child.id for child in regions}]
+        for element in elements:
+            center = [sum(nodes[node][axis] for node in element["nodes"]) / len(element["nodes"]) for axis in (0, 1)]
+            assert not hole.contains(Point(center))
+            polygon = Polygon([nodes[node][:2] for node in element["nodes"]])
+            assert polygon.intersection(hole).area < 1e-8
+        child_nodes = [{node for element in elements if element["entity"] == child.id for node in element["nodes"]} for child in regions]
+        assert child_nodes[0] & child_nodes[1] == set(mesh["edge_nodes"][plan["seams"][0]])
+        assert mesh["boundary"]["worst"] <= 0.02
+        print("native", label, "curve areas", [area(model, face) for face in regions],
+              "curve deviation", worst, "nodes", len(mesh["nodes"]), "elements", len(elements),
+              "seam nodes", len(child_nodes[0] & child_nodes[1]),
+              "boundary deviation", mesh["boundary"]["worst"])
 
 
 @requires_original

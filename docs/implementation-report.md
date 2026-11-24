@@ -1,5 +1,55 @@
 # Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
+## A12. Hollow lip partition repair · 2026-11-24
+
+Starting checkout `9dd196504864c7fdb310f09eb97c4ed0a902a917`; the handoff was modified and the
+two partition briefs were untracked. The operator's existing port 8765 served API build
+`226c0897c1c8a25b`, release `f17b356730d6`. It was not stopped or modified. The final isolated
+browser run used API build `31b50f8034fdd144`, frontend release `079e1658446f`
+(`index-DOyChL5d.js`) from the uncommitted repaired checkout, on port 18890 and test data.
+The source drawing was read through the normal native importer into a disposable model.
+No solver was launched.
+
+| Acceptance gate | Evidence |
+|---|---|
+| Spline lip geometry | PASS for the reviewed drawing and manufactured imported fit-point fixture. Exact `(27,6) → (27,9)` gives curve-sampled areas **2.432069824 + 95.823644768 mm²**; original **98.255707937 mm²**. Each spline interval was sampled at 101 points after serialize/reload; worst deviation **1.52e-14 mm**. The seven audited guides produce valid, valid, valid, one-region, valid, valid, no-hit respectively. |
+| Centered and mixed topology | PASS in domain/API regressions: centered straight degree-one spline wall gives **42 + 42 mm²**, offset gives **41.994 + 42.006 mm²**. A cap plus a one-wall guide is `mixed`, flags guide 2, and preview and rejected commit create no revision. Viewport recovery removes the flagged guide or adds the opposite wall. |
+| Viewport Apply/reopen | PASS on the reviewed native drawing: actual Edge clicks after pan/zoom `(26.98332,5.98200) → (26.99572,8.99644)` produced HTTP 200 `valid`, one projected seam `(26.98609,6.65484) → (26.99378,8.52396)` and display areas **95.883727 + 2.434599 mm²**. Apply saved the previewed child IDs; both faces were subsequently clicked independently after reopen. |
+| Two-material mesh/deck | PASS: pointer-cut mesh **1319 nodes**, **1179 elements** including rigid panel elements, with **974 + 55** seal elements and **7** common interface nodes. Twelve interface element sides are absent from `SEAL_EXTERIOR`. Sections were `REGION_1/MAT_1` and `REGION_2/MAT_2`. With a 0.02 mm inset of the sampled cavity, seal-element intersection area was below 1e-8 mm² per element; maximum FE boundary deviation was **0.0197401 mm**. Fresh mounting nodes were resolved and saved before deck preparation. |
+
+Baseline reproduction on the unedited checkout: the native imported outer open fit-point spline
+and closed non-periodic fit-point cavity were retained; native and manufactured lip previews raised
+`unsupported_curve`. The exact centered box returned `one_region` and only its right interval,
+whereas y=0.001 returned `valid`. Cap plus one wall returned `valid` with one seam used by zero
+children. Three retained regressions failed before the production edits. The earlier real browser
+HTTP 422 is documented in [the audit](hollow-seal-partition-audit.md).
+
+Area comparisons above use 10,000 straight segments per canonical spline interval; the exact-coordinate
+comparison tolerance is 0.0001 mm². For the actual rounded-pointer cut, the same method gives
+**2.450884458 + 95.804830129 mm²**, within 0.03 mm² per region of the exact-coordinate reference.
+Preview uses coarser display tessellation and is not the curve-area measurement. Exact-coordinate mesh:
+1274 nodes, 985 seal elements, five shared seam nodes, maximum boundary deviation 0.0197401 mm.
+Both exact and pointer meshes were checked against the inset cavity.
+
+Splitting reuses the canonical evaluated spline, preserving poles, weights and knots in the children.
+Interior knot multiplicities are completed before splitting; periodic and unclamped splines remain
+unsupported. Spline/line intersections use the polynomial for each homogeneous Bézier span, including
+knot and sample-boundary crossings. A guide tangent to the cavity is rejected as `tangent_cut`
+rather than reported as an invalid child contour. Every seam must appear with opposing senses on two distinct
+children; otherwise its guide remains editable and Apply is disabled.
+
+Verification: targeted Python **48 passed**; full Python **304 passed, 1 skipped** (opt-in Abaqus
+Python). Translation **863 keys**, encoding **44 files**, typecheck and frontend build passed.
+Targeted viewport suites with the opt-in native drawing **8 passed**, including a manufactured DXF
+lip, a spline-wall through-guide and mixed-draft recovery in both languages. The final full-browser
+run before the final tangent-only geometry follow-up had **114 passed, 4 skipped, 2 failed**: the material-comparison case failed while looking for
+the renamed duplicate, and passed in isolation; desktop Fit/reset expected camera scale `8.56747`
+but received `8.67968`, and failed again in isolation. That same layout failure and values were
+reproduced with the original `f17b356730d6` frontend and the current API. The full browser suite was
+not rerun after the tangent follow-up and is not green; investigate the separate camera-fit failure
+before broad release. No new solver, sensitivity study or
+physical correlation was performed.
+
 ## A11. Left-panel setup, deck readiness, force axis and projected seal cuts · 2026-11-24
 
 Baseline local HEAD `b8252a472a8722808e8b69f37c8adf3ae030ad4e`; remote main

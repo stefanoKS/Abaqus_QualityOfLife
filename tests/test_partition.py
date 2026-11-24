@@ -10,6 +10,7 @@ import math
 
 import pytest
 from fastapi.testclient import TestClient
+from shapely.geometry import Point
 from shapely.ops import unary_union
 
 from packages.engineering import Project, generate_mesh, synthetic
@@ -133,6 +134,103 @@ def test_one_through_stroke_splits_both_walls_of_a_hollow_seal():
         abs(path[0][1] - path[1][1]) < 1e-12 for guide in info["guides"] for path in guide["intervals"]
     )
     Project.model_validate(candidate.model_dump(mode="json"))
+
+
+def test_centered_spline_wall_crossing_is_not_lost():
+    from packages.engineering.model import SplineData
+
+    project = hollow_box()
+    edge = project.edges[3]
+    edge.kind = "spline"
+    edge.spline = SplineData(
+        degree=1,
+        control_points=[(-5, 5, 0), (-5, -5, 0)],
+        knots=[0, 0, 1, 1],
+    )
+    for y in (0, 0.001):
+        _, info = commit(project, "face", [((-6, y), (6, y))], seed="spline-wall")
+        assert info["status"] == "valid"
+        assert len(info["seams"]) == 2
+        assert sorted(info["areas"]) == pytest.approx(sorted([42 + 6 * y, 42 - 6 * y]))
+
+
+def test_spline_intersections_include_close_roots_and_a_knot_vertex():
+    from packages.engineering.model import SplineData
+    from packages.engineering.partition import _line_edge_hits
+
+    project = hollow_box()
+    edge = project.edges[3]
+    edge.kind = "spline"
+    # Two crossings only 0.001 apart in parameter, inside one old sample interval.
+    edge.spline = SplineData(
+        degree=2,
+        control_points=[(0, 0.24999975, 0), (0.5, -0.25000025, 0), (1, 0.24999975, 0)],
+    )
+    hits = _line_edge_hits(project, edge, (0, 0), (1, 0))
+    assert sorted(hit[0] for hit in hits) == pytest.approx([0.4995, 0.5005], abs=1e-8)
+    edge.spline = SplineData(
+        degree=1, control_points=[(0, -1, 0), (1, 0, 0), (2, 1, 0)],
+        knots=[0, 0, 0.5, 1, 1],
+    )
+    hits = _line_edge_hits(project, edge, (0, 0), (1, 0))
+    assert {round(hit[0], 8) for hit in hits} == {0.5}
+    edge.spline = SplineData(
+        degree=2, control_points=[(0, 0.25, 0), (0.5, -0.25, 0), (1, 0.25, 0)],
+    )
+    hits = _line_edge_hits(project, edge, (0, 0), (1, 0))
+    assert hits and all(abs(hit[0] - 0.5) < 1e-7 for hit in hits)
+    edge.spline = SplineData(degree=1, control_points=[(0, 0, 0), (1, 0, 0)])
+    assert _line_edge_hits(project, edge, (0, 0), (1, 0)) == []
+
+
+def test_closed_fit_point_cavity_can_be_cut_at_its_parameter_seam():
+    from packages.engineering.model import SplineData
+
+    project = hollow_box()
+    edge = project.edges[4]
+    edge.kind = "spline"
+    edge.end = edge.start
+    edge.spline = SplineData(
+        fit_points=[(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0), (-2, -2, 0)],
+        closed=True,
+    )
+    project.edges = project.edges[:5]
+    project.faces[0].loops[1] = [edge.id]
+    project = Project.model_validate(project.model_dump(mode="json"))
+    for stroke in (((-6, -2), (6, -2)), ((-2, -6), (-2, 6))):
+        candidate, info = commit(project, "face", [stroke], seed="closed-seam")
+        candidate = Project.model_validate(candidate.model_dump(mode="json"))
+        children = [polygon(candidate, child["id"]) for child in info["children"]]
+        assert info["status"] == "valid"
+        assert len(info["seams"]) == 2
+        assert children[0].intersection(children[1]).area < 1e-8
+        assert not unary_union(children).contains(Point(0, 0))
+
+
+def test_tangent_to_cavity_is_not_mistaken_for_a_transverse_cut():
+    with pytest.raises(PartitionError) as failure:
+        preview(synthetic(), "bulb", [((-10, 11.3), (10, 11.3))], seed="tangent")
+    assert failure.value.code == "tangent_cut"
+    assert preview(synthetic(), "bulb", [((-10, 11.29999), (10, 11.29999))], seed="cross")["status"] == "valid"
+
+
+def test_mixed_draft_rejects_a_seam_with_no_incident_children():
+    strokes = [((-6, 3), (6, 3)), ((-6, 0), (0, 0))]
+    info = preview(hollow_box(), "face", strokes, seed="dangling")
+    assert info["status"] == "mixed"
+    assert info["unused_guides"] == [1]
+    duplicate = preview(
+        hollow_box(), "face", [strokes[0], tuple(reversed(strokes[0])), strokes[1]],
+        seed="duplicate-dangling",
+    )
+    assert duplicate["unused_guides"] == [2]
+    with pytest.raises(PartitionError) as failure:
+        commit(hollow_box(), "face", strokes, seed="dangling")
+    assert failure.value.code == "mixed"
+    _, completed = commit(
+        hollow_box(), "face", strokes + [((0, 0), (6, 0))], seed="complete"
+    )
+    assert completed["status"] == "valid"
 
 
 def test_a_single_wall_cut_opens_the_region_but_keeps_one_region():
@@ -418,7 +516,7 @@ def test_reversed_request_swaps_children_but_not_geometry():
     assert first["area_b"] == pytest.approx(second["area_a"], rel=1e-9)
 
 
-def test_clamped_spline_split_is_exact_and_fit_point_curves_are_rejected():
+def test_spline_trims_preserve_canonical_curve_and_reject_periodic():
     from packages.engineering.model import SplineData
     from packages.engineering.partition import _sub_spline
     from packages.engineering.spline import curve, endpoint_points
@@ -435,9 +533,34 @@ def test_clamped_spline_split_is_exact_and_fit_point_curves_are_rejected():
     shared = tuple(parent.point(parent.max_t * 0.5))
     assert math.dist(endpoint_points(first)[1], shared) < 1e-9
 
-    fit_points = SplineData(fit_points=[(0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 0.0, 0.0)])
+    fit_points = SplineData(
+        fit_points=[(0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 0.0, 0.0)],
+        tangents=[(1, 2, 0), (1, -2, 0)],
+    )
+    closed = SplineData(
+        fit_points=[(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0), (0, 0, 0)],
+        closed=True,
+    )
+    rational = SplineData(
+        degree=2, control_points=[(0, 0, 0), (1, 2, 0), (2, 2, 0), (3, 0, 0)],
+        knots=[0, 0, 0, 0.5, 1, 1, 1], weights=[1, 0.5, 0.7, 1],
+    )
+    for source in (data, fit_points, closed, rational):
+        parent = curve(source)
+        for lo, hi in ((0, 0.25), (0.25, 0.75), (0.75, 1), (0, 0.5), (0.5, 1),
+                       (0, 0.3), (0.2, 0.8), (0.7, 1), (0, 1)):
+            part = _sub_spline(source, lo, hi)
+            part = SplineData.model_validate(part.model_dump(mode="json"))
+            trimmed = curve(part)
+            for index in range(101):
+                fraction = index / 100
+                assert math.dist(
+                    tuple(trimmed.point(trimmed.max_t * fraction)),
+                    tuple(parent.point(parent.max_t * (lo + (hi - lo) * fraction))),
+                ) < 1e-9
+    periodic = fit_points.model_copy(update={"periodic": True})
     with pytest.raises(PartitionError) as failure:
-        _sub_spline(fit_points, 0.0, 0.5)
+        _sub_spline(periodic, 0.0, 0.5)
     assert failure.value.code == "unsupported_curve"
 
 
@@ -542,6 +665,22 @@ def test_api_one_region_preview_is_a_draft_not_a_commit(monkeypatch, tmp_path):
         if response.json()["plan"]["status"] == "one_region":
             assert refused.status_code == 422, refused.text
             assert "one_region" in refused.text
+
+
+def test_api_unfinished_mixed_draft_never_creates_revision(monkeypatch, tmp_path):
+    with api_fixture(monkeypatch, tmp_path) as client:
+        revision = Api(client).create()
+        strokes = [[[-4, 11.6], [4, 11.6]], [[-9, 7], [-6, 7]]]
+        before = client.get(f"/api/projects/{revision['project']}/revisions").json()
+        data = {"base": revision["id"], "face": "bulb", "strokes": strokes}
+        response = client.post("/api/partition/preview", json={**data, "setup": revision["setup"]})
+        assert response.status_code == 200
+        assert response.json()["plan"]["status"] == "mixed"
+        assert response.json()["plan"]["unused_guides"] == [1]
+        rejected = client.post(f"/api/projects/{revision['project']}/partition", json=data)
+        assert rejected.status_code == 422
+        assert "mixed" in rejected.text
+        assert client.get(f"/api/projects/{revision['project']}/revisions").json() == before
 
 
 def test_api_rejected_cut_leaves_revisions_and_source_unchanged(monkeypatch, tmp_path):
