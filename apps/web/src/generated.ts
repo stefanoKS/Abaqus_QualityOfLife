@@ -189,7 +189,12 @@ export interface paths {
         put?: never;
         /**
          * Import Cae Library
-         * @description Register selected eligible cards with a stable fingerprint and provenance.
+         * @description Register every well-formed selected record with its full source data.
+         *
+         *     Registering and running are separate: a record whose source omits a density,
+         *     or whose law this phase cannot emit, is still registered and visible, and
+         *     carries the precise missing input. ``families`` lets a mixed import declare
+         *     the engineering family per card; the per-card hint is a default only.
          */
         post: operations["import_cae_library_api_material_library_cae_import_post"];
         delete?: never;
@@ -538,9 +543,35 @@ export interface paths {
         put?: never;
         /**
          * Duplicate Model
-         * @description Copy the current model into a new, independent model in the same group.
+         * @description Copy the current model into a new, independent model.
+         *
+         *     A copy of a model whose group is archived goes to the internal file-document
+         *     owner, so the copy is editable; an active project group is kept.
          */
         post: operations["duplicate_model_api_projects__pid__duplicate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/projects/{pid}/recover": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Recover Model
+         * @description Recover a stranded model as a distinct, independently editable copy.
+         *
+         *     The original keeps its archived history and every immutable revision; the
+         *     returned model has its own identity under the file-document owner.
+         */
+        post: operations["recover_model_api_projects__pid__recover_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1189,6 +1220,11 @@ export interface components {
              */
             family: string;
             /**
+             * Families
+             * @default {}
+             */
+            families: string;
+            /**
              * Units
              * @default N-mm-s-tonne
              */
@@ -1605,6 +1641,11 @@ export interface components {
              * @default false
              */
             archived: boolean;
+            /**
+             * Internal
+             * @default false
+             */
+            internal: boolean;
         };
         /** GroupCreated */
         GroupCreated: {
@@ -1624,6 +1665,11 @@ export interface components {
              * @default false
              */
             archived: boolean;
+            /**
+             * Internal
+             * @default false
+             */
+            internal: boolean;
             /** Models */
             models: components["schemas"]["Summary"][];
         };
@@ -1631,6 +1677,154 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HyperelasticLaw
+         * @description Abaqus ``*Hyperelastic`` definition with its source model and tables.
+         */
+        "HyperelasticLaw-Input": {
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "MARLOW" | "YEOH" | "OGDEN" | "POLYNOMIAL" | "NEO_HOOKE";
+            /**
+             * N
+             * @default 1
+             */
+            n: number;
+            /**
+             * Test Data
+             * @default false
+             */
+            test_data: boolean;
+            /**
+             * Moduli Time Scale
+             * @default LONG_TERM
+             * @enum {string}
+             */
+            moduli_time_scale: "LONG_TERM" | "INSTANTANEOUS";
+            /**
+             * Lateral
+             * @default false
+             */
+            lateral: boolean;
+            /** Table */
+            table?: number[][];
+            /** Uniaxial */
+            uniaxial?: number[][];
+        };
+        /**
+         * HyperelasticLaw
+         * @description Abaqus ``*Hyperelastic`` definition with its source model and tables.
+         */
+        "HyperelasticLaw-Output": {
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "MARLOW" | "YEOH" | "OGDEN" | "POLYNOMIAL" | "NEO_HOOKE";
+            /**
+             * N
+             * @default 1
+             */
+            n: number;
+            /**
+             * Test Data
+             * @default false
+             */
+            test_data: boolean;
+            /**
+             * Moduli Time Scale
+             * @default LONG_TERM
+             * @enum {string}
+             */
+            moduli_time_scale: "LONG_TERM" | "INSTANTANEOUS";
+            /**
+             * Lateral
+             * @default false
+             */
+            lateral: boolean;
+            /** Table */
+            table: number[][];
+            /** Uniaxial */
+            uniaxial: number[][];
+        };
+        /**
+         * HyperfoamLaw
+         * @description Abaqus ``*Hyperfoam`` definition, either fitted test data or direct.
+         *
+         *     ``lateral`` records whether the source *supplied* lateral nominal strain. The
+         *     supplied library stores zeros in that column while its
+         *     ``lateralNominalStrain`` flag is OFF; those zeros are not measurements and are
+         *     never emitted. ``poisson`` stays ``None`` when the source has no value.
+         */
+        "HyperfoamLaw-Input": {
+            /**
+             * N
+             * @default 1
+             */
+            n: number;
+            /**
+             * Test Data
+             * @default true
+             */
+            test_data: boolean;
+            /**
+             * Moduli
+             * @default LONG_TERM
+             * @enum {string}
+             */
+            moduli: "LONG_TERM" | "INSTANTANEOUS";
+            /**
+             * Lateral
+             * @default false
+             */
+            lateral: boolean;
+            /** Poisson */
+            poisson?: number | null;
+            /** Table */
+            table?: number[][];
+            /** Uniaxial */
+            uniaxial?: number[][];
+        };
+        /**
+         * HyperfoamLaw
+         * @description Abaqus ``*Hyperfoam`` definition, either fitted test data or direct.
+         *
+         *     ``lateral`` records whether the source *supplied* lateral nominal strain. The
+         *     supplied library stores zeros in that column while its
+         *     ``lateralNominalStrain`` flag is OFF; those zeros are not measurements and are
+         *     never emitted. ``poisson`` stays ``None`` when the source has no value.
+         */
+        "HyperfoamLaw-Output": {
+            /**
+             * N
+             * @default 1
+             */
+            n: number;
+            /**
+             * Test Data
+             * @default true
+             */
+            test_data: boolean;
+            /**
+             * Moduli
+             * @default LONG_TERM
+             * @enum {string}
+             */
+            moduli: "LONG_TERM" | "INSTANTANEOUS";
+            /**
+             * Lateral
+             * @default false
+             */
+            lateral: boolean;
+            /** Poisson */
+            poisson: number | null;
+            /** Table */
+            table: number[][];
+            /** Uniaxial */
+            uniaxial: number[][];
         };
         /** Job */
         Job: {
@@ -1718,7 +1912,7 @@ export interface components {
         LibraryCreate: {
             /** Name */
             name: string;
-            card: components["schemas"]["MaterialCard"];
+            card: components["schemas"]["MaterialCard-Input"];
             /**
              * Note
              * @default
@@ -1743,7 +1937,7 @@ export interface components {
             version_count: number;
             /** Usage Count */
             usage_count: number;
-            card: components["schemas"]["MaterialCard"];
+            card: components["schemas"]["MaterialCard-Output"];
             /** Versions */
             versions: components["schemas"]["LibraryVersion"][];
             /** Usage */
@@ -1772,13 +1966,13 @@ export interface components {
             version_count: number;
             /** Usage Count */
             usage_count: number;
-            card: components["schemas"]["MaterialCard"];
+            card: components["schemas"]["MaterialCard-Output"];
         };
         /** LibraryUpdate */
         LibraryUpdate: {
             /** Name */
             name?: string | null;
-            card?: components["schemas"]["MaterialCard"] | null;
+            card?: components["schemas"]["MaterialCard-Input"] | null;
             /**
              * Note
              * @default
@@ -1804,7 +1998,7 @@ export interface components {
         LibraryVersion: {
             /** Version */
             version: number;
-            card: components["schemas"]["MaterialCard"];
+            card: components["schemas"]["MaterialCard-Output"];
             /** Created */
             created: number;
             /** Note */
@@ -1831,9 +2025,9 @@ export interface components {
              * Model
              * @enum {string}
              */
-            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean";
+            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean" | "cae_law";
             /** Density */
-            density: number;
+            density?: number | null;
             /** Young */
             young?: number | null;
             /** Poisson */
@@ -1848,6 +2042,12 @@ export interface components {
                 number,
                 number
             ][];
+            hyperfoam?: components["schemas"]["HyperfoamLaw-Input"] | null;
+            hyperelastic?: components["schemas"]["HyperelasticLaw-Input"] | null;
+            viscoelastic?: components["schemas"]["ViscoelasticLaw-Input"] | null;
+            plastic?: components["schemas"]["PlasticLaw-Input"] | null;
+            mullins?: components["schemas"]["MullinsLaw-Input"] | null;
+            thermal?: components["schemas"]["ThermalLaw-Input"] | null;
             /**
              * Family
              * @default polymer
@@ -1876,9 +2076,9 @@ export interface components {
              * Model
              * @enum {string}
              */
-            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean";
+            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean" | "cae_law";
             /** Density */
-            density: number;
+            density: number | null;
             /** Young */
             young: number | null;
             /** Poisson */
@@ -1893,6 +2093,12 @@ export interface components {
                 number,
                 number
             ][];
+            hyperfoam: components["schemas"]["HyperfoamLaw-Output"] | null;
+            hyperelastic: components["schemas"]["HyperelasticLaw-Output"] | null;
+            viscoelastic: components["schemas"]["ViscoelasticLaw-Output"] | null;
+            plastic: components["schemas"]["PlasticLaw-Output"] | null;
+            mullins: components["schemas"]["MullinsLaw-Output"] | null;
+            thermal: components["schemas"]["ThermalLaw-Output"] | null;
             /**
              * Family
              * @default polymer
@@ -1908,16 +2114,16 @@ export interface components {
          * MaterialCard
          * @description A validated constitutive card independent of any model.
          */
-        MaterialCard: {
+        "MaterialCard-Input": {
             /**
              * Model
              * @enum {string}
              */
-            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean";
+            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean" | "cae_law";
             /** Color */
             color: string;
             /** Density */
-            density: number;
+            density?: number | null;
             /** Young */
             young?: number | null;
             /** Poisson */
@@ -1932,6 +2138,53 @@ export interface components {
                 number,
                 number
             ][];
+            hyperfoam?: components["schemas"]["HyperfoamLaw-Input"] | null;
+            hyperelastic?: components["schemas"]["HyperelasticLaw-Input"] | null;
+            viscoelastic?: components["schemas"]["ViscoelasticLaw-Input"] | null;
+            plastic?: components["schemas"]["PlasticLaw-Input"] | null;
+            mullins?: components["schemas"]["MullinsLaw-Input"] | null;
+            thermal?: components["schemas"]["ThermalLaw-Input"] | null;
+            /**
+             * Family
+             * @default polymer
+             * @enum {string}
+             */
+            family: "polymer" | "metal";
+        };
+        /**
+         * MaterialCard
+         * @description A validated constitutive card independent of any model.
+         */
+        "MaterialCard-Output": {
+            /**
+             * Model
+             * @enum {string}
+             */
+            model: "linear_elastic" | "hyperfoam_test" | "neo_hookean" | "cae_law";
+            /** Color */
+            color: string;
+            /** Density */
+            density?: number | null;
+            /** Young */
+            young?: number | null;
+            /** Poisson */
+            poisson?: number | null;
+            /** C10 */
+            c10?: number | null;
+            /** D1 */
+            d1?: number | null;
+            /** Test Data */
+            test_data?: [
+                number,
+                number,
+                number
+            ][];
+            hyperfoam?: components["schemas"]["HyperfoamLaw-Output"] | null;
+            hyperelastic?: components["schemas"]["HyperelasticLaw-Output"] | null;
+            viscoelastic?: components["schemas"]["ViscoelasticLaw-Output"] | null;
+            plastic?: components["schemas"]["PlasticLaw-Output"] | null;
+            mullins?: components["schemas"]["MullinsLaw-Output"] | null;
+            thermal?: components["schemas"]["ThermalLaw-Output"] | null;
             /**
              * Family
              * @default polymer
@@ -2099,6 +2352,34 @@ export interface components {
              * @default mount
              */
             selection: string;
+        };
+        /**
+         * MullinsLaw
+         * @description Abaqus ``*Mullins Effect`` block, preserved with its base law.
+         */
+        "MullinsLaw-Input": {
+            /**
+             * Definition
+             * @default CONSTANTS
+             * @enum {string}
+             */
+            definition: "CONSTANTS" | "TEST_DATA" | "USER";
+            /** Table */
+            table?: number[][];
+        };
+        /**
+         * MullinsLaw
+         * @description Abaqus ``*Mullins Effect`` block, preserved with its base law.
+         */
+        "MullinsLaw-Output": {
+            /**
+             * Definition
+             * @default CONSTANTS
+             * @enum {string}
+             */
+            definition: "CONSTANTS" | "TEST_DATA" | "USER";
+            /** Table */
+            table: number[][];
         };
         /** NewGroup */
         NewGroup: {
@@ -2333,6 +2614,34 @@ export interface components {
                 1,
                 0
             ];
+        };
+        /**
+         * PlasticLaw
+         * @description Isotropic plastic hardening table (yield stress, plastic strain).
+         */
+        "PlasticLaw-Input": {
+            /**
+             * Hardening
+             * @default ISOTROPIC
+             * @enum {string}
+             */
+            hardening: "ISOTROPIC" | "KINEMATIC" | "COMBINED" | "JOHNSON_COOK";
+            /** Table */
+            table?: number[][];
+        };
+        /**
+         * PlasticLaw
+         * @description Isotropic plastic hardening table (yield stress, plastic strain).
+         */
+        "PlasticLaw-Output": {
+            /**
+             * Hardening
+             * @default ISOTROPIC
+             * @enum {string}
+             */
+            hardening: "ISOTROPIC" | "KINEMATIC" | "COMBINED" | "JOHNSON_COOK";
+            /** Table */
+            table: number[][];
         };
         /** Project */
         "Project-Input": {
@@ -2772,6 +3081,26 @@ export interface components {
              */
             group_archived: boolean;
         };
+        /**
+         * ThermalLaw
+         * @description Thermal-only material data, kept for browsing and export.
+         */
+        "ThermalLaw-Input": {
+            /** Conductivity */
+            conductivity?: number[][];
+            /** Specific Heat */
+            specific_heat?: number[][];
+        };
+        /**
+         * ThermalLaw
+         * @description Thermal-only material data, kept for browsing and export.
+         */
+        "ThermalLaw-Output": {
+            /** Conductivity */
+            conductivity: number[][];
+            /** Specific Heat */
+            specific_heat: number[][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -2791,6 +3120,46 @@ export interface components {
                 number,
                 number
             ];
+        };
+        /**
+         * ViscoelasticLaw
+         * @description Abaqus ``*Viscoelastic`` Prony series (time domain, isotropic).
+         */
+        "ViscoelasticLaw-Input": {
+            /**
+             * Domain
+             * @default TIME
+             * @enum {string}
+             */
+            domain: "TIME" | "FREQUENCY";
+            /**
+             * Time
+             * @default PRONY
+             * @enum {string}
+             */
+            time: "PRONY" | "CREEP" | "RELAXATION";
+            /** Table */
+            table?: number[][];
+        };
+        /**
+         * ViscoelasticLaw
+         * @description Abaqus ``*Viscoelastic`` Prony series (time domain, isotropic).
+         */
+        "ViscoelasticLaw-Output": {
+            /**
+             * Domain
+             * @default TIME
+             * @enum {string}
+             */
+            domain: "TIME" | "FREQUENCY";
+            /**
+             * Time
+             * @default PRONY
+             * @enum {string}
+             */
+            time: "PRONY" | "CREEP" | "RELAXATION";
+            /** Table */
+            table: number[][];
         };
     };
     responses: never;
@@ -3830,6 +4199,37 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Revision"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recover_model_api_projects__pid__recover_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                pid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
                 headers: {
                     [name: string]: unknown;
                 };

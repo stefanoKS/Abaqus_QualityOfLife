@@ -16,6 +16,8 @@ import {
   Archive,
   ArchiveRestore,
   Trash2,
+  FilePlus2,
+  XCircle,
 } from 'lucide-react'
 import {
   request,
@@ -269,6 +271,21 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
       notify(err(e))
     }
   }
+  /** Copy a stranded (archived) model into a new, independently editable one. */
+  async function recoverModel(id: string) {
+    if (!compat.ok) return
+    setBusy(true)
+    try {
+      const copy = await request<Revision>('/api/projects/' + id + '/recover', 'POST', {})
+      await refresh()
+      notify(t('dashboard.modelRecovered'))
+      go('workspace/' + copy.id)
+    } catch (e) {
+      notify(err(e))
+    } finally {
+      setBusy(false)
+    }
+  }
   async function setArchived(kind: 'model' | 'group', id: string, archived: boolean) {
     if (!compat.ok) return
     try {
@@ -426,7 +443,7 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
           {t('dashboard.newProject')}
         </button>
       </div>
-      <FileBar notify={notify} />
+      <FileBar notify={notify} onChanged={() => void refresh()} />
       {creatingGroup && (
         <form className="create-form card" onSubmit={addGroup}>
           <p className="create-hint">{t('dashboard.groupHint')}</p>
@@ -489,33 +506,47 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                 <FolderOpen />
               </span>
               <div>
-                <strong title={group.name}>{group.name}</strong>
+                <strong title={group.name}>
+                  {group.internal ? t('dashboard.fileDocuments') : group.name}
+                </strong>
                 <small>
                   {group.archived ? t('dashboard.archivedBadge') + ' · ' : ''}
                   {t('dashboard.modelsCount', { count: group.models.length })} ·{' '}
-                  {formatDate(group.created)}
+                  {group.internal
+                    ? t('dashboard.fileDocumentsHint')
+                    : formatDate(group.created)}
                 </small>
               </div>
               <div className="spacer" />
-              <button
-                type="button"
-                title={group.archived ? t('dashboard.restore') : t('dashboard.archive')}
-                aria-label={(group.archived ? t('dashboard.restore') : t('dashboard.archive')) + ' · ' + group.name}
-                disabled={!compat.ok}
-                onClick={() => setArchived('group', group.id, !group.archived)}
-              >
-                {group.archived ? <ArchiveRestore /> : <Archive />}
-              </button>
-              <button
-                type="button"
-                className="destructive"
-                title={t('dashboard.deleteGroup')}
-                aria-label={t('dashboard.deleteGroup') + ' · ' + group.name}
-                disabled={!compat.ok}
-                onClick={() => openDelete('group', group.id)}
-              >
-                <Trash2 />
-              </button>
+              {/* The file-document owner is application-managed: it has no archive
+                  or delete control, and the API refuses both actions. */}
+              {!group.internal && (
+                <>
+                  <button
+                    type="button"
+                    title={group.archived ? t('dashboard.restore') : t('dashboard.archive')}
+                    aria-label={
+                      (group.archived ? t('dashboard.restore') : t('dashboard.archive')) +
+                      ' · ' +
+                      group.name
+                    }
+                    disabled={!compat.ok}
+                    onClick={() => setArchived('group', group.id, !group.archived)}
+                  >
+                    {group.archived ? <ArchiveRestore /> : <Archive />}
+                  </button>
+                  <button
+                    type="button"
+                    className="destructive"
+                    title={t('dashboard.deleteGroup')}
+                    aria-label={t('dashboard.deleteGroup') + ' · ' + group.name}
+                    disabled={!compat.ok}
+                    onClick={() => openDelete('group', group.id)}
+                  >
+                    <Trash2 />
+                  </button>
+                </>
+              )}
               <button
                 onClick={() => setModelGroup(modelGroup === group.id ? null : group.id)}
                 disabled={group.archived}
@@ -555,7 +586,12 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
             {group.models.length ? (
               <div className="project-cards">
                 {group.models.map((p) => (
-                  <div className={'model-entry' + (p.archived ? ' archived' : '')} key={p.id}>
+                  <div
+                    className={
+                      'model-entry' + (p.archived || p.group_archived ? ' archived' : '')
+                    }
+                    key={p.id}
+                  >
                     <button className="project-card" onClick={() => go('workspace/' + p.revision)}>
                       <span className="project-symbol">
                         <Layers3 />
@@ -563,7 +599,9 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       <span>
                         <strong title={p.name}>{p.name}</strong>
                         <small>
-                          {p.archived ? t('dashboard.archivedBadge') + ' · ' : ''}
+                          {p.archived || p.group_archived
+                            ? t('dashboard.archivedBadge') + ' · '
+                            : ''}
                           {p.dimension} · {t('dashboard.revision', { number: p.number })} ·{' '}
                           {t('dashboard.revisionCount', { count: p.revisions })}
                         </small>
@@ -586,6 +624,17 @@ export default function Dashboard({ notify }: { notify: (s: string) => void }) {
                       >
                         <Copy />
                       </button>
+                      {(p.archived || p.group_archived) && (
+                        <button
+                          type="button"
+                          disabled={!compat.ok || busy}
+                          title={t('dashboard.recoverModel')}
+                          aria-label={t('dashboard.recoverModel') + ' · ' + p.name}
+                          onClick={() => recoverModel(p.id)}
+                        >
+                          <FilePlus2 />
+                        </button>
+                      )}
                       <button
                         type="button"
                         title={p.archived ? t('dashboard.restore') : t('dashboard.archive')}

@@ -1,5 +1,36 @@
 # Engineering validation
 
+## CAE 2024 material-reference check · 2026-11-25 (CAE license used, no solver)
+
+One Abaqus/CAE 2024 noGUI session (`abaqus cae noGUI=…`) imported the app-emitted material keyword
+blocks for five representative source combinations and re-read every behaviour, option and numerical
+row from the resulting CAE material objects. This checks the **input keywords and values**, not
+solver acceptance, convergence or physical behaviour. No analysis was submitted and no ODB exists.
+
+| Case | Source definition | CAE 2024 re-read | Verdict |
+|---|---|---|---|
+| `E13` | Density + Hyperfoam test data, N=1, `moduli=LONG_TERM`, lateral flag OFF, 130 rows | `n=1`, `testData=ON`, `moduli=LONG_TERM`, 130 rows with the lateral column omitted (CAE pads its storage with 0) | PASS |
+| `EPTO_E110` | Density + direct Hyperfoam, N=1, `moduli=INSTANTANEOUS`, 3 coefficients | `n=1`, `testData=OFF`, `moduli=INSTANTANEOUS`, table equals source | PASS |
+| `DKSPONGEHK` | Density + direct Hyperfoam, N=5, `moduli=INSTANTANEOUS`, 15 coefficients + Prony 3×3 | `n=5`, `moduli=INSTANTANEOUS`, 15-value table equals source; `*Viscoelastic, time=PRONY` 3 rows equal source | PASS |
+| `E18WW` | Density + Yeoh N=3 (6 coefficients) + Mullins constants (3 values) | `type=YEOH`, `n=3`, table equals source; `mullinsEffect` table equals source | PASS |
+| `SPCC` | Density + isotropic elastic + 8-row isotropic plastic table | `*Elastic` and all 8 plastic rows equal source (including the source's non-monotonic row) | PASS |
+
+Two real writer defects were found and fixed by this check; neither had been caught by reading the
+keyword reference:
+
+1. A direct `*Hyperfoam` row must be packed at most **eight values per data line**. The app emitted
+   one 3N-value line, which CAE 2024 rejected (`IndexError: tuple index out of range … *HYPERFOAM`).
+2. CAE 2024 rejects a `DEFINITION` parameter on the Mullins constants form; the accepted keyword is
+   the bare `*Mullins Effect`.
+
+Artifacts (local, ignored by Git): `.local/evidence/cae-reference/` contains the app INPs, the CAE
+re-read JSON (`cae-reference-final.json`), the verdict (`cae-reference-verdict.json`, **5/5 PASS**)
+and the keyword-form matrix that established the two fixes. Library SHA-256
+`7ab001b64d3a35fe6d40bdc9c3feb253b74b4e2480e8615e34be635084dbbca6`, 79,592 bytes, 27 records.
+
+**Not verified.** A licensed solve of any Hyperfoam card, hyperelastic/plastic convergence, the CAE
+GUI Material Library Manager file-open path, and direct N>1 Ogden/Polynomial hyperelastic tables.
+
 ## Independent file and CAE material software checks · 2026-11-25
 
 Release `81fc7a73aa30` previewed all 27 supplied CAE cards. The ordinary import endpoint registered two and skipped 25 when every source record was requested. Exporting the selected PA6 card returned the entire original 27-record library. A synthetic model with unregistered cards could prepare without a registry-related readiness finding. The [audit and execution handoff](file-open-materials-navigation-handoff.md) records the Hyperfoam source options, open-file and fixture reproduction, and full-suite outcomes. This audit used read-only access to operator metadata and disposable application runs. It adds no licensed solver, CAE GUI or physical-correlation evidence.

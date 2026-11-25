@@ -1,7 +1,15 @@
 from typing import Annotated, Literal
 from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
-from packages.engineering.model import Project
+from packages.engineering.model import (
+    HyperelasticLaw,
+    HyperfoamLaw,
+    MullinsLaw,
+    PlasticLaw,
+    Project,
+    ThermalLaw,
+    ViscoelasticLaw,
+)
 
 
 class Contract(BaseModel):
@@ -32,15 +40,24 @@ class NewGroup(Contract):
 class MaterialCard(Contract):
     """A validated constitutive card independent of any model."""
 
-    model: Literal["linear_elastic", "hyperfoam_test", "neo_hookean"]
+    model: Literal["linear_elastic", "hyperfoam_test", "neo_hookean", "cae_law"]
     color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
-    density: float = Field(gt=0, le=1e9)
+    # A registered CAE record may legitimately have no density; it is then
+    # visible and exported but cannot define a new run until an engineer adds one.
+    density: float | None = Field(default=None, gt=0, le=1e9)
     young: float | None = Field(default=None, gt=0, le=1e9)
     poisson: float | None = Field(default=None, gt=-1, lt=0.5)
     # Compressible neo-Hookean: C10 in MPa, D1 in MPa^-1.
     c10: float | None = Field(default=None, gt=0, le=1e9)
     d1: float | None = Field(default=None, gt=0, le=1e9)
     test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
+    # Faithful registered CAE laws, preserved exactly as the source defines them.
+    hyperfoam: HyperfoamLaw | None = None
+    hyperelastic: HyperelasticLaw | None = None
+    viscoelastic: ViscoelasticLaw | None = None
+    plastic: PlasticLaw | None = None
+    mullins: MullinsLaw | None = None
+    thermal: ThermalLaw | None = None
     # Element formulation belongs to the material's engineering family: a polymer
     # weatherstrip quad is CPS4R and a deformable metal quad is CPS4.
     family: Literal["polymer", "metal"] = "polymer"
@@ -167,6 +184,9 @@ class Group(Contract):
     name: str
     created: float
     archived: bool = False
+    # Application-managed owner of standalone file documents. It has no archive
+    # or delete control and is reported for visibility only.
+    internal: bool = False
 
 
 class Save(Contract):

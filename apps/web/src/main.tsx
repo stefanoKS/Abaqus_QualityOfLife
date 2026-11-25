@@ -6,7 +6,7 @@ import Dashboard from './Dashboard'
 import MaterialsPage from './MaterialsPage'
 import Workspace from './Workspace'
 import { RunView } from './RunView'
-import { err, go, lastModel, rememberModel, request, type Revision, type Summary, type Job } from './api'
+import { err, go, rememberModel, request, workspaceTarget, type Revision, type Summary, type Job } from './api'
 import { I18nProvider, useI18n, type Language } from './i18n'
 import { CompatibilityBanner, CompatibilityProvider } from './Compat'
 import './theme/tokens.css'
@@ -34,7 +34,8 @@ function LanguageButton() {
 
 function App() {
   const { t } = useI18n()
-  const [route, setRoute] = useState(location.hash.slice(1)),
+  // A cold start with no route opens the Dashboard, the file entry point.
+  const [route, setRoute] = useState(location.hash.slice(1) || 'dashboard'),
     [rev, setRev] = useState<Revision | null>(null),
     [job, setJob] = useState<Job | undefined>()
   const [message, toast] = useState(''),
@@ -82,14 +83,22 @@ function App() {
     })
     return () => ac.abort()
   }, [view, id])
+  function dashboard() {
+    go('dashboard')
+    toast('')
+  }
   async function workspace() {
     try {
       const ps = await request<Summary[]>('/api/projects')
-      const project = lastModel()
-      // Restore the last model the user opened, else show the dashboard. Never
-      // silently open whichever model happens to sort first.
-      const target = project ? ps.find((p) => p.id === project) : undefined
-      go(target ? 'workspace/' + target.revision : 'dashboard')
+      // The tab's own document first, then the last explicitly opened model.
+      // Never silently open whichever model happens to sort first, and never
+      // reopen a document this tab deliberately closed. A tab document is
+      // remembered by its working head, so match either identity.
+      const target = workspaceTarget()
+      const found = target
+        ? ps.find((p) => p.id === target || p.revision === target)
+        : undefined
+      go(found ? 'workspace/' + found.revision : 'dashboard')
     } catch (e) {
       notify(err(e))
     }
@@ -104,22 +113,24 @@ function App() {
           <span className="brand-name sr-only">{t('app.name')}</span>
         </button>
         <div className="nav-separator" />
+        {/* The file entry point comes first: Dashboard owns New/Open/Close, and
+            Workspace is reached from an open document. */}
         <nav aria-label={t('nav.main')}>
+          <button
+            className={
+              view === 'dashboard' || view === 'diagnostics' || view === 'results' ? 'here' : ''
+            }
+            onClick={dashboard}
+          >
+            <LayoutDashboard />
+            {t('nav.dashboard')}
+          </button>
           <button
             className={!['dashboard', 'diagnostics', 'results', 'materials'].includes(view) ? 'here' : ''}
             onClick={workspace}
           >
             <PanelTop />
             {t('nav.workspace')}
-          </button>
-          <button
-            className={
-              view === 'dashboard' || view === 'diagnostics' || view === 'results' ? 'here' : ''
-            }
-            onClick={() => go('dashboard')}
-          >
-            <LayoutDashboard />
-            {t('nav.dashboard')}
           </button>
           <button className={view === 'materials' ? 'here' : ''} onClick={() => go('materials')}>
             <FlaskConical />

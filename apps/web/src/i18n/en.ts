@@ -143,6 +143,10 @@ export const en: Dictionary = {
   'dashboard.archivedBadge': 'Archived',
   'dashboard.archive': 'Archive',
   'dashboard.restore': 'Restore',
+  'dashboard.fileDocuments': 'File documents',
+  'dashboard.fileDocumentsHint': 'models created or opened from File',
+  'dashboard.recoverModel': 'Recover as an editable copy',
+  'dashboard.modelRecovered': 'Recovered as a new, independently editable model.',
   'dashboard.archived': 'Archived. It can be restored from the dashboard.',
   'dashboard.restored': 'Restored.',
   'dashboard.deleteModel': 'Delete model permanently',
@@ -444,6 +448,15 @@ export const en: Dictionary = {
   'file.chooseResult': 'Choose an .aqresult result file',
   'file.noFile': 'This model is not saved to a file yet.',
   'file.notSaved': 'Not saved to a file',
+  'file.activeDocument': 'Open document',
+  'file.close': 'Close model',
+  'file.closed': 'Closed {name}. It stays in File documents and recent files.',
+  'file.closeTitle': 'Close this model?',
+  'file.closeUnsaved':
+    '“{name}” has changes that are not in {path}. Save them before closing, or close and keep the last saved file.',
+  'file.saveAndClose': 'Save and close',
+  'file.closeWithoutSaving': 'Close without saving',
+  'file.noRevision': 'This model has no current revision.',
   'file.save': 'Save',
   'file.saveAs': 'Save As…',
   'file.saveHint': 'Save the current model to its file (Ctrl+S)',
@@ -487,8 +500,22 @@ export const en: Dictionary = {
   'materialsLibrary.caeHelp':
     'Reads an Abaqus/CAE .lib without executing it, shows what each card would become and registers only the eligible cards you select.',
   'materialsLibrary.caeChoose': 'Choose a .lib file',
-  'materialsLibrary.caeSummary': '{eligible} of {total} cards eligible',
-  'materialsLibrary.caeFamily': 'Structural family for these cards',
+  'materialsLibrary.caeSummary':
+    '{registrable} of {total} records can be registered · {available} are ready for a new run',
+  'materialsLibrary.caeFamily': 'Family',
+  'materialsLibrary.caeFamilyDefault': 'Default family for undeclared cards',
+  'materialsLibrary.caeAvailable': 'Ready for a new 2D run',
+  'materialsLibrary.caeNeed.density': 'Needs a density',
+  'materialsLibrary.caeNeed.structural_law': 'No structural law',
+  'materialsLibrary.caeLawTitle': 'Registered CAE law',
+  'materialsLibrary.caeLawReadOnly':
+    'Read-only source definition. The simplified editor does not rewrite it; register a new version to complete a missing input.',
+  'materialsLibrary.caeRowsShown': 'Showing {shown} of {total} rows; the full table is emitted to the deck.',
+  'materialsLibrary.caeSourceNote':
+    'Columns, options and rows follow the CAE source exactly. Omitted values stay omitted.',
+  'materialsLibrary.densityMissing': 'Not in the source',
+  'materialsLibrary.densityHelp':
+    'A source record may omit density. It stays empty until you supply a value in this new version.',
   'materialsLibrary.caeUnits': 'Declared unit basis',
   'materialsLibrary.caeImport': 'Register {count} card(s)',
   'materialsLibrary.caeImported': '{count} card(s) registered; {skipped} skipped or conflicting.',
@@ -524,6 +551,10 @@ export const en: Dictionary = {
   'materials.versionBump': 'Saving changed values increments the card version.',
   'materials.err.finite': 'Enter a finite number in every field.',
   'materials.err.density': 'Density must be greater than zero.',
+  'materials.err.noLaw':
+    'A registered CAE card needs at least one property block.',
+  'materials.warn.densityMissing':
+    'No density is stored. The card stays visible and exportable but cannot be used in a new run until one is supplied.',
   'materials.err.young': "Young's modulus must be greater than zero.",
   'materials.err.c10': 'Neo-Hookean C10 must be greater than zero (MPa).',
   'materials.err.d1': 'Neo-Hookean D1 must be greater than zero (MPa⁻¹).',

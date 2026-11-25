@@ -45,19 +45,21 @@ def test_library_decodes_without_executing_and_preserves_japanese():
     # Data is parsed as literal values, never executed.
     assert first.data["density"]["table"][0][0] == pytest.approx(1.13e-09)
 
-    decisions = [abaqus_lib.eligibility(card) for card in library.cards]
-    eligible = [item for item in decisions if item["eligible"]]
-    assert {item["name"] for item in eligible} == {"PA6", "METAL"}
-    reasons = {reason["code"] for item in decisions for reason in item["reasons"]}
-    assert {
-        "cae.hyperfoam_unsupported",
-        "cae.hyperelastic_unsupported",
-        "cae.plasticity_unsupported",
-        "cae.viscoelasticity_unsupported",
-        "cae.no_structural_law",
-    } <= reasons
-    # Every ineligible card explains itself; nothing is silently dropped.
-    assert all(item["reasons"] for item in decisions if not item["eligible"])
+    decisions = [abaqus_lib.assessment(card) for card in library.cards]
+    # Registering is separate from running: every well-formed record registers.
+    assert all(item["registrable"] for item in decisions)
+    simplified = {
+        item["name"] for item in decisions if item["model"] == "linear_elastic"
+    }
+    assert simplified == {"PA6", "METAL"}
+    assert sum(1 for item in decisions if item["available"]) == 19
+    assert sum(1 for item in decisions if "density" in item["needs"]) == 7
+    assert sum(1 for item in decisions if "hyperfoam" in item["blocks"]) == 11
+    # Nothing well-formed is dropped, and the run suitability is named precisely.
+    assert not [item for item in decisions if item["reasons"]]
+    assert next(item for item in decisions if item["name"] == "S50C")["needs"] == [
+        "structural_law"
+    ]
 
 
 def test_export_is_byte_faithful_and_round_trips(tmp_path):
@@ -98,7 +100,8 @@ def test_import_registers_eligible_cards_idempotently_and_reports_conflicts(
         body = preview.json()
         assert body["sha256"] == LIBRARY_SHA
         assert len(body["cards"]) == 27
-        assert body["eligible"] == 2
+        assert body["registrable"] == 27
+        assert body["available"] == 19
 
         imported = api.post(
             "/api/material-library/cae/import",
@@ -145,17 +148,21 @@ def test_import_registers_eligible_cards_idempotently_and_reports_conflicts(
         ).json()
         assert again["registered"][0]["existing"] is True
 
-        # An ineligible card is reported, never registered.
+        # An ineligible-for-run card is still registered faithfully; it reports
+        # what a new run would need instead of being silently dropped.
         foam_key = next(
             card.key for card in library.cards if "hyperfoam" in (card.data or {})
         )
-        rejected = api.post(
+        registered_foam = api.post(
             "/api/material-library/cae/import",
             data={"keys": json.dumps([foam_key]), "family": "polymer", "units": "N-mm-s-tonne"},
             files={"file": ("HK_matlib.lib", data)},
         ).json()
-        assert rejected["registered"] == []
-        assert rejected["skipped"][0]["reasons"]
+        assert len(registered_foam["registered"]) == 1
+        assert registered_foam["skipped"] == []
+        foam_detail = material_library.get(registered_foam["registered"][0]["library_id"])
+        assert foam_detail["card"]["model"] == "cae_law"
+        assert foam_detail["card"]["hyperfoam"]["test_data"] is True
 
         # The export writes a CAE-readable file and verifies it before publishing.
         exported = api.post(

@@ -674,7 +674,90 @@ def assembly_assessment(project, mesh):
     return result
 
 
+def _table(rows):
+    return [", ".join(scalar(value) for value in row) for row in rows]
+
+
+def _hyperfoam_lines(block):
+    """Emit one ``*Hyperfoam`` card exactly as its registered source defines it.
+
+    Test-data input keeps the supplied columns; lateral nominal strain is written
+    only when the source says it was measured, never because a storage column was
+    zero-filled. Direct coefficients keep their modulus time basis.
+    """
+    options = [f"n={block.n}"]
+    if block.moduli == "INSTANTANEOUS":
+        options.append("moduli=INSTANTANEOUS")
+    if block.test_data:
+        options.append("test data input")
+    if block.poisson is not None:
+        options.append(f"poisson={scalar(block.poisson)}")
+    lines = ["*Hyperfoam, " + ", ".join(options)]
+    if block.test_data:
+        lines.append("*Uniaxial Test Data")
+        return lines + _table(block.uniaxial)
+    # The registered row is already in keyword order: mu_1, alpha_1, ...,
+    # mu_N, alpha_N, nu_1 ... nu_N. Abaqus reads at most eight values per data
+    # line, so the row is packed, not reordered (verified against CAE 2024).
+    emitted = []
+    for row in block.table:
+        for start in range(0, len(row), 8):
+            emitted.append(", ".join(scalar(value) for value in row[start : start + 8]))
+    return lines + emitted
+
+
+def _mullins_definition(definition):
+    """Map the registered source token to the Abaqus ``*Mullins Effect`` options.
+
+    CAE 2024's material editor stores the direct Ogden-Roxburgh constants as
+    "CONSTANTS", but its keyword reader rejects a ``DEFINITION`` parameter on this
+    option (verified with writeInput/import): the constants form is the bare
+    keyword, and only test-data input adds a parameter.
+    """
+    return {
+        "CONSTANTS": "",
+        "TEST_DATA": "test data input",
+        "EXPONENTIAL": "definition=EXPONENTIAL",
+        "SLOW_DECAY": "definition=SLOW DECAY",
+        "USER": "definition=USER",
+    }.get(definition, "")
+
+
+def _hyperelastic_lines(block):
+    name = {
+        "MARLOW": "marlow",
+        "YEOH": "yeoh",
+        "OGDEN": "ogden",
+        "POLYNOMIAL": "polynomial",
+        "NEO_HOOKE": "neo hooke",
+    }[block.type]
+    options = [name]
+    if block.type in ("OGDEN", "POLYNOMIAL") and block.n != 1:
+        options.append(f"n={block.n}")
+    if block.moduli_time_scale == "INSTANTANEOUS":
+        options.append("moduli=INSTANTANEOUS")
+    if block.test_data:
+        options.append("test data input")
+    lines = ["*Hyperelastic, " + ", ".join(options)]
+    if block.test_data:
+        lines.append("*Uniaxial Test Data")
+        return lines + _table(block.uniaxial)
+    return lines + _table(block.table)
+
+
 def material_cards(material, name):
+    """Emit the exact submitted material definition.
+
+    A card registered from a CAE library reproduces its source law, options,
+    active columns and every numerical row. Missing inputs are refused by name
+    instead of being substituted; a registered card alone is never evidence that
+    its law is complete for this procedure.
+    """
+    if material.density is None or material.density <= 0:
+        raise ValueError(
+            f"Material {material.name!r} has no density. Add a density in a new "
+            "registered library version before preparing an implicit-dynamics deck."
+        )
     lines = [f"*Material, name={name}", "*Density", scalar(material.density)]
     if material.model == "linear_elastic":
         if (
@@ -700,6 +783,34 @@ def material_cards(material, name):
                 "A compressible neo-Hookean card needs C10 (MPa) and D1 (MPa^-1), both > 0."
             )
         lines += ["*Hyperelastic, neo Hooke", f"{scalar(material.c10)}, {scalar(material.d1)}"]
+    elif material.model == "cae_law":
+        if not material.structural_law:
+            raise ValueError(
+                f"Material {material.name!r} has no structural law; only thermal data is "
+                "registered. Add an elastic, hyperelastic or hyperfoam law in a new version."
+            )
+        if material.young is not None and material.poisson is not None:
+            lines += ["*Elastic", f"{scalar(material.young)}, {scalar(material.poisson)}"]
+        if material.hyperfoam:
+            lines += _hyperfoam_lines(material.hyperfoam)
+        if material.hyperelastic:
+            lines += _hyperelastic_lines(material.hyperelastic)
+        if material.viscoelastic:
+            options = ["time=" + material.viscoelastic.time]
+            lines += ["*Viscoelastic, " + ", ".join(options)]
+            lines += _table(material.viscoelastic.table)
+        if material.mullins:
+            suffix = _mullins_definition(material.mullins.definition)
+            lines += ["*Mullins Effect" + (", " + suffix if suffix else "")]
+            lines += _table(material.mullins.table)
+        if material.plastic:
+            lines += [f"*Plastic, hardening={material.plastic.hardening}"]
+            lines += _table(material.plastic.table)
+        if material.thermal:
+            if material.thermal.conductivity:
+                lines += ["*Conductivity"] + _table(material.thermal.conductivity)
+            if material.thermal.specific_heat:
+                lines += ["*Specific Heat"] + _table(material.thermal.specific_heat)
     else:
         raise ValueError("Unsupported material model.")
     return lines

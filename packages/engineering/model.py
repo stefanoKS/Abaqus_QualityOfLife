@@ -3,7 +3,7 @@
 from typing import Annotated, Literal
 import math
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .spline import endpoint_points as spline_endpoints
 from .roles import derive_mode
@@ -114,6 +114,130 @@ class Component(Model):
     role: Literal["seal", "moving_panel", "vehicle_body", "unassigned"]
 
 
+class Matrix(Model):
+    """A material data table: rows of numbers, in source column order."""
+
+    rows: list[list[float]] = Field(default_factory=list, max_length=2048)
+
+    @field_validator("rows")
+    @classmethod
+    def check_shape(cls, rows):
+        if rows:
+            width = len(rows[0])
+            if width == 0 or any(len(row) != width for row in rows):
+                raise ValueError("Every row of a material table must have the same width.")
+        return rows
+
+
+class HyperfoamLaw(Model):
+    """Abaqus ``*Hyperfoam`` definition, either fitted test data or direct.
+
+    ``lateral`` records whether the source *supplied* lateral nominal strain. The
+    supplied library stores zeros in that column while its
+    ``lateralNominalStrain`` flag is OFF; those zeros are not measurements and are
+    never emitted. ``poisson`` stays ``None`` when the source has no value.
+    """
+
+    n: Annotated[int, Field(ge=1, le=6)] = 1
+    test_data: bool = True
+    moduli: Literal["LONG_TERM", "INSTANTANEOUS"] = "LONG_TERM"
+    lateral: bool = False
+    poisson: float | None = None
+    table: list[list[float]] = Field(default_factory=list, max_length=8)
+    uniaxial: list[list[float]] = Field(default_factory=list, max_length=2048)
+
+    @model_validator(mode="after")
+    def check_table(self):
+        if self.test_data:
+            if len(self.uniaxial) < 3:
+                raise ValueError("Hyperfoam test data needs at least three samples.")
+            allowed = (3,) if self.lateral else (2, 3)
+            if any(len(row) not in allowed for row in self.uniaxial):
+                raise ValueError(
+                    "Hyperfoam test data rows carry stress and strain, plus lateral "
+                    "strain only when it was measured."
+                )
+            if self.lateral and any(len(row) != 3 for row in self.uniaxial):
+                raise ValueError("Lateral strain is enabled, so every row needs three columns.")
+        else:
+            if not self.table:
+                raise ValueError("Direct Hyperfoam coefficients are required.")
+            if any(len(row) != 3 * self.n for row in self.table):
+                raise ValueError(
+                    f"Hyperfoam N={self.n} needs {3 * self.n} coefficients per row."
+                )
+        return self
+
+
+class HyperelasticLaw(Model):
+    """Abaqus ``*Hyperelastic`` definition with its source model and tables."""
+
+    type: Literal["MARLOW", "YEOH", "OGDEN", "POLYNOMIAL", "NEO_HOOKE"]
+    n: Annotated[int, Field(ge=1, le=6)] = 1
+    test_data: bool = False
+    moduli_time_scale: Literal["LONG_TERM", "INSTANTANEOUS"] = "LONG_TERM"
+    lateral: bool = False
+    table: list[list[float]] = Field(default_factory=list, max_length=8)
+    uniaxial: list[list[float]] = Field(default_factory=list, max_length=2048)
+
+    @model_validator(mode="after")
+    def check_table(self):
+        if self.test_data:
+            if len(self.uniaxial) < 3:
+                raise ValueError("Hyperelastic test data needs at least three samples.")
+            if any(len(row) not in (2, 3) for row in self.uniaxial):
+                raise ValueError("Hyperelastic test data rows carry stress and strain.")
+        elif not self.table:
+            raise ValueError("Direct hyperelastic coefficients are required.")
+        return self
+
+
+class ViscoelasticLaw(Model):
+    """Abaqus ``*Viscoelastic`` Prony series (time domain, isotropic)."""
+
+    domain: Literal["TIME", "FREQUENCY"] = "TIME"
+    time: Literal["PRONY", "CREEP", "RELAXATION"] = "PRONY"
+    table: list[list[float]] = Field(default_factory=list, max_length=64)
+
+    @model_validator(mode="after")
+    def check_table(self):
+        if self.time == "PRONY":
+            if not self.table:
+                raise ValueError("A Prony series needs at least one row.")
+            if any(len(row) != 3 for row in self.table):
+                raise ValueError("Prony rows carry g, k and the time constant tau.")
+        return self
+
+
+class PlasticLaw(Model):
+    """Isotropic plastic hardening table (yield stress, plastic strain)."""
+
+    hardening: Literal["ISOTROPIC", "KINEMATIC", "COMBINED", "JOHNSON_COOK"] = "ISOTROPIC"
+    table: list[list[float]] = Field(default_factory=list, max_length=512)
+
+    @model_validator(mode="after")
+    def check_table(self):
+        if not self.table:
+            raise ValueError("A plastic law needs a hardening table.")
+        if any(len(row) != 2 for row in self.table):
+            raise ValueError("Plastic rows carry yield stress and plastic strain.")
+        return self
+
+
+class MullinsLaw(Model):
+    """Abaqus ``*Mullins Effect`` block, preserved with its base law."""
+
+    definition: Literal["CONSTANTS", "TEST_DATA", "USER"] = "CONSTANTS"
+    table: list[list[float]] = Field(default_factory=list, max_length=512)
+
+
+class ThermalLaw(Model):
+    """Thermal-only material data, kept for browsing and export."""
+
+    conductivity: list[list[float]] = Field(default_factory=list, max_length=512)
+    specific_heat: list[list[float]] = Field(default_factory=list, max_length=512)
+
+
 class Material(Model):
     id: Id
     name: Name
@@ -122,13 +246,26 @@ class Material(Model):
     # ``neo_hookean`` is a compressible solid-rubber law: C10 in stress units
     # (MPa) and D1 in inverse stress units (MPa^-1). It is distinct from the
     # hyperfoam test-data law and from linear elasticity; no card is relabelled.
-    model: Literal["linear_elastic", "hyperfoam_test", "neo_hookean"]
-    density: Positive
+    # ``cae_law`` is a faithful registered CAE library record: its behaviour lives
+    # in the typed blocks below and the simplified editor does not rewrite it.
+    model: Literal["linear_elastic", "hyperfoam_test", "neo_hookean", "cae_law"]
+    # Density is required to run, but a source record may legitimately omit it.
+    # Registration keeps it empty so the missing input is visible, never guessed.
+    density: Positive | None = None
     young: Positive | None = None
     poisson: Annotated[float, Field(gt=-1, lt=0.5)] | None = None
     c10: Positive | None = None
     d1: Positive | None = None
     test_data: list[tuple[float, float, float]] = Field(default_factory=list, max_length=1024)
+    # Faithful CAE library laws. They are mutually compatible exactly as the
+    # source defines them: a hyperfoam with a Prony series, a hyperelastic with
+    # Mullins softening, an elastic-plastic metal, or thermal-only data.
+    hyperfoam: HyperfoamLaw | None = None
+    hyperelastic: HyperelasticLaw | None = None
+    viscoelastic: ViscoelasticLaw | None = None
+    plastic: PlasticLaw | None = None
+    mullins: MullinsLaw | None = None
+    thermal: ThermalLaw | None = None
     # Explicit engineering family. Reduced integration belongs to the element
     # formulation, not to the law: a weatherstrip polymer quad meshes as CPS4R and
     # a deformable metal quad as full-integration CPS4. A linear elastic law alone
@@ -139,24 +276,59 @@ class Material(Model):
     library_id: Annotated[str, Field(max_length=80)] | None = None
     library_version: Annotated[int, Field(ge=1)] | None = None
 
+    @property
+    def structural_law(self) -> bool:
+        """True when this card can define a continuum structural response."""
+        return bool(
+            self.model in ("linear_elastic", "hyperfoam_test", "neo_hookean")
+            or (self.young is not None and self.poisson is not None)
+            or self.hyperfoam
+            or self.hyperelastic
+            or self.plastic
+        )
+
     @model_validator(mode="after")
     def check_card(self):
-        if self.family == "metal" and self.model != "linear_elastic":
+        # A metal region meshes as a full-integration quad, so it must carry a
+        # structural law the element can use. A thermal-only registered record has
+        # no structural behaviour at all and is never assigned to a region; the
+        # family it was imported with is kept as declared metadata.
+        if self.family == "metal" and self.structural_law and self.model not in (
+            "linear_elastic",
+            "cae_law",
+        ):
             raise ValueError(
-                "A metal family card uses the linear elastic law in this phase; "
-                "rubber laws stay polymer."
+                "A metal family card uses a structural elastic/hyperelastic law in this "
+                "phase; rubber test-data cards stay polymer."
             )
         if self.model == "linear_elastic" and (self.young is None or self.poisson is None):
             raise ValueError("Enter Young's modulus and Poisson's ratio for the elastic card.")
+        if self.model == "linear_elastic" and self.density is None:
+            raise ValueError("A linear elastic card needs a density.")
         if self.model == "hyperfoam_test" and len(self.test_data) < 3:
             raise ValueError("Supply at least three uniaxial test samples for hyperfoam.")
         if self.model == "neo_hookean" and (self.c10 is None or self.d1 is None):
             raise ValueError(
                 "A compressible neo-Hookean card needs C10 (MPa) and D1 (MPa^-1)."
             )
+        if self.model == "cae_law" and not (
+            self.hyperfoam
+            or self.hyperelastic
+            or self.plastic
+            or self.elastic_table
+            or self.thermal
+        ):
+            raise ValueError("A registered CAE card needs at least one property block.")
         if (self.library_id is None) != (self.library_version is None):
             raise ValueError("A library pin needs both the material id and its version.")
         return self
+
+    @property
+    def elastic_table(self) -> bool:
+        """True when the card carries isotropic elastic constants."""
+        return self.model == "linear_elastic" or (
+            self.young is not None and self.poisson is not None
+        )
 
 
 class Selection(Model):

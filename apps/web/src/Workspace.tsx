@@ -33,6 +33,8 @@ import {
   artifact,
   err,
   go,
+  rememberActiveDocument,
+  rememberRecentFile,
   replaceRoute,
   replaceRouteSilent,
   request,
@@ -268,6 +270,9 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // last wrote. A different on-disk file is a conflict until overwrite is chosen.
   const [filePath, setFilePath] = useState('')
   const [fileSha, setFileSha] = useState('')
+  // The revision actually packaged into ``filePath``. It is tracked separately
+  // from the working head so Close can tell "the file is behind the model".
+  const [fileRevision, setFileRevision] = useState('')
   const [fileDialog, setFileDialog] = useState(false)
   const [folderDraft, setFolderDraft] = useState('')
   const [nameDraft, setNameDraft] = useState('')
@@ -369,15 +374,45 @@ export default function Workspace({ initial, locked, notify }: Props) {
     // external edit a conflict rather than a silent overwrite.
     try {
       const raw = localStorage.getItem('model-file:' + initial.project)
-      const parsed = raw ? (JSON.parse(raw) as { path?: string; sha?: string }) : null
+      const parsed = raw
+        ? (JSON.parse(raw) as { path?: string; sha?: string; revision?: string })
+        : null
       setFilePath(parsed?.path ?? '')
       setFileSha(parsed?.sha ?? '')
+      setFileRevision(parsed?.revision ?? '')
     } catch {
       setFilePath('')
       setFileSha('')
+      setFileRevision('')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initial.project])
+  // The tab-scoped document session is what Dashboard's Close control acts on.
+  // It records the working head and the exact revision the file contains.
+  useEffect(() => {
+    if (locked) return
+    rememberActiveDocument({
+      project: rev.project,
+      revision: rev.id,
+      name: rev.setup.name,
+      path: filePath,
+      sha: fileSha,
+      fileRevision,
+      dirty: dirty || autosave.state.dirty || autosave.state.phase === 'pending',
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    rev.project,
+    rev.id,
+    rev.setup.name,
+    filePath,
+    fileSha,
+    fileRevision,
+    dirty,
+    autosave.state.dirty,
+    autosave.state.phase,
+    locked,
+  ])
   // Ctrl+S flushes the current model to the portable file. A ref keeps the
   // listener stable while the handler sees the newest path and head.
   const saveShortcut = useRef<() => void>(() => undefined)
@@ -1249,14 +1284,22 @@ export default function Workspace({ initial, locked, notify }: Props) {
         .slice(0, 60) || 'model'
     )
   }
+  /**
+   * Package a file. This is the one save path for the Save button, Ctrl+S,
+   * Save As and Save & Close: a valid field edit is committed by the workspace
+   * autosave first, and the revision returned by that flush is what the file
+   * contains. Packaging the previously rendered head would silently leave the
+   * newest edit on disk-out-of-date.
+   */
   async function writeModel(path: string, overwrite = false) {
     setFileBusy(true)
     try {
+      const head = await save()
       const saved = await request<{ path: string; sha256: string }>(
         '/api/files/model/save',
         'POST',
         {
-          revision: rev.id,
+          revision: head.id,
           path,
           base_sha: fileSha || undefined,
           overwrite,
@@ -1264,14 +1307,19 @@ export default function Workspace({ initial, locked, notify }: Props) {
       )
       setFilePath(saved.path)
       setFileSha(saved.sha256)
+      setFileRevision(head.id)
       try {
         localStorage.setItem(
           'model-file:' + rev.project,
-          JSON.stringify({ path: saved.path, sha: saved.sha256 }),
+          JSON.stringify({ path: saved.path, sha: saved.sha256, revision: head.id }),
         )
       } catch {
         // The pathname is still shown for this session.
       }
+      // A saved file is how the user finds the document again after Close.
+      rememberRecentFile({ path: saved.path, kind: 'model' })
+      // The disk write is what "saved to file" means; the working-head write
+      // alone never reports it.
       notify(t('file.savedTo', { path: saved.path }))
     } catch (error) {
       const message = err(error)
@@ -1282,6 +1330,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
           return
         }
       } else {
+        // Keep the draft and the document open when the disk write fails.
         notify(message)
       }
     } finally {
@@ -1289,7 +1338,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
     }
   }
   function saveModel() {
-    if (locked || archivedModel) return
+    if (locked || archivedModel || fileBusy) return
     if (filePath) {
       void writeModel(filePath)
       return
@@ -1355,7 +1404,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
             version: 1,
             model: detail.card.model,
             color: detail.card.color,
-            density: detail.card.density,
+            density: detail.card.density ?? null,
             young: detail.card.young ?? null,
             poisson: detail.card.poisson ?? null,
             c10: detail.card.c10 ?? null,
@@ -1364,6 +1413,12 @@ export default function Workspace({ initial, locked, notify }: Props) {
               (row) => [row[0], row[1], row[2]] as [number, number, number],
             ),
             family: detail.card.family ?? 'polymer',
+            hyperfoam: detail.card.hyperfoam ?? null,
+            hyperelastic: detail.card.hyperelastic ?? null,
+            viscoelastic: detail.card.viscoelastic ?? null,
+            plastic: detail.card.plastic ?? null,
+            mullins: detail.card.mullins ?? null,
+            thermal: detail.card.thermal ?? null,
             library_id: detail.id,
             library_version: detail.current_version,
           }
@@ -1382,7 +1437,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
         if (!card) return
         card.model = detail.card.model
         card.color = detail.card.color
-        card.density = detail.card.density
+        card.density = detail.card.density ?? null
         card.young = detail.card.young ?? null
         card.poisson = detail.card.poisson ?? null
         card.c10 = detail.card.c10 ?? null
@@ -1390,6 +1445,13 @@ export default function Workspace({ initial, locked, notify }: Props) {
         card.test_data = (detail.card.test_data ?? []).map(
           (row) => [row[0], row[1], row[2]] as [number, number, number],
         )
+        card.hyperfoam = detail.card.hyperfoam ?? null
+        card.hyperelastic = detail.card.hyperelastic ?? null
+        card.viscoelastic = detail.card.viscoelastic ?? null
+        card.plastic = detail.card.plastic ?? null
+        card.mullins = detail.card.mullins ?? null
+        card.thermal = detail.card.thermal ?? null
+        card.family = detail.card.family ?? 'polymer'
         card.library_id = detail.id
         card.library_version = detail.current_version
       })
@@ -2256,6 +2318,45 @@ export default function Workspace({ initial, locked, notify }: Props) {
                           ))}
                         </select>
                       </label>
+                      {mat?.model === 'cae_law' && (
+                        <div className="cae-law" data-testid="cae-law-view">
+                          <h3>{t('materialsLibrary.caeLawTitle')}</h3>
+                          <ul className="issue-list">
+                            {(
+                              [
+                                [
+                                  'hyperfoam',
+                                  mat.hyperfoam
+                                    ? `N=${mat.hyperfoam.n} · ${mat.hyperfoam.moduli}${
+                                        mat.hyperfoam.test_data ? ' · test data' : ''
+                                      }`
+                                    : '',
+                                ],
+                                [
+                                  'hyperelastic',
+                                  mat.hyperelastic
+                                    ? `${mat.hyperelastic.type} · ${mat.hyperelastic.moduli_time_scale}`
+                                    : '',
+                                ],
+                                [
+                                  'viscoelastic',
+                                  mat.viscoelastic ? mat.viscoelastic.time : '',
+                                ],
+                                ['plastic', mat.plastic ? mat.plastic.hardening : ''],
+                                ['mullins', mat.mullins ? mat.mullins.definition : ''],
+                                ['thermal', mat.thermal ? 'conductivity' : ''],
+                              ] as [string, string][]
+                            )
+                              .filter(([, detail]) => detail)
+                              .map(([key, detail]) => (
+                                <li key={key}>
+                                  {key} · {detail}
+                                </li>
+                              ))}
+                          </ul>
+                          <small>{t('materialsLibrary.caeLawReadOnly')}</small>
+                        </div>
+                      )}
                       {mat && (
                         <>
                           <h3>{t('materials.assigned')}</h3>
@@ -2269,7 +2370,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
                                   : t('materials.modelLinear'),
                               ],
                               [t('materials.cardVersion'), 'v' + mat.version],
-                              [t('materials.density'), mat.density.toExponential(2)],
+                              [
+                                t('materials.density'),
+                                mat.density == null ? '—' : mat.density.toExponential(2),
+                              ],
                               ...(mat.model === 'hyperfoam_test'
                                 ? [
                                     [

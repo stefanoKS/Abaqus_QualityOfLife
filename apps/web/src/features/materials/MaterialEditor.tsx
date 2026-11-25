@@ -28,8 +28,14 @@ export function materialIssues(material: Material): MaterialIssues {
   const errors: TranslationKey[] = []
   const warnings: TranslationKey[] = []
   if (!material.name.trim()) errors.push('materials.err.empty')
-  if (!Number.isFinite(material.density) || material.density <= 0)
+  // A registered CAE record may legitimately have no density: it stays visible
+  // and exportable, and the run path names the missing input. An explicitly
+  // zero or negative density is still an error.
+  if (material.density === null || material.density === undefined) {
+    warnings.push('materials.warn.densityMissing')
+  } else if (!Number.isFinite(material.density) || material.density <= 0) {
     errors.push('materials.err.density')
+  }
   if (material.model === 'linear_elastic') {
     if (material.young === null || !Number.isFinite(material.young) || material.young <= 0)
       errors.push('materials.err.young')
@@ -45,6 +51,13 @@ export function materialIssues(material: Material): MaterialIssues {
       errors.push('materials.err.c10')
     if (material.d1 === null || !Number.isFinite(material.d1) || material.d1 <= 0)
       errors.push('materials.err.d1')
+  } else if (material.model === 'cae_law') {
+    // The registered law is typed and validated by the server; the simplified
+    // editor never rewrites it. Only the density may be completed here.
+    const blocks = ['hyperfoam', 'hyperelastic', 'plastic', 'thermal'] as const
+    if (!blocks.some((key) => Boolean((material as unknown as Record<string, unknown>)[key]))) {
+      errors.push('materials.err.noLaw')
+    }
   } else {
     const rows = material.test_data
     if (rows.length < 3) errors.push('materials.err.samples')
@@ -87,6 +100,12 @@ function freshCard(materials: Material[], name: string): Material {
     family: 'polymer',
     library_id: null,
     library_version: null,
+    hyperfoam: null,
+    hyperelastic: null,
+    viscoelastic: null,
+    plastic: null,
+    mullins: null,
+    thermal: null,
   }
 }
 
@@ -496,7 +515,9 @@ export function MaterialEditor({
             {t('materials.model')}
             <select
               value={card.model}
-              disabled={disabled}
+              // A registered CAE card's law is not rewritten by this simplified
+              // editor; a new library version is how a missing input is supplied.
+              disabled={disabled || card.model === 'cae_law'}
               onChange={(e) => {
                 const model = e.target.value as Material['model']
                 // Switching to hyperfoam needs the minimum sample set to stay valid.
@@ -518,6 +539,9 @@ export function MaterialEditor({
                 })
               }}
             >
+              {card.model === 'cae_law' && (
+                <option value="cae_law">{t('materialsLibrary.caeLawTitle')}</option>
+              )}
               {MODELS.map((option) => (
                 <option key={option.id} value={option.id}>
                   {t(option.labelKey)}
@@ -536,7 +560,10 @@ export function MaterialEditor({
               }
             >
               <option value="polymer">{t('materials.familyPolymer')}</option>
-              <option value="metal" disabled={card.model !== 'linear_elastic'}>
+              <option
+                value="metal"
+                disabled={card.model !== 'linear_elastic' && card.model !== 'cae_law'}
+              >
                 {t('materials.familyMetal')}
               </option>
             </select>
@@ -557,7 +584,9 @@ export function MaterialEditor({
               inputMode="decimal"
               step="any"
               min={0}
-              value={Number.isFinite(card.density) ? card.density : ''}
+              value={
+                card.density != null && Number.isFinite(card.density) ? card.density : ''
+              }
               disabled={disabled}
               onChange={(e) => onUpdate(card.id, { density: Number(e.target.value) })}
             />
@@ -619,10 +648,55 @@ export function MaterialEditor({
                 <small>{t('materials.d1Hint')}</small>
               </label>
             </>
+          ) : card.model === 'cae_law' ? (
+            <div className="cae-law" data-testid="cae-law-view">
+              <h3>{t('materialsLibrary.caeLawTitle')}</h3>
+              <p className="field-hint">{t('materialsLibrary.caeLawReadOnly')}</p>
+              <ul className="issue-list">
+                {(
+                  [
+                    ['elastic', card.young != null && card.poisson != null, ''],
+                    [
+                      'hyperfoam',
+                      Boolean(card.hyperfoam),
+                      card.hyperfoam
+                        ? `N=${card.hyperfoam.n} · ${card.hyperfoam.moduli}${
+                            card.hyperfoam.test_data ? ' · test data' : ''
+                          }`
+                        : '',
+                    ],
+                    [
+                      'hyperelastic',
+                      Boolean(card.hyperelastic),
+                      card.hyperelastic
+                        ? `${card.hyperelastic.type} · ${card.hyperelastic.moduli_time_scale}`
+                        : '',
+                    ],
+                    [
+                      'viscoelastic',
+                      Boolean(card.viscoelastic),
+                      card.viscoelastic ? card.viscoelastic.time : '',
+                    ],
+                    ['mullins', Boolean(card.mullins), ''],
+                    ['plastic', Boolean(card.plastic), ''],
+                    ['thermal', Boolean(card.thermal), ''],
+                  ] as [string, boolean, string][]
+                )
+                  .filter(([, present]) => present)
+                  .map(([key, , detail]) => (
+                    <li key={key}>
+                      {key}
+                      {detail ? ' · ' + detail : ''}
+                    </li>
+                  ))}
+              </ul>
+              <small>{t('materialsLibrary.caeSourceNote')}</small>
+            </div>
           ) : (
             <>
               <h3>
-                {t('materials.testData')} · {t('materials.samples', { count: card.test_data.length })}
+                {t('materials.testData')} ·{' '}
+                {t('materials.samples', { count: card.test_data.length })}
               </h3>
               <TestDataTable
                 material={card}

@@ -94,7 +94,8 @@ def initialize():
           input_hash TEXT, manifest TEXT NOT NULL DEFAULT '[]');
         CREATE INDEX IF NOT EXISTS job_queue ON jobs(solver, extraction, created);
         CREATE TABLE IF NOT EXISTS groups(
-          id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL);
+          id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL,
+          archived INTEGER NOT NULL DEFAULT 0, internal INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS deletions(
           token TEXT PRIMARY KEY, kind TEXT NOT NULL, target TEXT NOT NULL,
           payload TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL,
@@ -105,8 +106,10 @@ def initialize():
         CREATE TABLE IF NOT EXISTS material_versions(
           library_id TEXT NOT NULL REFERENCES material_library(id),
           version INTEGER NOT NULL, model TEXT NOT NULL, color TEXT NOT NULL,
-          density REAL NOT NULL, young REAL, poisson REAL, test_data TEXT NOT NULL,
+          density REAL, young REAL, poisson REAL, test_data TEXT NOT NULL,
           created REAL NOT NULL, note TEXT NOT NULL DEFAULT '',
+          c10 REAL, d1 REAL, family TEXT NOT NULL DEFAULT 'polymer', source TEXT,
+          properties TEXT,
           PRIMARY KEY(library_id, version));
         CREATE TABLE IF NOT EXISTS creations(
           token TEXT PRIMARY KEY, group_id TEXT NOT NULL, project_id TEXT NOT NULL,
@@ -133,6 +136,15 @@ def initialize():
         group_columns = {row["name"] for row in db.execute("PRAGMA table_info(groups)")}
         if "archived" not in group_columns:
             db.execute("ALTER TABLE groups ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        # An internal owner holds independently opened/created file documents. It
+        # is selected by this flag, never by a display name, and it has no archive
+        # or delete control. Exactly one such row may exist.
+        if "internal" not in group_columns:
+            db.execute("ALTER TABLE groups ADD COLUMN internal INTEGER NOT NULL DEFAULT 0")
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS groups_single_internal "
+            "ON groups(internal) WHERE internal=1"
+        )
         # Mesh-first workflow: a mesh job records its immutable artifact digest and
         # the digest of the inputs that decide reuse; a deck job records the mesh
         # it consumed and the fixture revision it was prepared against.
@@ -161,6 +173,37 @@ def initialize():
             )
         if "source" not in material_columns:
             db.execute("ALTER TABLE material_versions ADD COLUMN source TEXT")
+        # A registered CAE record may have no density, and its faithful law lives
+        # in ``properties``. SQLite cannot relax NOT NULL in place, so the one
+        # table is rebuilt in the same transaction. Every existing row is copied
+        # unchanged; only the column constraint and the new column differ.
+        columns = {
+            row["name"]: row for row in db.execute("PRAGMA table_info(material_versions)")
+        }
+        if columns.get("density") and columns["density"]["notnull"]:
+            db.execute("ALTER TABLE material_versions RENAME TO material_versions_legacy")
+            db.execute(
+                """CREATE TABLE material_versions(
+                  library_id TEXT NOT NULL REFERENCES material_library(id),
+                  version INTEGER NOT NULL, model TEXT NOT NULL, color TEXT NOT NULL,
+                  density REAL, young REAL, poisson REAL, test_data TEXT NOT NULL,
+                  created REAL NOT NULL, note TEXT NOT NULL DEFAULT '',
+                  c10 REAL, d1 REAL, family TEXT NOT NULL DEFAULT 'polymer', source TEXT,
+                  properties TEXT,
+                  PRIMARY KEY(library_id, version))"""
+            )
+            db.execute(
+                """INSERT INTO material_versions(library_id,version,model,color,density,
+                   young,poisson,test_data,created,note,c10,d1,family,source)
+                   SELECT library_id,version,model,color,density,young,poisson,test_data,
+                   created,note,c10,d1,family,source FROM material_versions_legacy"""
+            )
+            db.execute("DROP TABLE material_versions_legacy")
+            columns = {
+                row["name"]: row for row in db.execute("PRAGMA table_info(material_versions)")
+            }
+        if "properties" not in columns:
+            db.execute("ALTER TABLE material_versions ADD COLUMN properties TEXT")
         # A DEMO job that never started cannot be executed any more. Retire it with
         # an explicit record instead of relabelling it or launching it as Abaqus.
         db.execute(
@@ -180,6 +223,10 @@ def initialize():
 
 
 LEGACY_GROUP_NAME = "Imported projects"
+# Independently created or opened documents get a persistent owner that is
+# distinct from the historical migration group. The name is display metadata
+# only: selection always uses ``internal=1``.
+FILE_GROUP_NAME = "File documents"
 
 
 def legacy_group(db):
@@ -192,6 +239,31 @@ def legacy_group(db):
         "INSERT INTO groups(id,name,created) VALUES (?,?,?)", (group_id, LEGACY_GROUP_NAME, time.time())
     )
     return group_id
+
+
+def file_group(db):
+    """Find-or-create the internal owner of standalone file documents.
+
+    Resolved inside the caller's write transaction, so a head and its owner are
+    created atomically. The row is never archived and never appears as a user
+    project; the partial unique index keeps it single even under a race.
+    """
+    row = db.execute("SELECT id FROM groups WHERE internal=1").fetchone()
+    if row:
+        return row["id"]
+    group_id = new_id()
+    db.execute(
+        "INSERT INTO groups(id,name,created,archived,internal) VALUES (?,?,?,0,1)",
+        (group_id, FILE_GROUP_NAME, time.time()),
+    )
+    return group_id
+
+
+def internal_group(gid):
+    """True when a group is the application-managed file-document owner."""
+    with connection() as db:
+        row = db.execute("SELECT internal FROM groups WHERE id=?", (str(gid),)).fetchone()
+    return bool(row and row["internal"])
 
 
 def encoded(data):
@@ -252,12 +324,25 @@ def append_revision(db, setup, project=None, base=None, source_id=None, group=No
     if project is None:
         project = new_id()
         number = 1
-        # A group deleted while this writer waited must not leave an orphan model.
-        if group and not db.execute("SELECT 1 FROM groups WHERE id=?", (str(group),)).fetchone():
-            raise KeyError("Project group not found")
+        # A new head and its owner are resolved and validated in this same write
+        # transaction. An omitted group means "this is a standalone file
+        # document", never "whatever the migration group happens to be called",
+        # so a historical group's display name and archive state cannot make a
+        # fresh file read-only.
+        if group:
+            owner = db.execute(
+                "SELECT archived FROM groups WHERE id=?", (str(group),)
+            ).fetchone()
+            if owner is None:
+                raise KeyError("Project group not found")
+            if owner["archived"]:
+                raise Conflict("This project is archived. Restore it before adding a model.")
+            group_id = str(group)
+        else:
+            group_id = file_group(db)
         db.execute(
             "INSERT INTO projects(id, head, group_id) VALUES (?,?,?)",
-            (project, rid, group or legacy_group(db)),
+            (project, rid, group_id),
         )
     else:
         head = db.execute("SELECT head FROM projects WHERE id=?", (project,)).fetchone()
@@ -287,14 +372,15 @@ def groups(include_archived=False):
         rows = [
             dict(r)
             for r in db.execute(
-                "SELECT id,name,created,archived FROM groups"
+                "SELECT id,name,created,archived,internal FROM groups"
                 + ("" if include_archived else " WHERE archived=0")
-                + " ORDER BY created, name"
+                + " ORDER BY internal, created, name"
             )
         ]
     models = projects(include_archived=include_archived)
     for row in rows:
         row["archived"] = bool(row["archived"])
+        row["internal"] = bool(row["internal"])
         row["models"] = [m for m in models if m["group"] == row["id"]]
     return rows
 
@@ -329,6 +415,46 @@ def create_group_with_model(group_name, setup, token):
             "INSERT INTO creations VALUES (?,?,?,?,?)",
             (str(token), group_id, project, rid, time.time()),
         )
+    return revision(rid)
+
+
+def copy_target_group(db, pid):
+    """Owner for a copy of a model: its own group unless that group is archived.
+
+    A copy of a model stranded in an archived group must be independently
+    editable; keeping the archived owner would silently reproduce the defect this
+    release fixes. The internal owner and an active project group are kept.
+    """
+    owner = db.execute(
+        "SELECT p.group_id AS id, g.archived FROM projects p "
+        "LEFT JOIN groups g ON g.id=p.group_id WHERE p.id=?",
+        (str(pid),),
+    ).fetchone()
+    if owner is None:
+        raise KeyError("Project not found")
+    if not owner["id"] or owner["archived"]:
+        return file_group(db)
+    return owner["id"]
+
+
+def recover_model(pid, name=None):
+    """Create an independent, editable copy of a model's current head.
+
+    The original revisions, submitted setups and result files stay untouched;
+    the copy is a new project with a new identity and no group history.
+    """
+    with connection(True) as db:
+        head = db.execute(
+            "SELECT r.setup, r.source_id FROM projects p JOIN revisions r ON p.head=r.id "
+            "WHERE p.id=?",
+            (str(pid),),
+        ).fetchone()
+        if head is None:
+            raise KeyError("Project not found")
+        setup = json.loads(head["setup"])
+        setup["name"] = (name or setup.get("name") or "Recovered model")[:150]
+        group_id = copy_target_group(db, pid)
+        rid = append_revision(db, setup, source_id=head["source_id"], group=group_id)
     return revision(rid)
 
 
@@ -414,13 +540,17 @@ def group_exists(group):
 def group_of(project):
     with connection() as db:
         row = db.execute(
-            "SELECT p.group_id AS id, g.name, g.archived FROM projects p "
+            "SELECT p.group_id AS id, g.name, g.archived, g.internal FROM projects p "
             "LEFT JOIN groups g ON g.id=p.group_id WHERE p.id=?",
             (str(project),),
         ).fetchone()
     if row is None:
         raise KeyError("Project not found")
-    return {**dict(row), "archived": bool(row["archived"])}
+    return {
+        **dict(row),
+        "archived": bool(row["archived"]),
+        "internal": bool(row["internal"]),
+    }
 
 
 def project_archived(pid):
@@ -469,12 +599,20 @@ def set_project_archived(pid, archived):
 
 def set_group_archived(gid, archived):
     with connection(True) as db:
-        cursor = db.execute(
+        row = db.execute("SELECT internal FROM groups WHERE id=?", (str(gid),)).fetchone()
+        if row is None:
+            raise KeyError("Project group not found")
+        # The file-document owner is application-managed. Archiving it would turn
+        # every standalone document read-only at once, and no user control offers
+        # that action, so the API refuses it rather than trusting the caller.
+        if row["internal"]:
+            raise Conflict(
+                "This group holds standalone file documents and cannot be archived."
+            )
+        db.execute(
             "UPDATE groups SET archived=? WHERE id=?",
             (1 if archived else 0, str(gid)),
         )
-        if not cursor.rowcount:
-            raise KeyError("Project group not found")
     return next(row for row in groups(include_archived=True) if row["id"] == str(gid))
 
 
@@ -1007,6 +1145,55 @@ def import_result_job(revision, name, members, provenance):
     return job(jid)
 
 
+def import_mesh_job(revision, digest, compat, members, fixture=None):
+    """Materialize a compatible mesh carried by a portable model file.
+
+    The bytes are copied verbatim, so the recorded digest and the existing
+    identity comparison keep working and nothing is regenerated. ``fixture`` is
+    ``{"labels": [...], "hash": "..."}`` after it was validated against these
+    exact bytes, or ``None`` when the file carries no reviewable fixture.
+    """
+    jid = new_id()
+    directory = job_dir(jid)
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "mesh.json").write_bytes(members["mesh.json"])
+    names = ["mesh.json"]
+    if members.get("mesh-identity.json"):
+        (directory / "mesh-identity.json").write_bytes(members["mesh-identity.json"])
+        names.append("mesh-identity.json")
+    now = time.time()
+    with connection(True) as db:
+        db.execute(
+            """INSERT INTO jobs(id,revision,name,mode,scenario,cpus,token,created,started,ended,
+                   solver,extraction,phase,mesh_digest,mesh_compat,manifest)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                jid,
+                str(revision),
+                "Mesh from file",
+                "MESH",
+                "imported",
+                1,
+                new_id(),
+                now,
+                now,
+                now,
+                "Succeeded",
+                "Succeeded",
+                "Mesh imported from a portable file",
+                digest,
+                compat,
+                encoded(names),
+            ),
+        )
+        if fixture:
+            db.execute(
+                "INSERT INTO fixtures VALUES (?,?,?,?,?)",
+                (jid, digest, fixture["hash"], encoded(fixture["labels"]), now),
+            )
+    return job(jid)
+
+
 def claim(owner):
     with connection(True) as db:
         # Synthetic DEMO execution is withdrawn. A queued legacy DEMO row is never
@@ -1307,6 +1494,14 @@ def purge_group(gid, confirm=None, expected=None):
         group = db.execute("SELECT * FROM groups WHERE id=?", (str(gid),)).fetchone()
         if group is None:
             raise KeyError("Project group not found")
+        # The internal file-document owner is not a user project: it has no
+        # archive or delete control, and deleting it would destroy every
+        # standalone document at once. Refuse it in the API, not only the UI.
+        if group["internal"]:
+            raise Conflict(
+                "This group holds standalone file documents and cannot be deleted. "
+                "Delete the individual models instead."
+            )
         name = group["name"]
         projects_ = [
             row["id"]

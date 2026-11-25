@@ -398,13 +398,41 @@ def export_bytes(library: Library, keep: set[str] | None = None) -> bytes:
     return library.raw
 
 
-def eligibility(card: Card) -> dict:
-    """Decide whether a CAE card can be used without changing its behaviour.
+def _rows(block):
+    """Numeric rows of a CAE table, in source column order."""
+    table = (block or {}).get("table") or ()
+    rows = []
+    for row in table:
+        if isinstance(row, (list, tuple)):
+            try:
+                rows.append([float(value) for value in row])
+            except (TypeError, ValueError):
+                raise LibraryError("A CAE material table contains a non-numeric value.")
+    return rows
 
-    Only a pure isotropic linear-elastic card with a constant density maps onto
-    an application law exactly. Every other law is reported with a precise reason
-    and stays visible but ineligible: a generic or approximate translation would
-    silently change the material response.
+
+def _flag(value):
+    return str(value) == "ON" if value is not None else False
+
+
+def _temperature_dependent(*blocks):
+    for block in blocks:
+        if block and _flag(block.get("temperatureDependency")):
+            return True
+        if block and int(block.get("dependencies") or 0):
+            return True
+    return False
+
+
+def assessment(card: Card) -> dict:
+    """Registering is separate from running.
+
+    Every well-formed record is registrable, with its source hierarchy, units,
+    full property data, Japanese text and fingerprint. This function also reports
+    whether the record can define a *new 2D implicit-dynamics run* as it stands:
+    that additionally needs a density and a structural law this writer can emit
+    without inventing values. Missing or unsupported inputs are named precisely
+    and stay empty; they are never filled with a guess.
     """
     data = card.data or {}
     ignored = {"name", "materialIdentifier", "description"}
@@ -413,12 +441,18 @@ def eligibility(card: Card) -> dict:
         "key": card.key,
         "name": card.name,
         "law": laws,
-        "eligible": False,
+        "registrable": False,
+        "available": False,
         "model": None,
         "family": None,
+        "family_hint": "polymer",
         "values": {},
+        "density": None,
+        "needs": [],
         "reasons": [],
         "properties": laws,
+        "blocks": {},
+        "source": data,
     }
     if card.data_error:
         result["reasons"].append({"code": "cae.data_unreadable", "detail": card.data_error})
@@ -426,57 +460,291 @@ def eligibility(card: Card) -> dict:
     if not laws:
         result["reasons"].append({"code": "cae.no_material_data"})
         return result
-    for key, code in (
-        ("hyperelastic", "cae.hyperelastic_unsupported"),
-        ("hyperfoam", "cae.hyperfoam_unsupported"),
-        ("plastic", "cae.plasticity_unsupported"),
-        ("viscoelastic", "cae.viscoelasticity_unsupported"),
-        ("mullinsEffect", "cae.mullins_unsupported"),
+
+    known = {
+        "density",
+        "elastic",
+        "hyperfoam",
+        "hyperelastic",
+        "viscoelastic",
+        "plastic",
+        "mullinsEffect",
+        "conductivity",
+        "specificHeat",
+        "creep",
+        "rateDependent",
+        "expansion",
+        "permeability",
+        "electricalConductivity",
+        "porousElastic",
+        "damping",
+    }
+    unknown = [name for name in laws if name not in known]
+    for name in unknown:
+        result["reasons"].append({"code": "cae.unknown_property", "property": name})
+    for name, code in (
         ("creep", "cae.creep_unsupported"),
         ("rateDependent", "cae.rate_dependent_unsupported"),
+        ("expansion", "cae.expansion_unsupported"),
     ):
-        if key in data:
-            result["reasons"].append({"code": code, "property": key})
-    if "elastic" not in data:
-        if not result["reasons"]:
-            result["reasons"].append({"code": "cae.no_structural_law"})
+        if name in data:
+            result["reasons"].append({"code": code, "property": name})
+    if unknown or any(
+        code.endswith("_unsupported") for code in (item["code"] for item in result["reasons"])
+    ):
         return result
-    elastic = data.get("elastic") or {}
-    if str(elastic.get("type", "")) != "ISOTROPIC":
-        result["reasons"].append({"code": "cae.elastic_not_isotropic"})
-    if isinstance(elastic.get("temperatureDependency"), Symbol) and str(
-        elastic.get("temperatureDependency")
-    ) == "ON":
-        result["reasons"].append({"code": "cae.temperature_dependent"})
-    if int(elastic.get("dependencies") or 0) != 0:
-        result["reasons"].append({"code": "cae.field_dependent"})
-    table = elastic.get("table") or []
-    if not table or not isinstance(table[0], (list, tuple)) or len(table[0]) < 2:
-        result["reasons"].append({"code": "cae.elastic_table_missing"})
+
     density_block = data.get("density") or {}
-    density_table = density_block.get("table") or []
-    if not density_table or not isinstance(density_table[0], (list, tuple)):
-        result["reasons"].append({"code": "cae.density_missing"})
+    density_rows = _rows(density_block) if density_block else []
+    if _temperature_dependent(density_block) or (density_rows and len(density_rows[0]) > 1):
+        result["reasons"].append({"code": "cae.temperature_dependent", "property": "density"})
+    elif density_rows:
+        try:
+            density = float(density_rows[0][0])
+        except (TypeError, ValueError):
+            density = 0.0
+        if density <= 0:
+            result["reasons"].append({"code": "cae.density_invalid"})
+        else:
+            result["density"] = density
+    else:
+        result["needs"].append("density")
+
+    structural = False
+    elastic = data.get("elastic") or {}
+    if elastic:
+        block = elastic
+        if str(block.get("type", "ISOTROPIC")) != "ISOTROPIC":
+            result["reasons"].append({"code": "cae.elastic_not_isotropic"})
+        if _temperature_dependent(block):
+            result["reasons"].append({"code": "cae.temperature_dependent", "property": "elastic"})
+        rows = _rows(block)
+        if not rows or len(rows[0]) < 2:
+            result["reasons"].append({"code": "cae.elastic_table_missing"})
+        else:
+            rows = [row[:2] for row in rows]
+            if len(rows) > 1:
+                result["reasons"].append(
+                    {"code": "cae.multiple_elastic_rows", "property": "elastic"}
+                )
+            young, poisson = rows[0]
+            if young <= 0 or not (-1 < poisson < 0.5):
+                result["reasons"].append({"code": "cae.elastic_value_out_of_range"})
+            else:
+                structural = True
+                result["elastic"] = {"young": young, "poisson": poisson}
+                result["family_hint"] = "metal" if young >= 50000 else "polymer"
+
+    foam = data.get("hyperfoam") or {}
+    if foam:
+        if _temperature_dependent(foam) or _temperature_dependent(foam.get("uniaxialTestData")):
+            result["reasons"].append(
+                {"code": "cae.temperature_dependent", "property": "hyperfoam"}
+            )
+        n = int(foam.get("n") or 1)
+        test_data = _flag(foam.get("testData"))
+        uniaxial_block = foam.get("uniaxialTestData") or {}
+        lateral = _flag(uniaxial_block.get("lateralNominalStrain"))
+        uniaxial = _rows(uniaxial_block)
+        table = _rows(foam)
+        poisson = foam.get("poisson")
+        if not 1 <= n <= 6:
+            result["reasons"].append({"code": "cae.hyperfoam_order", "n": n})
+        elif test_data:
+            if len(uniaxial) < 3:
+                result["reasons"].append({"code": "cae.hyperfoam_test_data_missing"})
+            else:
+                if lateral:
+                    keep = [row[:3] for row in uniaxial if len(row) >= 3]
+                else:
+                    # The source flag says no lateral strain was measured. Its
+                    # third column is zero-filled storage, not data.
+                    keep = [row[:2] for row in uniaxial if len(row) >= 2]
+                result["blocks"]["hyperfoam"] = {
+                    "n": n,
+                    "test_data": True,
+                    "moduli": str(foam.get("moduli") or "LONG_TERM"),
+                    "lateral": lateral,
+                    "poisson": None if poisson is None else float(poisson),
+                    "table": [],
+                    "uniaxial": keep,
+                }
+                structural = True
+        else:
+            if not table:
+                result["reasons"].append({"code": "cae.hyperfoam_coefficients_missing"})
+            elif any(len(row) != 3 * n for row in table):
+                result["reasons"].append(
+                    {
+                        "code": "cae.hyperfoam_coefficients_shape",
+                        "n": n,
+                        "expected": 3 * n,
+                        "found": len(table[0]),
+                    }
+                )
+            else:
+                result["blocks"]["hyperfoam"] = {
+                    "n": n,
+                    "test_data": False,
+                    "moduli": str(foam.get("moduli") or "LONG_TERM"),
+                    "lateral": lateral,
+                    "poisson": None if poisson is None else float(poisson),
+                    "table": table,
+                    "uniaxial": [],
+                }
+                structural = True
+
+    hyper = data.get("hyperelastic") or {}
+    if hyper:
+        if _temperature_dependent(hyper) or _temperature_dependent(hyper.get("uniaxialTestData")):
+            result["reasons"].append(
+                {"code": "cae.temperature_dependent", "property": "hyperelastic"}
+            )
+        law = str(hyper.get("type") or "")
+        if law not in ("MARLOW", "YEOH", "OGDEN", "POLYNOMIAL", "NEO_HOOKE"):
+            result["reasons"].append({"code": "cae.hyperelastic_type", "type": law})
+        elif str(hyper.get("materialType", "ISOTROPIC")) != "ISOTROPIC":
+            result["reasons"].append({"code": "cae.hyperelastic_not_isotropic"})
+        else:
+            n = int(hyper.get("n") or 1)
+            test_data = _flag(hyper.get("testData"))
+            uniaxial_block = hyper.get("uniaxialTestData") or {}
+            lateral = _flag(uniaxial_block.get("lateralNominalStrain"))
+            uniaxial = _rows(uniaxial_block)
+            table = _rows(hyper)
+            block = {
+                "type": law,
+                "n": n,
+                "test_data": test_data,
+                "moduli_time_scale": str(hyper.get("moduliTimeScale") or "LONG_TERM"),
+                "lateral": lateral,
+                "table": table,
+                "uniaxial": (
+                    [row[:3] if lateral else row[:2] for row in uniaxial]
+                    if test_data
+                    else []
+                ),
+            }
+            result["blocks"]["hyperelastic"] = block
+            structural = True
+
+    visco = data.get("viscoelastic") or {}
+    if visco:
+        if _temperature_dependent(visco):
+            result["reasons"].append(
+                {"code": "cae.temperature_dependent", "property": "viscoelastic"}
+            )
+        if str(visco.get("domain", "TIME")) != "TIME" or str(visco.get("time", "PRONY")) not in (
+            "PRONY",
+            "CREEP",
+            "RELAXATION",
+        ):
+            result["reasons"].append({"code": "cae.viscoelastic_options_unsupported"})
+        else:
+            table = _rows(visco)
+            if any(len(row) != 3 for row in table):
+                result["reasons"].append({"code": "cae.viscoelastic_table_shape"})
+            elif table:
+                result["blocks"]["viscoelastic"] = {
+                    "domain": "TIME",
+                    "time": str(visco.get("time") or "PRONY"),
+                    "table": table,
+                }
+
+    plastic = data.get("plastic") or {}
+    if plastic:
+        if _temperature_dependent(plastic) or _flag(plastic.get("rate")):
+            result["reasons"].append({"code": "cae.plastic_rate_unsupported"})
+        elif str(plastic.get("hardening", "ISOTROPIC")) not in ("ISOTROPIC", "KINEMATIC"):
+            result["reasons"].append(
+                {"code": "cae.plastic_hardening_unsupported", "hardening": str(plastic.get("hardening"))}
+            )
+        else:
+            table = _rows(plastic)
+            if any(len(row) != 2 for row in table):
+                result["reasons"].append({"code": "cae.plastic_table_shape"})
+            elif table:
+                result["blocks"]["plastic"] = {
+                    "hardening": str(plastic.get("hardening") or "ISOTROPIC"),
+                    "table": table,
+                }
+                structural = True
+
+    mullins = data.get("mullinsEffect") or {}
+    if mullins:
+        if _temperature_dependent(mullins):
+            result["reasons"].append(
+                {"code": "cae.temperature_dependent", "property": "mullinsEffect"}
+            )
+        definition = str(mullins.get("definition") or "CONSTANTS")
+        table = _rows(mullins)
+        if definition != "CONSTANTS":
+            result["reasons"].append(
+                {"code": "cae.mullins_definition_unsupported", "definition": definition}
+            )
+        elif table:
+            result["blocks"]["mullins"] = {"definition": "CONSTANTS", "table": table}
+
+    thermal = {}
+    conductivity = data.get("conductivity") or {}
+    specific = data.get("specificHeat") or {}
+    if conductivity or specific:
+        if _temperature_dependent(conductivity, specific):
+            result["reasons"].append({"code": "cae.temperature_dependent", "property": "thermal"})
+        else:
+            thermal = {
+                "conductivity": _rows(conductivity),
+                "specific_heat": _rows(specific),
+            }
+            if not thermal["conductivity"] and not thermal["specific_heat"]:
+                thermal = {}
+            else:
+                result["blocks"]["thermal"] = thermal
+
+    if not structural:
+        result["needs"].append("structural_law")
+        # A thermal-only record is still registered for browsing and export; it
+        # simply cannot define this structural procedure until a law is added.
+        if not thermal:
+            result["reasons"].append({"code": "cae.no_structural_law"})
     if result["reasons"]:
         return result
-    try:
-        young = float(table[0][0])
-        poisson = float(table[0][1])
-        density = float(density_table[0][0])
-    except (TypeError, ValueError):
-        result["reasons"].append({"code": "cae.elastic_table_missing"})
-        return result
-    if young <= 0 or density <= 0 or not (-1 < poisson < 0.5):
-        result["reasons"].append({"code": "cae.elastic_value_out_of_range"})
-        return result
-    result.update(
-        {
-            "eligible": True,
-            "model": "linear_elastic",
-            "values": {"young": young, "poisson": poisson, "density": density},
+
+    result["registrable"] = True
+    result["family_hint"] = result.get("family_hint") or "polymer"
+    # Pure isotropic elasticity with a density is the historical simplified law;
+    # it stays on that path so existing PA6/METAL pins and editor behaviour are
+    # preserved. Every other combination is a faithful registered CAE card.
+    if (
+        set(laws) <= {"density", "elastic"}
+        and result["density"] is not None
+        and result.get("elastic")
+    ):
+        result["model"] = "linear_elastic"
+        result["values"] = {
+            "young": result["elastic"]["young"],
+            "poisson": result["elastic"]["poisson"],
+            "density": result["density"],
         }
-    )
+    else:
+        result["model"] = "cae_law"
+    result["available"] = result["model"] is not None and not result["needs"]
     return result
+
+
+def eligibility(card: Card) -> dict:
+    """Backward-compatible view of :func:`assessment`.
+
+    ``eligible`` keeps its historical meaning: usable by a new run without
+    changing behaviour. It is no longer the registration decision.
+    """
+    decision = assessment(card)
+    return {
+        **decision,
+        "eligible": decision["available"],
+        "reasons": decision["reasons"],
+        "values": decision["values"],
+    }
 
 
 def write_export(library: Library, path, keep: set[str] | None = None) -> dict:

@@ -15,6 +15,7 @@ from pathlib import Path
 import re
 
 from packages.engineering import portable
+from packages.engineering import fixture as fixture_rules
 from packages.engineering.identity import mesh_compat
 from packages.engineering.model import Project
 from services import store
@@ -130,25 +131,204 @@ def save_model(
     return result
 
 
+def _restore_source(members: dict[str, bytes], setup: dict) -> dict:
+    """Restore the embedded original drawing, if any, under a new source id.
+
+    The original bytes are copied unchanged; the source id is new so no existing
+    model's drawing directory is shared or modified.
+    """
+    name = next((key for key in members if key.startswith("drawing/")), None)
+    if name is None:
+        return {"status": "absent", "source_id": None}
+    payload = members[name]
+    if not payload:
+        return {"status": "invalid", "source_id": None}
+    filename = Path(name).name
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".dxf", ".dwg"} or not filename.startswith("drawing"):
+        return {"status": "invalid", "source_id": None}
+    source_id = store.new_id()
+    directory = store.root() / "drawings" / source_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / filename).write_bytes(payload)
+    source = setup.get("source") or {}
+    (directory / "source.json").write_text(
+        store.encoded(
+            {
+                "filename": source.get("filename") or filename,
+                "units": source.get("unit_basis") or "N-mm-s-tonne",
+                "restored_from_file": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return {"status": "restored", "source_id": source_id}
+
+
+def _restore_mesh(
+    members: dict[str, bytes], compat: str
+) -> tuple[dict, dict, list[dict]]:
+    """Validate the embedded mesh and fixture without trusting either.
+
+    Returns ``(mesh, fixture, items)``. A member that does not match its own
+    recorded identity, the reopened setup's mesh inputs, or its digest is
+    reported for regeneration instead of being adopted; a fixture is restored
+    only against the exact mesh bytes it was reviewed on.
+    """
+    items: list[dict] = []
+    raw = members.get("mesh.json")
+    if raw is None:
+        return (
+            {"status": "absent", "digest": None, "artifact": None},
+            {"status": "absent", "labels": None},
+            items,
+        )
+    try:
+        artifact = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        items.append(
+            {
+                "code": "portable.mesh_unreadable",
+                "stage": "mesh",
+                "detail": "The embedded mesh is not valid JSON. Generate the mesh again.",
+            }
+        )
+        return (
+            {"status": "invalid", "digest": None, "artifact": None},
+            {"status": "invalid", "labels": None},
+            items,
+        )
+    if (
+        not isinstance(artifact, dict)
+        or not artifact.get("nodes")
+        or not artifact.get("elements")
+    ):
+        items.append(
+            {
+                "code": "portable.mesh_empty",
+                "stage": "mesh",
+                "detail": "The embedded mesh has no nodes or elements. Generate the mesh again.",
+            }
+        )
+        return (
+            {"status": "invalid", "digest": None, "artifact": None},
+            {"status": "invalid", "labels": None},
+            items,
+        )
+    digest = sha256(raw).hexdigest()
+    identity_raw = members.get("mesh-identity.json")
+    if identity_raw is None:
+        items.append(
+            {
+                "code": "portable.mesh_identity_missing",
+                "stage": "mesh",
+                "detail": "The embedded mesh has no identity record, so it cannot be trusted. "
+                "Generate the mesh again.",
+            }
+        )
+        return (
+            {"status": "invalid", "digest": digest, "artifact": None},
+            {"status": "invalid", "labels": None},
+            items,
+        )
+    try:
+        identity = json.loads(identity_raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        identity = {}
+    if not isinstance(identity, dict) or identity.get("digest") != digest:
+        items.append(
+            {
+                "code": "portable.mesh_identity_mismatch",
+                "stage": "mesh",
+                "detail": "The embedded mesh does not match its own digest record. "
+                "Generate the mesh again.",
+            }
+        )
+        return (
+            {"status": "invalid", "digest": digest, "artifact": None},
+            {"status": "invalid", "labels": None},
+            items,
+        )
+    if identity.get("compat") != compat:
+        items.append(
+            {
+                "code": "portable.mesh_incompatible",
+                "stage": "mesh",
+                "detail": "The embedded mesh was generated for different mesh inputs than this "
+                "model. Generate the mesh again.",
+            }
+        )
+        return (
+            {"status": "incompatible", "digest": digest, "artifact": None},
+            {"status": "invalid", "labels": None},
+            items,
+        )
+    mesh = {"status": "restored", "digest": digest, "artifact": artifact}
+    raw_fixture = members.get("fixture.json")
+    if raw_fixture is None:
+        return mesh, {"status": "absent", "labels": None}, items
+    try:
+        packaged = json.loads(raw_fixture.decode("utf-8"))
+        labels = packaged["labels"]
+        recorded_hash = packaged.get("hash")
+        recorded_mesh = packaged.get("mesh_digest")
+    except (UnicodeDecodeError, ValueError, KeyError, TypeError):
+        labels = recorded_hash = recorded_mesh = None
+    try:
+        if recorded_mesh != digest:
+            raise ValueError("The fixed nodes were reviewed on different mesh bytes.")
+        normalized = fixture_rules.normalize(labels, artifact)
+        if not normalized or fixture_rules.labels_hash(normalized) != recorded_hash:
+            raise ValueError("The fixed-node list does not match its recorded hash.")
+    except ValueError as exc:
+        items.append(
+            {
+                "code": "portable.fixture_invalid",
+                "stage": "mounting",
+                "detail": f"{exc} Review the fixed nodes on the regenerated mesh.",
+            }
+        )
+        return mesh, {"status": "invalid", "labels": None}, items
+    return mesh, {"status": "restored", "labels": normalized}, items
+
+
 def open_model(path: str) -> dict:
     container = portable.read_container(Path(path), portable.MODEL_KIND)
+    members = container["members"]
     try:
-        setup = json.loads(container["members"]["model.json"].decode("utf-8"))
+        setup = json.loads(members["model.json"].decode("utf-8"))
     except ValueError as exc:
         raise portable.PortableError("model-json", "The model contents are not valid JSON.") from exc
     try:
         project = Project.model_validate(setup)
     except ValueError as exc:
         raise portable.PortableError("model-invalid", f"The model contents are invalid: {exc}") from exc
-    saved = store.save(project.model_dump(mode="json"))
+    canonical = project.model_dump(mode="json")
+    compat = mesh_compat(project)
+    source = _restore_source(members, canonical)
+    mesh, fixture_restore, items = _restore_mesh(members, compat)
+    saved = store.save(canonical, source_id=source["source_id"])
+    if mesh["status"] == "restored":
+        store.import_mesh_job(
+            saved["id"],
+            mesh["digest"],
+            compat,
+            members,
+            fixture_restore["labels"]
+            and {
+                "labels": fixture_restore["labels"],
+                "hash": fixture_rules.labels_hash(fixture_restore["labels"]),
+            },
+        )
     return {
         "revision": saved["id"],
         "project": saved["project"],
         "name": saved["setup"]["name"],
         "manifest": container["manifest"],
-        "mesh": "mesh.json" in container["members"],
-        "fixture": "fixture.json" in container["members"],
-        "source": "drawing" in "".join(container["members"]),
+        "mesh": mesh["status"],
+        "fixture": fixture_restore["status"],
+        "source": source["status"],
+        "items": items,
     }
 
 

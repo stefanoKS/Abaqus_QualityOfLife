@@ -1,5 +1,74 @@
 # Abaqus QOL implementation handoff
 
+## Gates A–C: file ownership, Dashboard/Close and faithful CAE materials · 2026-11-25
+
+Executed the [File ownership, material import and navigation handoff](docs/file-open-materials-navigation-handoff.md).
+During the session the previously uncommitted A–E delivery was committed by the operator session as
+`2f569ed`; this delivery's changes sit uncommitted on top of it and no file from that work was
+discarded. All writes used disposable `SEAL_DATA`
+roots, the isolated `--test-data` browser server (ports 19871–19880) and temporary folders. The
+operator instance on 8765, its database, drawings and retained licensed artifacts were not
+contacted, stopped or modified. **No solver was launched.** One Abaqus/CAE 2024 noGUI session was
+used for the material-reference check and consumed CAE license tokens (recorded in the validation
+record). The full detail and measured tables are in
+[implementation-report.md](docs/implementation-report.md#a14-file-ownership-navigation-close-and-faithful-cae-material-support--2026-11-25).
+
+Built release **`055f04911427`** (entry `index-kfFfAlip.js`, API 3). Save, Ctrl+S, Save As and Save &
+Close share one path that flushes the workspace autosave first — this closes the reported 100 → 111 mm
+regression. The supplied library now registers **27/27** records (was 2); **19** are ready for a new
+2D run, **7** name the missing density and **1** (thermal-only) names the missing structural law. All
+**11 Hyperfoam** cards emit their source law, active columns and every row.
+
+### Gate status
+
+| Gate | Status | Measured outcome |
+|---|---|---|
+| A — archived owner | **PASS** | An internal, name-independent owner (`groups.internal=1`, partial unique index) is resolved and validated in the same write transaction as the head. With the historical `Imported projects` group archived: File → New and Open Model return `archived=false, group_archived=false`, no banner, enabled Save, persisted 100 → 111 mm and a queued drawing import. Explicit creation in the archived group still 409, historical replays stay read-only, `POST /api/projects/{pid}/recover` and duplicate-from-archived create distinct editable identities. Eight concurrent creates leave 1 internal row and 8 owned models; archive/delete of the internal owner is refused by the API. |
+| B — Dashboard first and Close | **PASS** | Rendered and keyboard order Dashboard → Workspace → Materials in EN/JA at 1440 and 390 px; cold start opens Dashboard; Materials returns to the tab's document. Close ends only that tab's session (sessionStorage), names the document, keeps recents and the head, and Workspace/refresh do not reopen it. With the working-head PUT held, Ctrl+S and Save & Close both left the on-disk file at **111 mm** after reopening; Cancel and a failed write keep the document and its draft; a Japanese folder and file name save correctly. |
+| B — portable-open restore | **PASS** | A 37-node fixture reopens in a fresh data root with `can_prepare=true`, `mounting.reviewed=37`, no reselection and `deck.missing` as the only submit issue. Mismatched identity, truncated mesh, missing identity and foreign fixture are each reported by code and never adopted; the original drawing returns byte-identical. |
+| C — CAE registration/deck | **PASS (software)** | 27/27 registered, 19 available, 7 need density, 1 needs a structural law. All 11 Hyperfoam cards (6 test-data N=1, 1 direct N=1, 2 direct N=3 + Prony, 2 direct N=5 + Prony) emit faithfully; 6 test-data cards write 2 active columns with `lateralNominalStrain=OFF` and never the zero storage column. Per-card family declaration, idempotent repeat import, same-name divergence, per-record outcomes, rejected direct submissions, CPS4/CPS4R sections and an explicit original-file export are covered. |
+| C — CAE 2024 reference | **PASS (5/5 combinations)** | A CAE 2024 noGUI session imported the app-emitted keywords and re-read every behaviour and value for E13, EPTO_E110, DKSPONGEHK, E18WW and SPCC. It found and fixed two real defects: direct `*Hyperfoam` must be packed ≤8 values per line (CAE rejected one 3N-value line), and CAE 2024 rejects a `DEFINITION` parameter on `*Mullins Effect` (bare keyword is correct). This is input-keyword evidence, **not** solver or physical evidence. |
+| — Solver execution / physics | **BLOCKED** (unchanged) | No licensed solve; no convergence, sensitivity or physical-correlation claim. |
+
+### Tests actually run (this machine, isolated data)
+
+- `.\.venv\Scripts\python.exe -m pytest -q`: **364 passed, 1 skipped** (opt-in Abaqus-Python
+  roundtrip), exit 0.
+- New: `tests/test_archived_owner.py` (12), `tests/test_portable_restore.py` (6),
+  `tests/test_cae_materials.py` (18); updated `tests/test_material_library_cae.py` (5).
+- `test:i18n` 970 keys both languages; `test:encoding` 47 files; `typecheck` pass; release
+  **`055f04911427`**.
+- Browser feature specs on their own servers: `archived-owner.spec.ts` (2), `file-close.spec.ts` (9),
+  `cae-materials.spec.ts` (1), `isolation.spec.ts` (5), `materials.spec.ts` (7),
+  `offset-picking.spec.ts` (1), `partition.spec.ts` (5), `prepare-readiness.spec.ts` (5) — all passed.
+- **Full browser suite, final build `055f04911427`, port 19890: 171 passed, 4 skipped, 4 failed**
+  (179 tests, 18.9 min). The four failures are the known suite-load cases, not gate regressions:
+  playback cadence (71.7 ms vs ≤50 ms; reproduces alone on this machine and is unrelated to this
+  pass — no playback code changed), the two `materials.spec.ts` journeys (both passed in a 7-test
+  isolated run) and `offset-picking` (passed in isolation). No failure touches Gates A–C.
+- `scripts/schema.py` regenerated `generated.ts`; the diff was inspected (schemas split into
+  `-Input`/`-Output` because nested engineering models mark defaults as required on serialization).
+
+### Outstanding
+
+1. **Licensed solver acceptance and physical correlation remain BLOCKED.** No Hyperfoam card was
+   solved; the CAE check proves the keywords only.
+2. **Registered-only enforcement is partial.** An unpinned model-local card still reports
+   `material.unregistered` as a warning rather than a Prepare blocker, so existing synthetic models
+   keep working. Enforcing the stricter rule needs those demo cards migrated to registered entries.
+3. **CAE GUI Material Library Manager round-trip is not automated.** Kernel/reference read is
+   verified; the GUI file-open path is not scriptable here.
+4. **Direct hyperelastic N>1** (Ogden/Polynomial) is emitted as one row; the supplied library only
+   has N=1 direct hyperelastics, so that specific path is untested against CAE.
+5. Full-suite-only browser failures: playback cadence (71.7 ms; reproduces alone on this machine and
+   predates this pass), both `materials.spec.ts` journeys and `offset-picking`. All three non-cadence
+   cases pass in isolation; none is a Gate A–C test.
+
+**Next executable slice.** Migrate the built-in demo materials to registered library entries and
+make unregistered cards a Prepare blocker; then run a small licensed Hyperfoam uniaxial/tension
+verification case (API → worker → solver → extractor) to establish input acceptance separately from
+convergence and physical correlation.
+
 ## File → New/Open, CAE materials and top-level navigation · 2026-11-25
 
 Use the [execution command and acceptance gates](docs/file-open-materials-navigation-handoff.md). The operator on port 8765 is running release `81fc7a73aa30`, API `f96456e1a763af94`. Its legacy “Imported projects” group is archived. Both File → New and Open Model reproduced the read-only banner and HTTP 409 in a disposable Edge session with that configuration. The same test with an active default group was editable. Repair standalone file ownership at creation and preserve all genuine archives. Then put Dashboard first, implement explicit Close, synchronize disk saves with pending edits and restore compatible embedded mesh/fixtures on Open.

@@ -319,6 +319,50 @@ def evaluate(rid):
         )
     if not setup.materials:
         findings.append(finding("material.none", "materials", BLOCKER))
+    # A registered CAE record may legitimately omit its density or describe only
+    # thermal behaviour. Registration keeps it; a *new run* needs both, and the
+    # missing input is named instead of being guessed.
+    missing_density = [
+        material.name
+        for material in setup.materials
+        if material.density is None or material.density <= 0
+    ]
+    if missing_density:
+        findings.append(
+            finding(
+                "material.missing_density",
+                "materials",
+                BLOCKER,
+                {"materials": missing_density[:8], "count": len(missing_density)},
+                artifact="revision:" + str(rid),
+            )
+        )
+    no_law = [material.name for material in setup.materials if not material.structural_law]
+    if no_law:
+        findings.append(
+            finding(
+                "material.no_structural_law",
+                "materials",
+                BLOCKER,
+                {"materials": no_law[:8], "count": len(no_law)},
+                artifact="revision:" + str(rid),
+            )
+        )
+    unregistered = [
+        material.name for material in setup.materials if not material.library_id
+    ]
+    if unregistered:
+        # Legacy model-local cards stay usable in this phase; the finding is a
+        # warning so the engineer knows the card is not a pinned library version.
+        findings.append(
+            finding(
+                "material.unregistered",
+                "materials",
+                WARNING,
+                {"materials": unregistered[:8], "count": len(unregistered)},
+                artifact="revision:" + str(rid),
+            )
+        )
 
     findings.extend(_motion_issues(setup))
 
@@ -540,6 +584,8 @@ def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, c
         "mounting.awaiting_mesh",
         "material.unassigned",
         "material.none",
+        "material.missing_density",
+        "material.no_structural_law",
         "motion.invalid",
         "motion.initial_penetration",
         "motion.direction_away",

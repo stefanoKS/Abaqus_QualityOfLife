@@ -42,23 +42,47 @@ interface CaeReason {
   property?: string
   detail?: string
 }
+interface CaeLawBlock {
+  n?: number
+  test_data?: boolean
+  moduli?: string
+  moduli_time_scale?: string
+  lateral?: boolean
+  type?: string
+  table?: number[][]
+  uniaxial?: number[][]
+  time?: string
+}
+interface CaeAssessment {
+  registrable: boolean
+  available: boolean
+  model: string | null
+  law: string[]
+  family_hint: 'polymer' | 'metal'
+  needs: string[]
+  reasons: CaeReason[]
+  blocks: Record<string, CaeLawBlock>
+}
 interface CaeCard {
   key: string
   name: string
   category: string
   dataError: string
-  eligibility: {
-    eligible: boolean
-    model: string | null
-    reasons: CaeReason[]
-  }
+  assessment: CaeAssessment
 }
 interface CaePreview {
   file: string
   sha256: string
   bytes: number
   cards: CaeCard[]
-  eligible: number
+  registrable: number
+  available: number
+}
+
+/** Read-only presentation of the registered CAE law blocks. */
+function lawRows(block: CaeLawBlock | null | undefined): number[][] {
+  if (!block) return []
+  return block.table?.length ? block.table : (block.uniaxial ?? [])
 }
 
 const DEFAULT_CARD: FullCard = {
@@ -90,12 +114,18 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   const [showArchived, setShowArchived] = useState(false)
   const [name, setName] = useState('')
   const [draft, setDraft] = useState<FullCard>(DEFAULT_CARD)
+  // A registered CAE card may have no density. It is shown empty so the engineer
+  // can supply the missing input in a new version; it is never pre-filled.
+  const [densityText, setDensityText] = useState(String(DEFAULT_CARD.density))
   const [busy, setBusy] = useState(false)
   const [compare, setCompare] = useState<Record<string, Compared>>({})
   const [cae, setCae] = useState<CaePreview | null>(null)
   const [caeFile, setCaeFile] = useState<File | null>(null)
   const [caeKeys, setCaeKeys] = useState<string[]>([])
   const [caeFamily, setCaeFamily] = useState<'polymer' | 'metal'>('polymer')
+  // One declared family per record: a single bulk value would misclassify a
+  // metal card in a mixed import.
+  const [caeFamilies, setCaeFamilies] = useState<Record<string, 'polymer' | 'metal'>>({})
   const [caeUnits, setCaeUnits] = useState('N-mm-s-tonne')
   const [exportFolder, setExportFolder] = useState('')
   const caeInput = useRef<HTMLInputElement>(null)
@@ -119,6 +149,7 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
     setDetail(found)
     setName(found.name)
     setDraft(fullCard(found.card))
+    setDensityText(found.card.density == null ? '' : String(found.card.density))
   }, [])
 
   useEffect(() => {
@@ -135,10 +166,18 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
       name: name.trim() || 'Library material',
       version: detail?.current_version ?? 1,
       ...draft,
+      density: draft.density ?? null,
       young: draft.young ?? null,
       poisson: draft.poisson ?? null,
       c10: draft.c10 ?? null,
       d1: draft.d1 ?? null,
+      test_data: draft.test_data ?? [],
+      hyperfoam: draft.hyperfoam ?? null,
+      hyperelastic: draft.hyperelastic ?? null,
+      viscoelastic: draft.viscoelastic ?? null,
+      plastic: draft.plastic ?? null,
+      mullins: draft.mullins ?? null,
+      thermal: draft.thermal ?? null,
       library_id: null,
       library_version: null,
     }),
@@ -178,14 +217,25 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
       notify(t('validation.invalidDraft'))
       return
     }
+    const card: FullCard = { ...draft }
+    if (card.model === 'cae_law') {
+      const text = densityText.trim()
+      const density = text === '' ? null : Number(text)
+      if (density !== null && (!Number.isFinite(density) || density <= 0)) {
+        notify(t('materials.err.density'))
+        return
+      }
+      card.density = density
+    }
     void run(async () => {
       const updated = await request<LibraryDetail>('/api/materials/' + detail.id, 'PUT', {
         name: name.trim(),
-        card: draft,
+        card,
       })
       setDetail(updated)
       setName(updated.name)
       setDraft(fullCard(updated.card))
+      setDensityText(updated.card.density == null ? '' : String(updated.card.density))
       await refresh()
       notify(t('materialsLibrary.saved', { version: updated.current_version }))
     })
@@ -218,6 +268,7 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
 
   function adoptVersion(version: number, card: LibraryCard) {
     setDraft({ ...fullCard(card) })
+    setDensityText(card.density == null ? '' : String(card.density))
     notify(t('materialsLibrary.loadedVersion', { version }))
   }
 
@@ -263,9 +314,10 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   }
 
   /**
-   * CAE library exchange. The preview never registers anything: cards are
-   * decoded, mapped onto an application law and shown with an eligibility
-   * reason. Only explicit selections are registered, with a content fingerprint.
+   * CAE library exchange. The preview never registers anything: every decoded
+   * record is shown with its law, the declared family and what a *new run*
+   * still needs. Registering is separate from running, so a well-formed record
+   * is selectable even when its source omits a density.
    */
   async function previewCae(file: File) {
     setCaeFile(file)
@@ -278,8 +330,13 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
         form,
       )
       setCae(payload)
-      setCaeKeys(
-        payload.cards.filter((card) => card.eligibility.eligible).map((card) => card.key),
+      setCaeKeys(payload.cards.filter((card) => card.assessment.registrable).map((card) => card.key))
+      setCaeFamilies(
+        Object.fromEntries(
+          payload.cards
+            .filter((card) => card.assessment.registrable)
+            .map((card) => [card.key, card.assessment.family_hint]),
+        ),
       )
     })
   }
@@ -291,6 +348,7 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
       form.append('file', caeFile)
       form.append('keys', JSON.stringify(caeKeys))
       form.append('family', caeFamily)
+      form.append('families', JSON.stringify(caeFamilies))
       form.append('units', caeUnits)
       const result = await request<{
         registered: { library_id: string; existing: boolean }[]
@@ -300,6 +358,8 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
       await refresh()
       setCae(null)
       setCaeFile(null)
+      setCaeKeys([])
+      setCaeFamilies({})
       notify(
         t('materialsLibrary.caeImported', {
           count: result.registered.filter((item) => !item.existing).length,
@@ -455,50 +515,90 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                 <p className="field-hint">
                   {cae.file} · {cae.sha256.slice(0, 10)} ·{' '}
                   {t('materialsLibrary.caeSummary', {
-                    eligible: cae.eligible,
+                    registrable: cae.registrable,
+                    available: cae.available,
                     total: cae.cards.length,
                   })}
                 </p>
                 <div className="cae-cards">
-                  {cae.cards.map((card) => (
-                    <label
-                      key={card.key}
-                      className={
-                        'cae-card ' + (card.eligibility.eligible ? 'eligible' : 'blocked')
-                      }
-                      title={card.eligibility.reasons
-                        .map((reason) => reason.code)
-                        .join(' · ')}
-                    >
-                      <input
-                        type="checkbox"
-                        disabled={!card.eligibility.eligible}
-                        checked={caeKeys.includes(card.key)}
-                        onChange={(event) =>
-                          setCaeKeys((current) =>
-                            event.target.checked
-                              ? [...current, card.key]
-                              : current.filter((key) => key !== card.key),
-                          )
+                  {cae.cards.map((card) => {
+                    const assessment = card.assessment
+                    return (
+                      <div
+                        key={card.key}
+                        className={
+                          'cae-card ' +
+                          (assessment.available
+                            ? 'eligible'
+                            : assessment.registrable
+                              ? 'needs'
+                              : 'blocked')
                         }
-                      />
-                      <span>{card.name}</span>
-                      <small>
-                        {card.eligibility.eligible
-                          ? card.eligibility.model
-                          : card.eligibility.reasons
-                              .map((reason) =>
-                                t(('readiness.' + reason.code) as TranslationKey),
+                        data-testid={
+                          assessment.available ? 'cae-card-available' : 'cae-card-registrable'
+                        }
+                        title={assessment.reasons.map((reason) => reason.code).join(' · ')}
+                      >
+                        <label className="check">
+                          <input
+                            type="checkbox"
+                            disabled={!assessment.registrable}
+                            checked={caeKeys.includes(card.key)}
+                            onChange={(event) =>
+                              setCaeKeys((current) =>
+                                event.target.checked
+                                  ? [...current, card.key]
+                                  : current.filter((key) => key !== card.key),
                               )
-                              .join(' · ')}
-                      </small>
-                    </label>
-                  ))}
+                            }
+                          />
+                          <span>{card.name}</span>
+                        </label>
+                        <small>
+                          {assessment.available
+                            ? t('materialsLibrary.caeAvailable')
+                            : assessment.registrable
+                              ? assessment.needs
+                                  .map((need) =>
+                                    t(
+                                      ('materialsLibrary.caeNeed.' + need) as TranslationKey,
+                                    ),
+                                  )
+                                  .join(' · ')
+                              : assessment.reasons
+                                  .map((reason) =>
+                                    t(('readiness.' + reason.code) as TranslationKey),
+                                  )
+                                  .join(' · ')}
+                        </small>
+                        {assessment.registrable && (
+                          <label className="cae-family">
+                            {t('materialsLibrary.caeFamily')}
+                            <select
+                              aria-label={
+                                t('materialsLibrary.caeFamily') + ' · ' + card.name
+                              }
+                              value={caeFamilies[card.key] ?? assessment.family_hint}
+                              onChange={(event) =>
+                                setCaeFamilies((current) => ({
+                                  ...current,
+                                  [card.key]: event.target.value as 'polymer' | 'metal',
+                                }))
+                              }
+                            >
+                              <option value="polymer">{t('materials.familyPolymer')}</option>
+                              <option value="metal">{t('materials.familyMetal')}</option>
+                            </select>
+                          </label>
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
                 <label>
-                  {t('materialsLibrary.caeFamily')}
+                  {t('materialsLibrary.caeFamilyDefault')}
                   <select
-                    aria-label={t('materialsLibrary.caeFamily')}
+                    aria-label={t('materialsLibrary.caeFamilyDefault')}
                     value={caeFamily}
                     onChange={(event) =>
                       setCaeFamily(event.target.value as 'polymer' | 'metal')
@@ -600,33 +700,104 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                     : t('materialsLibrary.archive')}
                 </button>
               </div>
+              {draft.model === 'cae_law' ? (
+                <div className="cae-law" data-testid="cae-law-view">
+                  <h3>{t('materialsLibrary.caeLawTitle')}</h3>
+                  <p className="field-hint">{t('materialsLibrary.caeLawReadOnly')}</p>
+                  {Object.entries({
+                    elastic:
+                      draft.young != null && draft.poisson != null
+                        ? ({
+                            table: [[draft.young, draft.poisson]],
+                          } as CaeLawBlock)
+                        : undefined,
+                    hyperfoam: draft.hyperfoam as CaeLawBlock | null | undefined,
+                    hyperelastic: draft.hyperelastic as CaeLawBlock | null | undefined,
+                    viscoelastic: draft.viscoelastic as CaeLawBlock | null | undefined,
+                    mullins: draft.mullins as CaeLawBlock | null | undefined,
+                    plastic: draft.plastic as CaeLawBlock | null | undefined,
+                  })
+                    .filter(([, block]) => Boolean(block))
+                    .map(([key, block]) => (
+                      <section key={key} className="cae-law-block">
+                        <h4>
+                          {key}
+                          {block?.type ? ' · ' + block.type : ''}
+                          {block?.n ? ' · N=' + block.n : ''}
+                          {block?.moduli ? ' · ' + block.moduli : ''}
+                          {block?.moduli_time_scale ? ' · ' + block.moduli_time_scale : ''}
+                          {block?.time ? ' · ' + block.time : ''}
+                        </h4>
+                        <table className="cae-table">
+                          <tbody>
+                            {lawRows(block)
+                              .slice(0, 12)
+                              .map((row, index) => (
+                                <tr key={index}>
+                                  {row.map((value, column) => (
+                                    <td key={column}>{value}</td>
+                                  ))}
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                        {lawRows(block).length > 12 && (
+                          <small>
+                            {t('materialsLibrary.caeRowsShown', {
+                              shown: 12,
+                              total: lawRows(block).length,
+                            })}
+                          </small>
+                        )}
+                      </section>
+                    ))}
+                  <small>{t('materialsLibrary.caeSourceNote')}</small>
+                </div>
+              ) : (
+                <label>
+                  {t('materials.model')}
+                  <select
+                    value={draft.model}
+                    onChange={(event) => {
+                      const model = event.target.value as LibraryCard['model']
+                      setDraft((old) => ({
+                        ...old,
+                        model,
+                        test_data:
+                          model === 'hyperfoam_test' && old.test_data.length < 3
+                            ? [
+                                [0, 0.05, -0.025],
+                                [0, 0.1, -0.05],
+                                [0, 0.15, -0.075],
+                              ]
+                            : old.test_data,
+                        young: model === 'linear_elastic' ? (old.young ?? 5) : old.young,
+                        poisson: model === 'linear_elastic' ? (old.poisson ?? 0.49) : old.poisson,
+                        c10: model === 'neo_hookean' ? (old.c10 ?? 0.5) : old.c10,
+                        d1: model === 'neo_hookean' ? (old.d1 ?? 0.01) : old.d1,
+                      }))
+                    }}
+                  >
+                    <option value="linear_elastic">{t('materials.modelLinear')}</option>
+                    <option value="hyperfoam_test">{t('materials.modelHyperfoam')}</option>
+                    <option value="neo_hookean">{t('materials.modelNeoHookean')}</option>
+                  </select>
+                </label>
+              )}
               <label>
-                {t('materials.model')}
+                {t('materials.family')}
                 <select
-                  value={draft.model}
-                  onChange={(event) => {
-                    const model = event.target.value as LibraryCard['model']
+                  aria-label={t('materials.family')}
+                  value={draft.family}
+                  onChange={(event) =>
                     setDraft((old) => ({
                       ...old,
-                      model,
-                      test_data:
-                        model === 'hyperfoam_test' && old.test_data.length < 3
-                          ? [
-                              [0, 0.05, -0.025],
-                              [0, 0.1, -0.05],
-                              [0, 0.15, -0.075],
-                            ]
-                          : old.test_data,
-                      young: model === 'linear_elastic' ? (old.young ?? 5) : old.young,
-                      poisson: model === 'linear_elastic' ? (old.poisson ?? 0.49) : old.poisson,
-                      c10: model === 'neo_hookean' ? (old.c10 ?? 0.5) : old.c10,
-                      d1: model === 'neo_hookean' ? (old.d1 ?? 0.01) : old.d1,
+                      family: event.target.value as 'polymer' | 'metal',
                     }))
-                  }}
+                  }
                 >
-                  <option value="linear_elastic">{t('materials.modelLinear')}</option>
-                  <option value="hyperfoam_test">{t('materials.modelHyperfoam')}</option>
-                  <option value="neo_hookean">{t('materials.modelNeoHookean')}</option>
+                  <option value="polymer">{t('materials.familyPolymer')}</option>
+                  <option value="metal">{t('materials.familyMetal')}</option>
                 </select>
               </label>
               <label>
@@ -637,12 +808,26 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                   onChange={(event) => setDraft((old) => ({ ...old, color: event.target.value }))}
                 />
               </label>
-              <NumberInput
-                label={t('materials.density')}
-                value={draft.density}
-                min={1e-15}
-                onChange={(density) => setDraft((old) => ({ ...old, density }))}
-              />
+              {draft.model === 'cae_law' ? (
+                <label>
+                  {t('materials.density')} <span className="unit">t/mm³</span>
+                  <input
+                    aria-label={t('materials.density')}
+                    inputMode="decimal"
+                    value={densityText}
+                    placeholder={t('materialsLibrary.densityMissing')}
+                    onChange={(event) => setDensityText(event.target.value)}
+                  />
+                  <small>{t('materialsLibrary.densityHelp')}</small>
+                </label>
+              ) : (
+                <NumberInput
+                  label={t('materials.density')}
+                  value={draft.density ?? 1.1e-9}
+                  min={1e-15}
+                  onChange={(density) => setDraft((old) => ({ ...old, density }))}
+                />
+              )}
               {draft.model === 'linear_elastic' ? (
                 <>
                   <NumberInput

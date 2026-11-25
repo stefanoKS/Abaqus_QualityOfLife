@@ -2802,6 +2802,25 @@ button.destructive.solid:hover:not(:disabled) {
   gap: 8px;
   padding: 10px 15px;
 }
+/* The active document strip names exactly what Close will end. */
+.file-active {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--surface-sunken, rgba(0, 0, 0, 0.04));
+  font-size: var(--text-meta);
+}
+.file-active span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.file-active button {
+  flex: 0 0 auto;
+}
 .file-open {
   display: flex;
   flex-wrap: wrap;

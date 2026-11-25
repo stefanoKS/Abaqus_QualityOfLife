@@ -337,7 +337,10 @@ async def preview_cae_library(file: UploadFile = File(...)):
     cards = []
     for card in library.cards:
         entry = card.describe()
-        entry["eligibility"] = abaqus_lib.eligibility(card)
+        entry["assessment"] = abaqus_lib.assessment(card)
+        # The historical key name stays for older clients; it now describes the
+        # run suitability of the record, not whether it may be registered.
+        entry["eligibility"] = entry["assessment"]
         cards.append(entry)
     return {
         "file": file.filename or "library.lib",
@@ -345,8 +348,35 @@ async def preview_cae_library(file: UploadFile = File(...)):
         "bytes": library.size,
         "containers": library.containers,
         "cards": cards,
-        "eligible": sum(1 for entry in cards if entry["eligibility"]["eligible"]),
+        "registrable": sum(1 for entry in cards if entry["assessment"]["registrable"]),
+        "available": sum(1 for entry in cards if entry["assessment"]["available"]),
+        "eligible": sum(1 for entry in cards if entry["assessment"]["available"]),
     }
+
+
+def _cae_card_payload(decision: dict, color: str, family: str) -> dict:
+    """The stored card for one registered record, faithful to its source."""
+    elastic = decision.get("elastic") or {}
+    payload = {
+        "model": decision["model"],
+        "color": color,
+        "density": decision["density"],
+        "young": elastic.get("young"),
+        "poisson": elastic.get("poisson"),
+        "c10": None,
+        "d1": None,
+        "test_data": [],
+        "family": family,
+        "hyperfoam": None,
+        "hyperelastic": None,
+        "viscoelastic": None,
+        "plastic": None,
+        "mullins": None,
+        "thermal": None,
+    }
+    for block in ("hyperfoam", "hyperelastic", "viscoelastic", "plastic", "mullins", "thermal"):
+        payload[block] = (decision.get("blocks") or {}).get(block)
+    return payload
 
 
 @app.post("/api/material-library/cae/import")
@@ -354,9 +384,16 @@ async def import_cae_library(
     file: UploadFile = File(...),
     keys: str = Form("[]"),
     family: str = Form("polymer"),
+    families: str = Form("{}"),
     units: str = Form("N-mm-s-tonne"),
 ):
-    """Register selected eligible cards with a stable fingerprint and provenance."""
+    """Register every well-formed selected record with its full source data.
+
+    Registering and running are separate: a record whose source omits a density,
+    or whose law this phase cannot emit, is still registered and visible, and
+    carries the precise missing input. ``families`` lets a mixed import declare
+    the engineering family per card; the per-card hint is a default only.
+    """
     data = await file.read()
     library = _read_cae_upload(data)
     from packages.engineering import abaqus_lib
@@ -371,46 +408,83 @@ async def import_cae_library(
         wanted = [str(key) for key in json.loads(keys)]
     except ValueError as exc:
         raise ValueError("The selected card list is not valid JSON.") from exc
+    try:
+        declared = json.loads(families or "{}")
+    except ValueError as exc:
+        raise ValueError("The per-card family declaration is not valid JSON.") from exc
+    if not isinstance(declared, dict) or any(
+        value not in ("polymer", "metal") for value in declared.values()
+    ):
+        raise ValueError("Each declared family must be polymer or metal.")
     chosen = [card for card in library.cards if card.key in set(wanted)]
     if not chosen:
         raise ValueError("Select at least one card to import.")
     _cae_source_path(library.fingerprint).write_bytes(data)
     existing = material_library.list_materials(include_archived=True)
-    by_record = {}
+    by_record: dict[str, list[dict]] = {}
     for entry in existing:
         detail = material_library.get(entry["id"])
         for version in reversed(detail.get("versions", [])):
             source = version.get("source") or {}
             if source.get("sha256") == library.fingerprint and source.get("record"):
-                by_record.setdefault(source["record"], detail)
+                by_record.setdefault(source["record"], []).append(detail)
     registered, skipped, conflicts = [], [], []
     palette = ["#46ad94", "#dc9b50", "#5b8def", "#b06ad4", "#d45b5b", "#7a8a99"]
     for card in chosen:
-        decision = abaqus_lib.eligibility(card)
-        if not decision["eligible"]:
+        decision = abaqus_lib.assessment(card)
+        if not decision["registrable"]:
             skipped.append(
                 {
                     "key": card.key,
                     "name": card.name,
                     "reasons": decision["reasons"],
+                    "needs": decision["needs"],
                 }
             )
             continue
-        if card.key in by_record:
-            detail = by_record[card.key]
+        card_family = declared.get(card.key) or (
+            family if len(chosen) == 1 else decision["family_hint"]
+        )
+        payload = _cae_card_payload(
+            decision, palette[len(registered) % len(palette)], card_family
+        )
+        try:
+            from services.api.contracts import MaterialCard
+
+            MaterialCard.model_validate(payload).checked(card.name)
+        except ValueError as exc:
+            skipped.append(
+                {
+                    "key": card.key,
+                    "name": card.name,
+                    "reasons": [{"code": "cae.card_invalid", "detail": str(exc)}],
+                    "needs": decision["needs"],
+                }
+            )
+            continue
+        canonical = material_library.canonical_card(payload)
+        same = next(
+            (
+                detail
+                for detail in by_record.get(card.key, [])
+                if material_library.canonical_card(detail["card"]) == canonical
+            ),
+            None,
+        )
+        if same is not None:
             registered.append(
                 {
                     "key": card.key,
-                    "library_id": detail["id"],
-                    "version": detail["current_version"],
+                    "library_id": same["id"],
+                    "version": same["current_version"],
                     "existing": True,
+                    "available": decision["available"],
+                    "needs": decision["needs"],
                 }
             )
             continue
         same_name = [
-            entry
-            for entry in existing
-            if entry["name"].casefold() == card.name.casefold()
+            entry for entry in existing if entry["name"].casefold() == card.name.casefold()
         ]
         name = card.name
         if same_name:
@@ -434,22 +508,16 @@ async def import_cae_library(
             "metadata": card.metadata_json(),
             "data": abaqus_lib._jsonable(card.data),
             "units": units,
+            "family": card_family,
+            "model": decision["model"],
+            "available": decision["available"],
+            "needs": decision["needs"],
+            "reasons": decision["reasons"],
             "exportable": True,
-        }
-        card_payload = {
-            "model": "linear_elastic",
-            "color": palette[len(registered) % len(palette)],
-            "density": decision["values"]["density"],
-            "young": decision["values"]["young"],
-            "poisson": decision["values"]["poisson"],
-            "c10": None,
-            "d1": None,
-            "test_data": [],
-            "family": family,
         }
         created = material_library.create(
             name,
-            card_payload,
+            payload,
             f"Imported from {source['file']} ({library.fingerprint[:8]} record {card.key})",
             source=source,
         )
@@ -459,6 +527,8 @@ async def import_cae_library(
                 "library_id": created["id"],
                 "version": created["current_version"],
                 "existing": False,
+                "available": decision["available"],
+                "needs": decision["needs"],
             }
         )
     return {
@@ -467,8 +537,59 @@ async def import_cae_library(
         "registered": registered,
         "skipped": skipped,
         "conflicts": conflicts,
+        "registrable": sum(
+            1 for card in library.cards if abaqus_lib.assessment(card)["registrable"]
+        ),
         "source": str(_cae_source_path(library.fingerprint)),
     }
+
+
+@app.post("/api/material-library/cae/export")
+def export_cae_library(body: CaeExportRequest):
+    """Write CAE's own bytes to a chosen folder and verify the round-trip.
+
+    The source stream interleaves global memo definitions between records, so a
+    subset cannot be rebuilt byte-for-byte. This is therefore explicitly an
+    original-file export, named as such, and never presented as the edited card.
+    """
+    from packages.engineering import abaqus_lib
+
+    folder = body.folder.strip()
+    if not folder:
+        raise ValueError("Choose a folder for the exported CAE library.")
+    target = Path(folder)
+    if not target.is_dir():
+        raise ValueError("The chosen output folder is not available.")
+    wanted = {str(item) for item in body.material_ids}
+    sources = material_library.cae_sources()
+    if not sources:
+        raise ValueError(
+            "No CAE-imported material is registered yet. App-created cards have no "
+            "CAE source record to export faithfully."
+        )
+    written, skipped = [], []
+    for source in sources:
+        selected = sorted(set(source["materials"]).intersection(wanted)) if wanted else []
+        if wanted and not selected:
+            continue
+        path = _cae_source_path(source["sha256"])
+        if not path.is_file():
+            skipped.append({"sha256": source["sha256"], "reason": "source bytes missing"})
+            continue
+        library = _read_cae_upload(path.read_bytes())
+        stem = Path(source.get("file") or "material-library").stem or "material-library"
+        output = target / f"{stem}-original.lib"
+        counter = 1
+        while output.exists():
+            counter += 1
+            output = target / f"{stem}-original-{counter}.lib"
+        result = abaqus_lib.write_export(library, output)
+        result["mode"] = "original-file"
+        result["covers"] = selected
+        written.append(result)
+    if not written and not skipped:
+        raise ValueError("The selected materials have no CAE source library to export.")
+    return {"files": written, "skipped": skipped, "mode": "original-file"}
 
 
 @app.post("/api/material-library/cae/export")
@@ -574,6 +695,14 @@ def open_model_file_with_identity(body: OpenFileRequest):
         "revision": revision_payload(store.revision(opened["revision"])),
         "path": body.path,
         "sha256": sha256(data).hexdigest(),
+        # Exactly which compatible members were restored, and which item must be
+        # regenerated when the embedded artifact could not be trusted.
+        "restore": {
+            "mesh": opened["mesh"],
+            "fixture": opened["fixture"],
+            "source": opened["source"],
+            "items": opened["items"],
+        },
     }
 
 
@@ -671,19 +800,36 @@ def revision_history(pid: UUID):
 
 @app.post("/api/projects/{pid}/duplicate", response_model=Revision)
 def duplicate_model(pid: UUID, body: DuplicateModel = DuplicateModel()):
-    """Copy the current model into a new, independent model in the same group."""
-    group = store.group_of(str(pid))
-    with store.connection() as db:
+    """Copy the current model into a new, independent model.
+
+    A copy of a model whose group is archived goes to the internal file-document
+    owner, so the copy is editable; an active project group is kept.
+    """
+    with store.connection(True) as db:
+        group_id = store.copy_target_group(db, str(pid))
         head = db.execute(
             "SELECT r.setup, r.source_id FROM projects p JOIN revisions r ON p.head=r.id "
             "WHERE p.id=?",
             (str(pid),),
         ).fetchone()
-    if head is None:
-        raise KeyError("Project not found")
-    setup = json.loads(head["setup"])
-    setup["name"] = body.name or setup["name"][:150] + " · copy"
-    return revision_payload(store.save(setup, source_id=head["source_id"], group=group["id"]))
+        if head is None:
+            raise KeyError("Project not found")
+        setup = json.loads(head["setup"])
+        setup["name"] = body.name or setup["name"][:150] + " · copy"
+        rid = store.append_revision(
+            db, setup, source_id=head["source_id"], group=group_id
+        )
+    return revision_payload(store.revision(rid))
+
+
+@app.post("/api/projects/{pid}/recover", response_model=Revision, status_code=201)
+def recover_model(pid: UUID):
+    """Recover a stranded model as a distinct, independently editable copy.
+
+    The original keeps its archived history and every immutable revision; the
+    returned model has its own identity under the file-document owner.
+    """
+    return revision_payload(store.recover_model(str(pid)))
 
 
 @app.get("/api/jobs")

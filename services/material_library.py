@@ -25,31 +25,74 @@ CARD_FIELDS = (
     "d1",
     "test_data",
     "family",
+    "hyperfoam",
+    "hyperelastic",
+    "viscoelastic",
+    "plastic",
+    "mullins",
+    "thermal",
+)
+
+# A card is stored twice: the legacy scalar columns keep older readers and
+# queries working, and ``properties`` holds the canonical card so a faithful CAE
+# law round-trips without loss. Reads prefer ``properties``.
+LEGACY_KEYS = (
+    "model",
+    "color",
+    "density",
+    "young",
+    "poisson",
+    "c10",
+    "d1",
+    "test_data",
+    "family",
 )
 
 
-def _card_payload(card: dict) -> dict:
+def canonical_card(card: dict) -> dict:
     return {field: card.get(field) for field in CARD_FIELDS}
 
 
 def _same_card(left: dict, right: dict) -> bool:
-    return _card_payload(left) == _card_payload(right)
+    return canonical_card(left) == canonical_card(right)
+
+
+def _legacy_card(row) -> dict:
+    return {
+        "model": row["model"],
+        "color": row["color"],
+        "density": row["density"],
+        "young": row["young"],
+        "poisson": row["poisson"],
+        "c10": row["c10"],
+        "d1": row["d1"],
+        "test_data": json.loads(row["test_data"]),
+        "family": row["family"] if "family" in row.keys() and row["family"] else "polymer",
+        "hyperfoam": None,
+        "hyperelastic": None,
+        "viscoelastic": None,
+        "plastic": None,
+        "mullins": None,
+        "thermal": None,
+    }
+
+
+def _stored_card(row) -> dict:
+    stored = row["properties"] if "properties" in row.keys() else None
+    if stored:
+        try:
+            card = json.loads(stored)
+        except ValueError:
+            card = None
+        if isinstance(card, dict):
+            return {**(_legacy_card(row)), **canonical_card(card)}
+    return _legacy_card(row)
 
 
 def _version_row(row) -> dict:
     return {
         "version": int(row["version"]),
-        "card": {
-            "model": row["model"],
-            "color": row["color"],
-            "density": row["density"],
-            "young": row["young"],
-            "poisson": row["poisson"],
-            "c10": row["c10"],
-            "d1": row["d1"],
-            "test_data": json.loads(row["test_data"]),
-            "family": row["family"] if "family" in row.keys() and row["family"] else "polymer",
-        },
+        "card": _stored_card(row),
         "source": json.loads(row["source"]) if "source" in row.keys() and row["source"] else None,
         "created": row["created"],
         "note": row["note"],
@@ -150,25 +193,27 @@ def _insert_version(db, library_id, card, note, source=None):
             (str(library_id),),
         ).fetchone()[0]
     )
+    canonical = canonical_card(card)
     db.execute(
         "INSERT INTO material_versions(library_id, version, model, color, density, young, "
-        "poisson, c10, d1, test_data, created, note, family, source) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "poisson, c10, d1, test_data, created, note, family, source, properties) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             str(library_id),
             version,
-            card["model"],
-            card["color"],
-            float(card["density"]),
-            None if card.get("young") is None else float(card["young"]),
-            None if card.get("poisson") is None else float(card["poisson"]),
-            None if card.get("c10") is None else float(card["c10"]),
-            None if card.get("d1") is None else float(card["d1"]),
-            json.dumps(card.get("test_data") or [], separators=(",", ":")),
+            canonical["model"],
+            canonical["color"],
+            None if canonical.get("density") is None else float(canonical["density"]),
+            None if canonical.get("young") is None else float(canonical["young"]),
+            None if canonical.get("poisson") is None else float(canonical["poisson"]),
+            None if canonical.get("c10") is None else float(canonical["c10"]),
+            None if canonical.get("d1") is None else float(canonical["d1"]),
+            json.dumps(canonical.get("test_data") or [], separators=(",", ":")),
             time.time(),
             note,
-            card.get("family") or "polymer",
+            canonical.get("family") or "polymer",
             json.dumps(source, sort_keys=True, ensure_ascii=False) if source else None,
+            json.dumps(canonical, sort_keys=True, ensure_ascii=False),
         ),
     )
     db.execute(
@@ -254,17 +299,7 @@ def import_from_revision(revision_id, material_ids=()):
                 }
             )
             continue
-        payload = {
-            "model": card.model,
-            "color": card.color,
-            "density": card.density,
-            "young": card.young,
-            "poisson": card.poisson,
-            "c10": card.c10,
-            "d1": card.d1,
-            "test_data": [list(row) for row in card.test_data],
-            "family": getattr(card, "family", "polymer"),
-        }
+        payload = card_payload(card)
         created = create(
             card.name,
             payload,
@@ -281,8 +316,8 @@ def import_from_revision(revision_id, material_ids=()):
     return result
 
 
-def definition_for_material(material: Material) -> dict:
-    """The library card payload of a model material snapshot."""
+def card_payload(material: Material) -> dict:
+    """The library card payload of a model material, faithful to its law."""
     return {
         "model": material.model,
         "color": material.color,
@@ -293,7 +328,24 @@ def definition_for_material(material: Material) -> dict:
         "d1": material.d1,
         "test_data": [list(row) for row in material.test_data],
         "family": getattr(material, "family", "polymer"),
+        "hyperfoam": (
+            material.hyperfoam.model_dump(mode="json") if material.hyperfoam else None
+        ),
+        "hyperelastic": (
+            material.hyperelastic.model_dump(mode="json") if material.hyperelastic else None
+        ),
+        "viscoelastic": (
+            material.viscoelastic.model_dump(mode="json") if material.viscoelastic else None
+        ),
+        "plastic": material.plastic.model_dump(mode="json") if material.plastic else None,
+        "mullins": material.mullins.model_dump(mode="json") if material.mullins else None,
+        "thermal": material.thermal.model_dump(mode="json") if material.thermal else None,
     }
+
+
+def definition_for_material(material: Material) -> dict:
+    """The library card payload of a model material snapshot."""
+    return card_payload(material)
 
 
 def cae_sources():

@@ -22,13 +22,17 @@ scroll the left pane below the assembly tree to reach the analysis actions.
 
 | Area | Contents |
 |---|---|
-| Header | Product logo and name, Workspace / Dashboard switch, session indicator, language selector |
+| Header | Product logo and name, **Dashboard → Workspace → Materials** in that order, session indicator, language selector |
 | Model header | Model name, revision, dimension, unit system, readiness notice; automatic save state and **Duplicate setup** |
 | Left work area | Two-column workflow (with per-step configuration state) and the assembly tree |
 | Property editor | Editor for the selected workflow stage or CAD entity; scrolls on its own |
 | Drawing field | White geometry, mesh and result viewport with zoom / fit tools on the right |
 | Analysis actions | Below the assembly tree in every setup stage. Includes **Prepare input deck**, **Submit Abaqus analysis**, deck status, inspection and download, run name, CPU count, launcher status and the active-run link |
 | Footer | Save state, validation message, worker phase |
+
+The application opens on the **Dashboard**, which is the file entry point: **New model**, **Open
+model…**, **Open result…**, the recent-file list and **Close model**. Workspace opens the document
+this tab is working on; Materials is a detour that returns to it.
 
 On a narrow window or at high browser zoom the panes stack in the page flow and a **Workflow &
 properties** button collapses them, so the drawing field and the stage actions remain reachable. The
@@ -277,20 +281,40 @@ of selected versions only (no fit or extrapolation).
 merged by name, so two distinct cards with the same name remain separate.
 
 **Import a CAE material library.** In the Materials page, **Import a CAE material library** reads an
-Abaqus/CAE `.lib` file without executing it, shows every card, its law and the exact reason it can or
-cannot be registered, and registers only the eligible cards you tick. Only a pure isotropic
-linear-elastic card with a constant density maps exactly; hyperfoam, hyperelastic, plastic,
-viscoelastic, Mullins and thermal-only cards stay visible but blocked. Declare the structural family
-(polymer or metal) and the unit basis for the batch. An identical reimport reuses the existing entry;
-two different cards with the same name are both registered and distinguished by a content suffix.
-**Export a CAE material library** writes the original CAE record bytes to a folder, verifies the
-round-trip and publishes the file atomically.
+Abaqus/CAE `.lib` file without executing it and shows every record with its law, its engineering
+family and whether it is **ready for a new 2D run**, **needs a density** or has **no structural law**.
+Every well-formed record is registered when ticked — registering and running are separate. Declare
+the family per card (polymer or metal); the default comes from the card's modulus and can be changed
+before importing, so a mixed library never misclassifies a metal card. An identical reimport reuses
+the existing entry; two different records with the same name are both registered and distinguished
+by a content suffix. **Export a CAE material library** writes the original CAE record bytes to a
+folder, verifies the round-trip and publishes the file atomically; it is labelled an *original-file*
+export because the untouched source stream is not a rebuilt selection.
+
+**Registered CAE laws.** A registered card shows a read-only property/table view of the source law
+(hyperfoam, hyperelastic, viscoelastic, plastic, Mullins, thermal) with its options, columns and rows
+exactly as the source defines them. The simplified editor never rewrites that law. If the source
+omits a density, the density field is empty and the card says *needs a density*: enter the value and
+save to create a new version. Saved revisions keep pinning the earlier version, so a historical run
+is unaffected. A direct `*Hyperfoam` row is written packed at most eight values per line in keyword
+order; a Hyperfoam test-data card whose source lateral strain flag is OFF is written with two active
+columns, never with its zero-filled storage column.
 
 **Engineering family and element type.** Each card declares a family. Polymer quadrilaterals are
 reduced-integration **CPS4R**; deformable metal quadrilaterals are full-integration **CPS4**. Triangle
 seal elements stay CPS3 and rigid profiles stay R2D2. The INP writes one element block and one
 per-region ELSET/section per type. Changing the family requires a new mesh; changing a coefficient
 reuses the mesh and the reviewed fixture but stales the deck.
+
+**File documents and Close.** Models created or opened from the File commands live in an internal
+*File documents* owner that has no archive or delete control, so they stay editable even when a
+project group is archived. **Close model** on the Dashboard ends only this tab's document session and
+names the document it will close; recent files, the saved model and any queued analysis are
+unaffected. If the file on disk is behind the working head, Close offers **Save and close**,
+**Close without saving** or **Cancel**. Save, `Ctrl+S`, Save As and Save and close all commit a valid
+field edit first and then write the exact revision the workspace just saved. A model stranded in an
+archived group can be recovered with **Recover as an editable copy**, which creates a distinct
+editable model and leaves the original archived.
 
 In the workspace, choose a region and either pick an existing model-local card or **Assign from the
 material library**. The summary shows the pinned library version. If the library has a newer version,
