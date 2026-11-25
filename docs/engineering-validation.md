@@ -1,3 +1,95 @@
+## Native failure and partial-result recovery · 2026-11-26
+
+This section supports the [partial-results execution handoff](partial-results-arrows-multiplier-handoff.txt).
+It records three **native** Abaqus/Standard 2024 cases and distinguishes them from manufactured test
+evidence. No operator run on port 8765 was contacted. Source ODBs, locks, decks and retained packages
+were copied into ignored `.local` evidence roots; every source artifact was read-only.
+
+### A. Retained cancelled ODB re-read through the production extractor — native, cancelled
+
+| Item | Measured value |
+|---|---|
+| Source job | `313893f2-7a6a-46ab-acb6-a1878922150f` (recorded solver Cancelled, extraction Pending) |
+| Source ODB SHA-256 / bytes | `5faf3255638e3cb033f1bd45b2b0ee6c9fa3bf38b3f0f94e430b036c45f528ea` / 40,894,464 |
+| Source lock | retained, mtime unchanged after the read |
+| Extractor | installed Abaqus 2024 Python, read-only copy, exit **0** in 12.9 s |
+| Frames / last ordinal | **43** / **42** (native frame ID and increment **162**) |
+| Last saved time | **0.8399999737739563 s** (total), local 0.8399999737739563 s |
+| Availability | **partial** (solver outcome Cancelled) |
+| Node / station | PANEL-1 node **238**, station **17.5 mm** |
+| CPRESS | **2.8307080268859863 MPa = 2830.7080268859863 kPa** |
+| CNORMF | **(0.00834000576287508, 1.4145596027374268) N** |
+| Index SHA-256 | `4d782a4c1ec0e29c79f4e0c3982a4c0f8d754511881d7b772ddb13609384089d` |
+| Partial package | `…-partial.aqresult`, SHA-256 `7fa5545cdf3361e34330f8e4f76e76021f57ee7e729afc71729e2fd81268229e` |
+| UI (Results) | `43 / 43`, frame time **0.840 s**, node 238 / 17.5 mm / 2830.7080268859863 kPa / native 2.8307080268859863 MPa / Fx 0.00834000576287508 / Fy 1.4145596027374268 |
+| Reopened package | `43 / 43` and the same reference measurement in a fresh data root |
+
+This proves recovery of a native cancellation; it is **not** a failed-solver case.
+
+### B. Bounded native failed one-panel Closing case — genuine solver failure, usable ODB
+
+Deck: the application-generated `synthetic()` one-panel deck, unchanged except `inc=100` and
+`time interval=0.01` (the output/increment contract Abaqus requires). Abaqus accepted **100**
+increments (11 cutbacks, 288 iterations) and terminated with `**ERROR`/`THE ANALYSIS HAS NOT BEEN
+COMPLETED`; `analysis.sta` never reports completion. The batch wrapper returned process exit **0**
+even though `launcher.solver_evidence` returned **False** (“Abaqus reported an analysis error”), so
+the solver outcome is taken from the evidence, not the wrapper exit code.
+
+| Item | Measured value |
+|---|---|
+| INP SHA-256 | `04a7950d2aac1c26197fac9ae0841d08dbd3d75713cae7e87fa4caff6c2ac66d` |
+| ODB SHA-256 / bytes | `184ef76d9f33563f61e058b011de4dd305dcdf1bf118d09f8881d05633a72c42` / 5,334,008 |
+| Solver exit / evidence | **0** / **failure** (2 error messages; last status line `THE ANALYSIS HAS NOT BEEN COMPLETED`) |
+| Extraction exit | **0** in 16.2 s |
+| Frames / last ordinal | **65** / **64** (native frame ID 100, increment 100) |
+| Last saved time | local **0.6324414014816284 s**; total **0.6324414014816284 s** |
+| Availability | **partial** |
+| Reference node / station | node **264**, station **19.5 mm** |
+| CPRESS | **0.17752908170223236 MPa = 177.52908170223236 kPa** |
+| CNORMF | **(−0.0006900692242197692, 0.08880005031824112) N** |
+| Package SHA-256 | `338f47000e5e99eda1d32fbbcdc3d8513ebeb624dca050083f983693de3137ea` |
+| UI / reopened | `65 / 65`, **0.632 s**, same node/station/pressure/force |
+
+### C. Bounded native failed two-panel Closing case — genuine solver failure after Body seating
+
+The `two_panel_section()` deck was bounded only in its **Closing** step (`inc=150`, output interval
+0.01 s); Body seating kept its original output plan. Abaqus completed Body seating, accepted 150
+Closing increments (22 cutbacks) and then failed. The last saved step is Closing, not Body seating.
+
+| Item | Measured value |
+|---|---|
+| INP SHA-256 | `0a1c9db1ea737d4434e672dc8b0a7c6c84efacf59455b4816f9a243cb9e8012c` |
+| ODB SHA-256 / bytes | `93b266d49ed8ed1906a6701427f054caf6c3e6277bf1ec42e4d4fe2b46869c5a` / 10,896,548 |
+| Solver exit / evidence | **0** / **failure** (`THE ANALYSIS HAS NOT BEEN COMPLETED`) |
+| Extraction exit | **0** in 35.7 s |
+| Frames / last ordinal | **136** / **135** (native frame ID 150, increment 150) |
+| Last closing time | local **0.8334758877754211 s**; total **1.8334758877754211 s** |
+| Availability | **partial** |
+| Reference node / station | node **266**, station **19.5 mm** |
+| CPRESS | **0.17229050397872925 MPa = 172.29050397872925 kPa** |
+| CNORMF | **(−0.0005710562109015882, 0.08619822561740875) N** |
+| Package SHA-256 | `dfa2b4aa48344d610e72e6ec3731aaa33da4511c33c092c01fb6a56e5f81266f` |
+| UI / reopened | `136 / 136`, **1.833 s**, same reference |
+
+### D. Manufactured evidence (separate)
+
+Gate 1 lifecycle cases use `tests/fake_abaqus.py` and `tests/manufactured_results.py`; every artifact
+is labelled `MANUFACTURED TEST EVIDENCE - not an Abaqus analysis.` They exercise partial publication,
+history-only, initial-only, unreadable tail, retry/cancel and portable reopen. They are **not** solver
+evidence and are not mixed with A–C.
+
+### Commands actually run
+
+~~~powershell
+.\venv\Scripts\python.exe scripts\gate2_native_partial.py --source .local\gate-c\data\jobs\313893f2-7a6a-46ab-acb6-a1878922150f --evidence .local\evidence\gate2-native-partial
+.\venv\Scripts\python.exe scripts\gate2_native_failed.py --case one --evidence .local\evidence\gate2-native-failed-one
+.\venv\Scripts\python.exe scripts\gate2_native_failed.py --case two --evidence .local\evidence\gate2-native-failed-two
+~~~
+
+Each script writes its full report, ODB hash, frame identity, reference measurement, exit statuses,
+log tails and a `-partial.aqresult`. The browser evidence (`apps/web/tests/native-partial.spec.ts`)
+then opens Results and the packaged file and writes the measured UI coordinates to `ui.json`.
+
 # Engineering validation
 
 ## Readable field output from a cancelled Closing run · 2026-11-26

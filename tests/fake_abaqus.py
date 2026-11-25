@@ -28,6 +28,7 @@ job = pathlib.Path.cwd()
 arguments = sys.argv[1:]
 
 if arguments and arguments[0].lower() == "python":
+    time.sleep(float(os.environ.get("ABAQUS_QOL_FAKE_EXTRACT_SECONDS", "0")))
     if (job / "fail-extract-once").exists():
         (job / "fail-extract-once").unlink()
         print("Manufactured extraction failure")

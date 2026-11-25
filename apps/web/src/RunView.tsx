@@ -1274,6 +1274,9 @@ export function RunView({
     ),
   }
   const pressureAxisLabel = t('run.pressureAxis') + factorTag
+  // The exported two-row header keeps its established ×1 form so existing
+  // spreadsheets and golden comparisons remain valid; a factor is appended once.
+  const pressureExportLabel = 'CPRESS (kPa)' + factorTag
   const loadOrdinateDisplay = loadOrdinate + factorTag
   const pressurePositive = pressureRows.filter(
     (row) => row.pressure !== null && row.pressure > 0,
@@ -1423,7 +1426,7 @@ export function RunView({
       (multiplier === 1 ? '' : '-x' + formatNumber(multiplier)) +
       (resultPartial ? '-partial' : '') +
       '.csv'
-    download(filename, twoRowCsv('door station(mm)', pressureAxisLabel, pressureExportPoints))
+    download(filename, twoRowCsv('door station(mm)', pressureExportLabel, pressureExportPoints))
   }
   if (!job) return <main className="page">{t('run.opening')}</main>
   const disabled = index?.unavailable ?? []
@@ -1875,10 +1878,14 @@ export function RunView({
                 </label>
               </div>
               {/* Pressure arrows live with the other field-visualization
-                  controls below the viewport. One toggle serves every field;
-                  its calibration is independent of zoom and deformation. */}
-              <fieldset className="arrow-controls" data-testid="arrow-controls">
-                <legend>{t('run.pressureArrows')}</legend>
+                  controls below the viewport. One compact group serves every
+                  field; its calibration is independent of zoom and deformation. */}
+              <div
+                className="arrow-controls"
+                data-testid="arrow-controls"
+                role="group"
+                aria-label={t('run.pressureArrows')}
+              >
                 <label className="check">
                   <input
                     type="checkbox"
@@ -1895,7 +1902,7 @@ export function RunView({
                   {t('run.pressureArrows')}
                 </label>
                 <label>
-                  {t('run.arrowMode')}
+                  <span className="visually-hidden">{t('run.arrowMode')}</span>
                   <select
                     data-testid="arrow-mode"
                     aria-label={t('run.arrowMode')}
@@ -1911,7 +1918,7 @@ export function RunView({
                 </label>
                 {arrowMode === 'manual' ? (
                   <label>
-                    {t('run.arrowManualCalibration')}
+                    <span>{t('run.arrowManualCalibration')}</span>
                     <input
                       type="number"
                       min={1e-9}
@@ -1942,7 +1949,7 @@ export function RunView({
                     {t('run.pressureArrowsUnavailable')}
                   </small>
                 )}
-              </fieldset>
+              </div>
               {/* Material outlines are an independent display preference (default
                   off). They are separate from mesh edges, node markers, the
                   selected field and the deformation scale. */}
@@ -2048,6 +2055,7 @@ export function RunView({
                   {t('run.curveStep')}
                   <select
                     aria-label={t('run.curveStep')}
+                    data-testid="curve-step"
                     value={curveStep ?? ''}
                     onChange={(e) => setCurveStep(e.target.value || null)}
                   >

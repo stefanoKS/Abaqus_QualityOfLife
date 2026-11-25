@@ -1,3 +1,51 @@
+## Partial results, pressure-arrow calibration and result multiplier · delivered · 2026-11-26
+
+Executed the [handoff](docs/partial-results-arrows-multiplier-handoff.txt) on the working tree after
+`001d2db`. The door-pressure/OTR delivery and the first part of this work were committed during the
+session as `69af369`; the remaining edits stay uncommitted. Every existing edit was preserved. All
+application verification used disposable `SEAL_DATA` roots, isolated servers and ignored local
+evidence; the operator instance on 8765 was not contacted. Background: two bounded native
+Abaqus/Standard failed runs were launched (licensed tokens consumed) and the retained cancelled ODB
+was re-read from a verified inactive copy. The full detail is in
+[implementation-report.md](docs/implementation-report.md#a17-partial-results-pressure-arrow-calibration-and-result-multiplier--2026-11-26)
+and [engineering-validation.md](docs/engineering-validation.md#native-failure-and-partial-result-recovery--2026-11-26).
+
+Build **`482526a81e5b`** (entry `index-Cd7q6cKl.js`, API 3).
+
+### Gate status
+
+| Gate | Status | Measured outcome |
+|---|---|---|
+| 1 — Lifecycle and opening | **PASS (software, manufactured)** | 8 store/API/worker tests: one-panel Closing saved at 0.60 s, two-panel failure before Closing, two-panel Closing 0.60 s/local, history-only, initial-only, unreadable tail keeping its predecessor, duplicate equal-time frame ordinals, auto salvage, no-ODB refusal, retry keeping the prior generation byte-identical, cancel-extraction leaving solver Failed, and no-viewer `-partial.aqresult` publication. Exactly one solver launch across the retry/cancel paths. Browser partial open through File → Open result: last frame, earlier frames, Diagnostics round-trip, Dashboard link and body-step curve all pass. |
+| 2 — Native evidence | **PASS** | Cancelled `313893f2`: ODB `5faf3255…`, 43 frames, ordinal **42**, native frame/increment **162**, time **0.8399999737739563 s**, node 238 / 17.5 mm / **2830.7080268859863 kPa** / CNORMF **(0.00834000576287508, 1.4145596027374268) N**, extraction exit 0. One-panel native failure: ODB `184ef76d…`, 65 frames, last 0.6324414 s, 177.5290817 kPa. Two-panel native Closing failure: ODB `93b266d4…`, Body seating complete, 136 frames, local 0.8334759 / total 1.8334759 s, 172.2905040 kPa. Results + File Open agree for all three; `ui.json` holds canvas/readout coordinates. |
+| 3 — Arrow geometry and viewport | **PASS (browser)** | Manual ×1 tip (5,7) mm from tail (2,3), ×2 (8,11) mm; independent CSS projection within **1 px** at DPR 1/2; Auto constant through zoom, resize recomputation, ×2 doubling; Off clears shafts/heads/key across pause/play/step while graph stays usable; EN/JA at 1280×720 and short height without overflow. |
+| 4 — Quantities, gaps, portability | **PASS (numerical/browser)** | Force 8→16, pressure 10→20 kPa, von Mises 0.1→0.2 MPa with actual colour change and unscaled Auto reference, CNORMF (3,4)→(6,8) N / norm 10; exports `F (N) ×2,16,24`, `×0.5,4,6`, `F (N),8,12`, `×0,0,0`, with `-x2/-x0.5/-x0/-partial`; missing stroke `0,,40` and original `0,,2 / 0,123,40`; shortened station array disables spatial export; retained 9efc/GENKOU goldens byte-identical; live-origin portability assertions are HTTP 200 with real content. |
+| 5 — Geometry, timing, release | **PARTIAL** | Both OTR drafts exit 0 (decks `b3a6f257…` / `05f33b8c…`, WSFIX 10/10, 95/71 R2D2 identities, SPOS +0.922995/+0.859663, one section). D1 offset regression dot ≈ +1 with first touch 1 mm and shared typed ambiguity. Playback cadence **median 236.1 ms, p95 23.0 ms** isolated and **30.1 ms** under the suite. Python **402 passed, 1 skipped**; 1072 translation keys; encoding 48; typecheck/build; schema unchanged; diff check clean. Full browser suite **194 passed, 3 failed, 11 skipped** (208, 15.6 min): `materials` and `offset-picking` pass in the 17-test rerun; `gate-a` Fit/reset camera (9.80507 vs 9.0) still fails in isolation and predates this slice. |
+
+### Tests actually run
+
+- `pytest -q`: **402 passed, 1 skipped**, exit 0. New `tests/test_partial_results.py` (8) and
+  `tests/test_contact_orientation.py` (3).
+- Native gate scripts: `gate2_native_partial.py`; `gate2_native_failed.py --case one` and `--case two`;
+  all extraction exits 0.
+- Browser: `partial-results.spec.ts` 7 passed; `native-partial.spec.ts` 1 passed per native job;
+  `resampled-exports.spec.ts` 6 passed/1 skipped; `run-layout` completed-result passed; `gate-f`
+  passed; `resampled-exports-portability.spec.ts` 2 passed against a disposable live-copy origin.
+- `test:i18n` 1072 keys, `test:encoding` 48 files, `typecheck`, `build`, `scripts/schema.py`
+  (byte-identical), `git diff --check` clean.
+
+### Outstanding
+
+1. Physical correlation, mesh/stroke sensitivity and solver convergence remain unestablished; the
+   native failures prove recovery only.
+2. `gate-a` Fit/reset camera comparison still fails on this machine in isolation (pre-existing).
+3. The operator instance on 8765 was not upgraded and still serves its prior release.
+4. 3D solving remains deferred.
+
+**Next executable slice.** Close the `gate-a` Fit/reset camera discrepancy on this machine, then run
+the full browser suite on a green tree. Obtain independent physical measurements and agreed
+tolerances before any correlation claim.
+
 # Abaqus QOL implementation handoff
 
 ## Next execution — partial results, pressure arrows and result multiplier · 2026-11-26

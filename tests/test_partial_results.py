@@ -8,6 +8,8 @@ import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -89,6 +91,8 @@ def test_failed_solver_auto_salvages_and_packages_a_partial_result(
         assert summary["availability"] == "partial"
         assert summary["solver_outcome"] == "Failed"
         assert summary["frames"] > 0
+        # The lifecycle evidence saves a Closing failure at local 0.60 s.
+        assert summary["last_local_s"] == pytest.approx(0.6, abs=1e-9)
         assert job["status"] == "Failed"
         # The same API exposes the partial generation for display and download.
         assert api.get("/api/jobs/" + run["id"] + "/display-metadata").status_code == 200
@@ -161,6 +165,7 @@ def test_two_panel_failure_before_closing_and_at_closing(monkeypatch, tmp_path):
         closing_summary = later["result"]["summary"]
         assert closing_summary["last_step"] == "Closing"
         assert closing_summary["last_role"] == "door"
+        assert closing_summary["last_local_s"] == pytest.approx(0.6, abs=1e-9)
         # The last saved total time includes the completed Body seating step.
         assert closing_summary["last_total_s"] > closing_summary["last_local_s"]
 
@@ -240,6 +245,85 @@ def test_no_odb_candidate_leaves_no_partial_and_no_solver_relaunch(
         response = api.post("/api/jobs/" + run["id"] + "/extract")
         assert not response.is_success
         assert "ODB" in response.text or "native" in response.text.lower()
+
+
+def test_worker_publishes_a_partial_aqresult_without_a_browser(
+    monkeypatch, tmp_path
+):
+    launcher = install_fake_abaqus(tmp_path / "launch")
+    output = tmp_path / "out"
+    output.mkdir()
+    with api_for(monkeypatch, tmp_path / "data", launcher) as api:
+        revision, deck = prepared(api)
+        run = api.post(
+            "/api/runs",
+            json={
+                "revision": revision["id"],
+                "deck": deck["id"],
+                "token": store.new_id(),
+                "name": "No viewer",
+                "mode": "ABAQUS",
+                "cpus": 1,
+                "output_dir": str(output),
+            },
+        ).json()
+        directory = store.job_dir(run["id"])
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "fail-solver-with-odb").touch()
+        (directory / "partial-closing").touch()
+        run_worker()
+        run_worker()
+        job = store.job(run["id"])
+        assert job["result_state"] == "partial"
+        assert job["publication"] == "Saved"
+        assert job["result_file"] and job["result_file"].endswith("-partial.aqresult")
+        published = list(output.glob("*partial.aqresult"))
+        assert len(published) == 1
+        reopened = api.post("/api/files/result/open", json={"path": str(published[0])})
+        assert reopened.is_success, reopened.text
+        assert reopened.json()["result_state"] == "partial"
+
+
+def test_cancelling_an_extraction_leaves_the_stopped_solver_failed(
+    monkeypatch, tmp_path
+):
+    launcher = install_fake_abaqus(tmp_path / "launch")
+    with api_for(monkeypatch, tmp_path / "data", launcher) as api:
+        revision, deck = prepared(api)
+        run = run_with(api, revision, deck, "Cancel extraction", "partial-closing")
+        (store.job_dir(run["id"]) / "fail-solver-with-odb").touch()
+        run_worker()
+        assert store.job(run["id"])["extraction"] == "Queued"
+        monkeypatch.setenv("ABAQUS_QOL_FAKE_EXTRACT_SECONDS", "3")
+        with ThreadPoolExecutor(1) as pool:
+            work = pool.submit(run_worker)
+            for _ in range(300):
+                if store.job(run["id"])["extraction"] == "Running":
+                    break
+                time.sleep(0.02)
+            assert store.job(run["id"])["extraction"] == "Running"
+            cancelled = api.post("/api/jobs/" + run["id"] + "/cancel")
+            assert cancelled.is_success, cancelled.text
+            work.result(timeout=60)
+        job = store.job(run["id"])
+        # The solver had already stopped: only the extraction was cancelled.
+        assert job["solver"] == "Failed"
+        assert job["extraction"] == "Cancelled"
+        assert job["cancel_scope"] == "extraction"
+        assert job["result_state"] == "none"
+        # Authorising a fresh attempt clears the stale flag; no solver rerun.
+        monkeypatch.setenv("ABAQUS_QOL_FAKE_EXTRACT_SECONDS", "0")
+        authorized = api.post("/api/jobs/" + run["id"] + "/extract")
+        assert authorized.is_success, authorized.text
+        run_worker()
+        final = store.job(run["id"])
+        assert final["solver"] == "Failed"
+        assert final["extraction"] == "Succeeded"
+        assert final["result_state"] == "partial"
+        solver_log = (store.job_dir(run["id"]) / "solver.log").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        assert solver_log.count("Manufactured solver failure") == 1
 
 
 def test_duplicate_equal_time_frames_keep_ordinal_identity(tmp_path):

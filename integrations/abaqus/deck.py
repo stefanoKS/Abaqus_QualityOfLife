@@ -1135,13 +1135,30 @@ def _contact_alignment(ordered, nodes, seal, offset=0.0, delta=None):
             (first[0] + second[0]) / 2.0, (first[1] + second[1]) / 2.0 + offset
         )
         distance = placed.distance(seal_geom)
-        sweep_distance = (
-            LineString(
-                [(placed.x, placed.y), (placed.x + delta[0], placed.y + delta[1])]
-            ).distance(seal_geom)
-            if swept
-            else distance
-        )
+        sweep_distance = distance
+        contact_fraction = None
+        if swept:
+            from shapely.geometry import LineString
+            from shapely.ops import nearest_points as _nearest
+
+            end = (placed.x + delta[0], placed.y + delta[1])
+            path = LineString([(placed.x, placed.y), end])
+            sweep_distance = path.distance(seal_geom)
+            on_path, _on_seal = _nearest(path, seal_geom)
+            dx, dy = end[0] - placed.x, end[1] - placed.y
+            denominator = dx * dx + dy * dy
+            contact_fraction = (
+                max(
+                    0.0,
+                    min(
+                        1.0,
+                        ((on_path.x - placed.x) * dx + (on_path.y - placed.y) * dy)
+                        / denominator,
+                    ),
+                )
+                if denominator > 0
+                else 0.0
+            )
         if distance <= CLEARANCE_TOLERANCE:
             direction = None
             dot = 0.0
@@ -1161,6 +1178,7 @@ def _contact_alignment(ordered, nodes, seal, offset=0.0, delta=None):
                 "element": element,
                 "distance": distance,
                 "sweep_distance": sweep_distance,
+                "contact_fraction": contact_fraction,
                 "direction": direction,
                 "dot": dot,
             }
@@ -1176,9 +1194,21 @@ CONTACT_NEIGHBORHOOD_MM = 0.5
 def _first_contact(rows):
     if not rows:
         return []
-    # The swept distance is the evidence that matters when the drawing is placed
-    # away from the seal: it names the elements the prescribed path reaches
-    # first, not the elements that merely look nearest in the undeformed drawing.
+    # The first-contact neighborhood is the earliest band along the prescribed
+    # sweep, not every element whose path eventually crosses the seal: a curved
+    # return can otherwise pull in segments that face away and never touch
+    # first. The 5% band is measured on the actual stroke.
+    fractions = [row["contact_fraction"] for row in rows if row.get("contact_fraction") is not None]
+    if fractions:
+        earliest = min(fractions)
+        band = [
+            row
+            for row in rows
+            if row.get("contact_fraction") is not None
+            and row["contact_fraction"] <= earliest + 0.05
+        ]
+        if band:
+            return band
     metric = "sweep_distance" if any("sweep_distance" in row for row in rows) else "distance"
     closest = min(row[metric] for row in rows)
     limit = closest + max(CONTACT_NEIGHBORHOOD_MM, closest * 0.02)

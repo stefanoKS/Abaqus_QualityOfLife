@@ -123,6 +123,18 @@ test.describe('native partial through Results and File Open', () => {
 })
 
 async function clickPressurePoint(page: Page, x: number, y: number) {
+  await expect(page.getByTestId('pressure-chart')).toBeVisible()
+  await page.getByTestId('pressure-chart').scrollIntoViewIfNeeded()
+  await expect
+    .poll(async () =>
+      page.evaluate(() => {
+        const element = document.querySelector(
+          '[data-testid="pressure-chart"] .js-plotly-plot',
+        ) as unknown as { _fullLayout?: unknown } | null
+        return Boolean(element?._fullLayout)
+      }),
+    )
+    .toBe(true)
   const point = await page.evaluate(
     ({ x, y }) => {
       const element = document.querySelector(

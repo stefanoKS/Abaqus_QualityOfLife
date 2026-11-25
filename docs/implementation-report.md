@@ -1,3 +1,94 @@
+## A17. Partial results, pressure-arrow calibration and result multiplier · 2026-11-26
+
+Execution handoff: [partial-results-arrows-multiplier-handoff.txt](partial-results-arrows-multiplier-handoff.txt).
+Implemented on the working tree after `001d2db`. The door-pressure/OTR delivery and the first part of
+this work were committed during the session as `69af369`; the remaining edits stay uncommitted. Every
+pre-existing edit was preserved. All application verification used disposable `SEAL_DATA` roots,
+isolated servers and ignored local evidence; the operator instance on 8765 was not contacted or
+upgraded. Two bounded **native** Abaqus/Standard failed cases were launched (licensed tokens consumed)
+and the retained cancelled ODB was re-read read-only; the rest of the lifecycle evidence is
+manufactured test evidence.
+
+Verified build: API 3, frontend release **`482526a81e5b`** (entry `index-Cd7q6cKl.js`).
+
+| Gate | Result | Principal evidence |
+|---|---|---|
+| 1 — Lifecycle and opening | **PASS (software, manufactured)** | `tests/test_partial_results.py` **8 passed** on the real store/API/worker: one-panel Closing failure saved at local **0.60 s**; two-panel failure with only Body-seating frames; two-panel failure at Closing local 0.60 / total > 0.60; history-only; initial-only; unreadable trailing frame retaining its predecessor; duplicate equal-time frames with ordinals 0/1/2 and native IDs 10/11/12; auto salvage (solver Failed, extraction Queued, salvage 1); no ODB candidate → no partial and no relaunch; failed extraction retry keeping the prior `results.json` and frame set byte-identical; cancellation during extraction leaving solver **Failed** and extraction **Cancelled**; no-viewer worker publication of a `-partial.aqresult`. Solver launches: **exactly 1** across the retry and cancel tests; extraction attempts tracked separately in `extract.log`. Browser `partial-results.spec.ts` (7 passed) opens a partial through File → Open result, lands on the last saved frame, keeps earlier frames and the selection through Diagnostics, and shows the partial link on Dashboard and the body-step curve for a two-panel pre-Closing failure. |
+| 2 — Native evidence | **PASS** | Retained cancelled `313893f2`: ODB SHA `5faf3255…`, 43 frames, last ordinal **42**, native frame/increment **162**, time **0.8399999737739563 s**, node 238 / station 17.5 mm / **2830.7080268859863 kPa** / CNORMF **(0.00834000576287508, 1.4145596027374268) N**, extraction exit 0. Native failed one-panel: ODB `184ef76d…`, solver evidence **failure** after 100 accepted increments, 65 frames, last **0.6324414 s**, node 264 / 19.5 mm / 177.5290817 kPa. Native failed two-panel Closing: ODB `93b266d4…`, Body seating complete, Closing failed after 150 increments, 136 frames, last local **0.8334759 s** / total **1.8334759 s**, node 266 / 19.5 mm / 172.2905040 kPa. All three Results/File-Open checks passed with the same values; `ui.json` records the canvas and readout coordinates. The cancelled, native-failed and manufactured cases are kept separate in [engineering-validation.md](engineering-validation.md). |
+| 3 — Arrow geometry and viewport | **PASS (browser)** | Manufactured synthetic node: CPRESS 0.010 MPa, CNORMF (3,4) N, tail (2,3) mm. Manual ×1 renders the tip at model **(5,7)** and ×2 at **(8,11)** (lengths 5 / 10 mm); independently projected CSS tail/tip agree within **1 px** at DPR 1 and DPR 2. Automatic length is constant through zoom (43.2 px at the test host), recomputed on resize, and doubles with ×2. Off clears shafts/heads/key during pause, play and frame changes while the graph and station selection remain usable. EN/JA controls are localized and fit 1280×720 without page overflow; screenshots are in `.local/evidence/partial-arrows-multiplier/`. |
+| 4 — Quantities, gaps and portability | **PASS (numerical/browser)** | Same frame at ×2: force 8 → **16 N**, pressure 10 → **20 kPa**, von Mises 0.1 → **0.2 MPa** with the unsaturated half-scale sample changing from the mid ramp colour to the maximum colour while Auto keeps the unscaled 0.2 MPa reference; CNORMF (3,4) → **(6,8) N**, norm 5 → **10 N**. Probe text names the scaled components; exports are `F (N) ×2,16,24`, `F (N) ×0.5,4,6`, `F (N),8,12` at ×1 and `F (N) ×0,0,0` at ×0, with `-x2` / `-x0.5` / `-x0` / `-partial` markers. Negative input shows a localized reason and keeps the last valid factor. Missing stroke `[0, missing, 2]` / `[0,123,40]` exports `0,,40` at 1 mm and original rows `0,,2` / `0,123,40`; a shortened station axis disables spatial plotting/export with a reason. Retained `9efc065a` and GENKOU two-row goldens are byte-identical, and the live-vs-reopened portability comparison reads the configured live origin with HTTP 200 assertions. |
+| 5 — Geometry, timing and release | **PARTIAL (feature checks PASS; full suite not fully green)** | Both OTR Prepare workflows exit 0: decks `b3a6f257…` / `05f33b8c…`, WSFIX 10/10, PANEL/BODY 95/71 elements preserved, SPOS min dot **+0.922995 / +0.859663**, one filled section. The D1 regression (door drawn at Y=14, offset −15, upward 2 mm) now orientates the assembled profile with dot ≈ **+1** and first touch at **1 mm**; an opposing-normal neighborhood is refused by the same typed `panel.contact_side_ambiguous` code that readiness maps to `motion.side_ambiguous`. Playback cadence in isolation is **median 236.1 ms, p95 23.0 ms** (budget ≤50 ms), and **p95 30.1 ms** under the full suite. Python **402 passed, 1 skipped**; translations **1072 keys**; encoding 48 files; typecheck/build pass; `scripts/schema.py` reproduces `generated.ts`; `git diff --check` clean. Full isolated browser suite on build `482526a81e5b`, port 19996: **194 passed, 3 failed, 11 skipped (208 tests, 15.6 min)**. The three failures are the known suite-load cases; rerunning them together gave 16 passed and only `gate-a` Fit/reset camera (scale 9.80507 vs 9.0) still failing on this machine, where it also reproduces alone and predates this slice. |
+
+### What is now implemented
+
+- **Three independent result facts.** Jobs persist solver outcome, extraction outcome and result
+  availability (`none` / `partial` / `complete`) with a small summary (last step/role/local/total time,
+  frame ordinal, native frame ID and increment, history-only/initial-only, skipped frames,
+  generation, index digest). A failed or cancelled solver with a candidate ODB queues exactly one
+  extraction-only attempt; `Extract available results` and `Retry extraction` never relaunch a solver.
+- **Attempt-scoped, atomic extraction.** The extractor stages frames in `.extract-staging`, validates
+  every index-to-frame identity, computes display metadata before publication, writes `results.json`
+  last and only then moves the frames into place. A failed attempt restores the prior usable index and
+  leaves its frames untouched. History-only and initial-only generations are explicit; a skipped
+  frame records its step, ordinal, native ID, increment and reason; no interpolation crosses a gap.
+- **Partial opening.** Results accepts a partial generation, opens paused on the last readable saved
+  frame at its actual step and time, keeps earlier frames, shows a compact Failed/Partial notice with
+  the last saved local and total time and the solver diagnostic, selects the curve belonging to the
+  displayed step, and preserves the engineer's frame/step across Diagnostics, delayed frame fetches
+  and polling refreshes. New generations are noticed through the persisted generation counter.
+- **Portability.** A validated partial publishes as `…-partial.aqresult` even with no browser open;
+  the package carries the solver outcome, failure reason, extraction state, last frame and
+  availability, and reopens in a fresh data root with the same badge, frames, values and original job
+  reference. Old packages without these properties keep their legacy rules.
+- **Arrow controls.** The pressure-arrow toggle moved below the field viewport with the other display
+  controls. Automatic screen calibration uses `clamp(24, 0.10 × min(CSS width, CSS height), 80)` px
+  for the unscaled run reference; Manual uses an editable `10 kPa = [5] mm` model calibration. Both
+  apply the display factor to the measured pressure while keeping the Auto denominator unscaled, and
+  neither enters picking, Fit bounds or the stored artifacts. The renderer exposes the actual
+  tail/tip, model-space length and camera affine basis for independent verification.
+- **One result multiplier.** A single labeled ×/Reset control at the top of the response properties
+  scales CLD, door pressure, CNORMF components/magnitude and the stress contour exactly once; it
+  leaves displacement, stroke, station, coordinates, mesh/material identity, thickness, reporting
+  width and recorded force basis unchanged. Fixed/manual contour bounds stay as entered; Auto keeps
+  the unscaled run-wide reference while the data scale with the factor. ×0 is a valid display; negative,
+  non-finite and blank values are localized errors; exports carry the factor and filename marker once.
+- **Audit fixes.** Contact orientation now uses the assembled offset and the earliest contact band of
+  the actual sweep, checked locally on the connected chain, and readiness runs the same check. Missing
+  strokes/ordinates and acquisition breaks stop interpolation; a missing or shortened pressure station
+  axis disables spatial plotting/export with a reason. The portability spec now asserts HTTP 200 and
+  real live-artifact content at the configured live origin. The frame cache holds a full playback loop
+  (96 frames), removing the refetch churn that produced the 78.6 ms p95 playback baseline.
+
+### Tests actually run (this machine, isolated data)
+
+- `.\venv\Scripts\python.exe -m pytest -q`: **402 passed, 1 skipped** (opt-in Abaqus-Python
+  roundtrip), exit 0. New: `tests/test_partial_results.py` (8), `tests/test_contact_orientation.py` (3).
+- `scripts/gate2_native_partial.py` and `scripts/gate2_native_failed.py --case one|two`: native
+  extraction exit 0 for all three; reports and packages under `.local/evidence/gate2-*`.
+- Browser specifications on isolated servers: `partial-results.spec.ts` **7 passed**;
+  `native-partial.spec.ts` **1 passed** for each of the cancelled, one-panel failed and two-panel
+  failed jobs; `resampled-exports.spec.ts` **6 passed, 1 skipped**; `run-layout.spec.ts` completed
+  result **passed**; `gate-f.spec.ts` **passed**; `resampled-exports-portability.spec.ts` **2 passed**
+  against a disposable live-copy origin.
+- `npm --prefix apps/web run test:i18n` **1072 keys** both languages; `test:encoding` 48 files;
+  `typecheck` and `build` pass; `scripts/schema.py` reproduces `generated.ts` byte-identically;
+  `git diff --check` clean.
+- Full isolated browser suite on build `482526a81e5b`, port 19996: **194 passed, 3 failed, 11 skipped
+  (208 tests, 15.6 min)**. The failures are `gate-a` Fit/reset camera (reproduces alone; pre-existing),
+  `materials` library validation and `offset-picking` (both passed in the 17-test rerun). No failure
+  touches the partial-result, arrow or multiplier paths.
+
+### Outstanding
+
+1. **Physical correlation, mesh/stroke sensitivity and convergence remain unestablished.** The two
+   native failed cases prove failure-path recovery, not converged physics; the manufactured partials
+   are software evidence.
+2. **`gate-a` Fit/reset camera comparison still fails on this machine in isolation** (9.80507 vs 9.0).
+   It predates this delivery and is unrelated to the changed paths; the full suite is therefore not
+   completely green.
+3. **The operator instance on 8765 was not upgraded** and still serves its prior release.
+4. **3D solving remains deferred**; 2D plane stress is unchanged.
+
 # Implementation report — 2D engineering milestone (entry point, grouping, door response)
 
 The [independent A–E audit and next execution brief](file-workbench-execution-handoff.md) records the full test rerun, a reproducible two-tab Retry overwrite, the active progress-card clip, and the retained material-outline replay. Its measurements distinguish ordinary same-face mesh edges from same-material seams across different CAD faces.

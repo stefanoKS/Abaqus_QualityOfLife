@@ -365,6 +365,94 @@ def write_partial(folder: Path):
     return _publish(folder, "partial", index, frames)
 
 
+def write_partial_body(folder: Path):
+    """A two-step failure before any Closing frame, for curve selection."""
+    index = _base_index(availability="partial", solver="Failed")
+    index["steps"] = [
+        {
+            "name": "Body seating",
+            "id": "bodyseating",
+            "role": "body",
+            "instance": "BODY-1",
+            "reference_label": 998,
+            "direction": [0.0, 1.0],
+            "angle_deg": 90.0,
+            "duration_s": 1.0,
+        },
+        {
+            "name": "Closing",
+            "id": "closing",
+            "role": "door",
+            "instance": "PANEL-1",
+            "reference_label": 999,
+            "direction": [0.0, -1.0],
+            "angle_deg": -90.0,
+            "duration_s": 1.3,
+        },
+    ]
+    index["body"] = {
+        "panel": "body",
+        "panel_name": "BODY",
+        "instance": "BODY-1",
+        "reference_label": 998,
+        "direction": [0.0, 1.0],
+        "angle_deg": 90.0,
+        "measure_from_step_start": True,
+    }
+    index["door_pressure"] = _profile([0.0], [0.0], [1], [[2.0, 3.0]])
+    index["frames"] = [
+        {
+            "time": 0.6,
+            "step": "Body seating",
+            "step_id": "bodyseating",
+            "file": "frame-00000.json",
+            "frame_ordinal": 0,
+        }
+    ]
+    index["history"] = [
+        {
+            "time": 0.0,
+            "step": "Body seating",
+            "step_id": "bodyseating",
+            "displacement": 0.0,
+            "force": 0.0,
+            "total_force_N": 0.0,
+            "u1": 0.0,
+            "u2": 0.0,
+            "rf1": 0.0,
+            "rf2": 0.0,
+        },
+        {
+            "time": 0.6,
+            "step": "Body seating",
+            "step_id": "bodyseating",
+            "displacement": 0.6,
+            "force": 4.8,
+            "total_force_N": 4.8,
+            "u1": 0.0,
+            "u2": 0.6,
+            "rf1": 0.0,
+            "rf2": 4.8,
+        },
+    ]
+    index["display"] = _display(pressure=0.0)
+    index["last_frame_ordinal"] = 0
+    index["last_native_frame_id"] = 1
+    index["last_increment"] = 1
+    index["last_step"] = "Body seating"
+    index["last_step_id"] = "bodyseating"
+    index["last_local_s"] = 0.6
+    index["last_total_s"] = 0.6
+    index["failure_reason"] = "Manufactured failure during Body seating"
+    frame = _frame(index, 0.0, [0.0, 0.0], 0.2)
+    frame["step"] = "Body seating"
+    frame["step_id"] = "bodyseating"
+    frame["time"] = 0.6
+    frame["local_time"] = 0.6
+    frame["total_time"] = 0.6
+    return _publish(folder, "partial-body", index, {"frame-00000.json": frame})
+
+
 def _publish(folder: Path, stem: str, index: dict, frames: dict[str, dict]):
     setup = synthetic().model_dump(mode="json")
     provenance = {
@@ -407,7 +495,7 @@ def main():
     args = parser.parse_args()
     folder = Path(args.folder)
     folder.mkdir(parents=True, exist_ok=True)
-    for writer in (write_arrows, write_gaps, write_partial):
+    for writer in (write_arrows, write_gaps, write_partial, write_partial_body):
         print(writer(folder))
 
 

@@ -271,7 +271,6 @@ export class ViewportRenderer {
           values[0]
         )
         const ratio = Math.min(1, Math.max(0, (sample - minimum) / (maximum - minimum)))
-        this.host.dataset.fieldMagnitudes = JSON.stringify(values)
         this.host.dataset.fieldSample = JSON.stringify({
           value: sample,
           maximum,
@@ -280,11 +279,9 @@ export class ViewportRenderer {
           color: colorAt(ratio),
         })
       } else {
-        this.host.dataset.fieldMagnitudes = ''
         this.host.dataset.fieldSample = ''
       }
     } else {
-      this.host.dataset.fieldMagnitudes = ''
       this.host.dataset.fieldSample = ''
     }
     const recorded = scene.extent

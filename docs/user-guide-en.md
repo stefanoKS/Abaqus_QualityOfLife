@@ -174,9 +174,12 @@ independent head in this installation; it never overwrites the file another engi
 
 **Result files.** In the Results properties, set an optional **Result folder** before Submit. After a
 successful extraction the worker writes `<model>-<run>-<timestamp>-<short-id>.aqresult` there, even if
-the browser is closed. A failed save is reported separately from solver and extraction state; you can
+the browser is closed. A failed solver with a validated partial generation writes a distinguishable
+`…-partial.aqresult` carrying the solver outcome, failure reason, extraction state and last saved
+frame. A failed save is reported separately from solver and extraction state; you can
 retry it without resubmitting the solver. Open a result file from Dashboard → File → **Open result…**;
-it is read-only evidence with its frames, history, index and provenance.
+it is read-only evidence with its frames, history, index and provenance, and a partial file keeps its
+partial badge and last frame in a fresh installation.
 
 **Duplicate setup** (and Duplicate on the Dashboard) is the explicit way to branch into an independent
 model. New project and New model still start a fresh model. A submitted setup link
@@ -409,6 +412,34 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
 
 - **Variable** is U (displacement). **Component** selects the magnitude or |U1| / |U2| / |U3|. Component
   contours use the absolute value; the probe field reports the signed value.
+- **Partial results after a failed or cancelled analysis.** When the solver
+  ends unsuccessfully but left a readable ODB, the run keeps its **Failed** or
+  **Cancelled** badge and exposes **Partial results** from the Dashboard and the
+  workspace response list. The worker queues one extraction-only attempt
+  automatically; **Extract available results** (diagnostics) and **Retry
+  extraction** never relaunch the solver. Results opens paused on the last
+  readable saved field frame at its actual step and time, with a compact notice
+  naming the step, the last saved local and total time and the solver
+  diagnostic. Earlier frames remain available and playback only visits
+  published frames. A planned step that never ran stays visible in the curve
+  selector as unstarted rather than being shown as measured. A frame that
+  carries only some fields keeps the missing quantities unavailable. If only
+  native history is readable, the result opens as **history only** with field
+  visualization unavailable; an initial-state-only ODB is labelled as such.
+  The last reported solver increment and status time are shown separately and
+  are not a failure time. A partial result can be reopened from its
+  `-partial.aqresult` file in a fresh installation.
+- **Result multiplier.** Above the right-side response charts, one labelled
+  **Result multiplier (×)** and **Reset to ×1** apply a single dimensionless
+  factor to the displayed engineering response: the closing force curve,
+  door pressure, `CNORMF` components and magnitude, and the stress contour.
+  It applies exactly once and never changes stroke, station, displacement,
+  geometry, material assignment, mesh or the recorded force basis. ×0 displays
+  zero for measured responses and leaves missing data missing. Negative,
+  non-finite and blank values are rejected with a localized reason while the
+  last valid factor stays on screen. The factor resets to ×1 on every newly
+  opened result, including a portable file. It is separate from the geometric
+  deformation scale and from the reporting width.
 - **Colour range** applies independently to displacement and stress. Displacement magnitude and U
   components start at a fixed **0–5 mm**; von Mises and the stress components start at **0–0.50 MPa**.
   `Fixed` is a display default, `Auto` uses the measured run-wide maximum for that quantity, and
@@ -461,16 +492,29 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   CPRESS_MPa` is the only conversion; reporting width, solver thickness, force normalization and
   Reverse Y never scale it. The station readout also shows the native MPa value. A profile selector
   appears when more than one connected door profile qualifies.
-- **Pressure arrows** are on by default with a visible toggle. The arrow direction is the same node's
-  measured `CNORMF` in the assembly frame, normalized; its length is proportional to the displayed
-  pressure with one run-wide scale, and a reference arrow states the run maximum in kPa. The glyph is
-  anchored at the rendered deformed node, so pan, zoom, the Deformed toggle and the deformation scale
-  move it with the geometry. Arrows are not pick targets and never change the field, probes or
-  artifacts. A measured pressure with no `CNORMF` direction stays on the graph without an arrow.
-  Hovering or selecting a graph station identifies the same node on the door and shows the profile,
-  station, pressure in kPa, native MPa and signed `CNORMF` components in N. Measured zeros remain a
-  zero line; missing samples break the line; conflicting duplicate observations are withheld and
-  counted.
+- **Pressure arrows** sit with the other field controls below the white
+  viewport, next to **Mesh edges**, **Node markers** and **Deformed**. One
+  independent toggle serves every field, including von Mises and `CNORMF`; off
+  removes the shafts, heads and arrow-scale key immediately and across
+  playback, step and field changes while the pressure graph and station
+  selection stay usable. The arrow direction is the same node's measured
+  `CNORMF` in the assembly frame, normalized. **Automatic (screen size)** is
+  the initial calibration: the run-wide raw maximum maps to
+  `clamp(24, 0.10 × min(viewport width, viewport height), 80)` CSS pixels and
+  every arrow is `reference × |displayed pressure| / raw maximum`, so zoom
+  never changes the screen length and a viewport resize recomputes it.
+  **Manual (model mm)** uses the editable calibration **10 kPa = [5] mm**;
+  `L_mm = |displayed pressure| × calibration / 10` and the tip is the
+  deformed model tail plus the normalized direction times that physical
+  length, projected with the current camera. DPR, zoom, pan and deformation
+  exaggeration therefore do not change the physical calibration, and a short
+  arrow's head stays inside its tail-to-tip span. Arrows are not pick targets,
+  never enter Fit bounds and never change the field, probes or artifacts. A
+  measured pressure with no `CNORMF` direction stays on the graph without an
+  arrow. Hovering or selecting a graph station identifies the same node on the
+  door and shows the profile, station, pressure in kPa, native MPa and signed
+  `CNORMF` components in N. Measured zeros remain a zero line; missing samples
+  break the line; conflicting duplicate observations are withheld and counted.
 - **CNORMF (contact normal force)** is selectable in the field list when it was measured. The
   contour is the nodal magnitude in N and the probe keeps the signed Fx/Fy components. The door-side
   contact domain is labelled from the submitted definition (the app's door–seal pair, or a
@@ -491,11 +535,14 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   second time. The **stroke interval** is editable (default **1.0 mm**); the grid is built from
   integer indices and the exact last measured stroke is appended once when it is not already on the
   grid. At a measured stroke its value is used; between two adjacent valid samples the value is
-  linearly interpolated. Missing measurements stay empty cells and are never bridged. If the step has
+  linearly interpolated. A missing stroke or ordinate, an unreadable block or a step boundary
+  breaks the bridge: the affected sample stays an empty cell. If the step has
   a dwell with different loads at one stroke or an unload/reload, uniform resampling is ambiguous:
   the action explains why and **Original ordered samples** exports the acquisition-ordered rows
-  instead. Reverse X never negates the exported stroke; Reverse Y is applied exactly once to the
-  force. The filename names the panel, step, basis, interval and sign.
+  instead, including a row whose stroke is missing. Reverse X never negates the exported stroke;
+  Reverse Y is applied exactly once to the force. The active multiplier is applied exactly once and
+  the filename carries `-x2`, `-x0.5` and `-partial` markers when they apply. The filename also names
+  the panel, step, basis, interval and sign.
 - **Export door pressure CSV (2 rows)** downloads `door station(mm)` and `CPRESS (kPa)` for the
   selected door profile at the **displayed** frame. The **station interval** is editable (default
   **1.3 mm**); interpolation is against arc-length station, not time or global X. The measured end
@@ -503,8 +550,10 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   **Original profile nodes** keeps every measured node, including a narrow peak that a coarse uniform
   grid can miss. Switching profile, scrubbing, a delayed frame or a profile whose pressure array does
   not match the frame changes the chart, the exported bytes and the filename together; an unavailable
-  or mismatched array disables the action with the reason. The filename names the profile, frame,
-  step and interval.
+  or mismatched array disables the action with the reason. A missing or shortened station axis
+  disables spatial plotting and export with a specific reason instead of inventing station zero.
+  The active multiplier appears once in the ordinate label and the filename marker. The filename also
+  names the profile, frame, step and interval.
 - **Download history CSV** keeps the raw signed components and original artifacts unchanged; all
   display sign controls and export spacings live only in the browser.
 - Results produced before the projected door panel response existed still open: the chart shows their

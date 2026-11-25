@@ -111,9 +111,14 @@ def write(directory, plan="partial-closing"):
         count = 1 if plan in {"partial-initial-only"} else 3
         if plan == "partial-history-only":
             count = 0
+        span = duration
+        # A Closing failure in the lifecycle evidence is saved at local 0.60 s;
+        # the same case also exists for the two-step topology.
+        if plan == "partial-closing" and entry.get("role") == "door":
+            span = min(duration, 0.6)
         for frame_index in range(count):
             fraction = 0.0 if count <= 1 else frame_index / (count - 1)
-            local = duration * fraction
+            local = span * fraction
             displacements = {}
             for instance in instances:
                 rows = []

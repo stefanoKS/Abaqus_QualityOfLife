@@ -254,10 +254,17 @@ test('quantities, colours, probes and exports apply the factor once', async ({
   expect(zero.name).toContain('-x0')
   expect(zero.text.split(/\r?\n/)[1]).toBe('F (N) ×0,0,0')
 
+  // ×0.5 is a normal factor, not an error.
+  await page.getByTestId('result-multiplier-input').fill('0.5')
+  await page.getByTestId('result-multiplier-input').blur()
+  const half = await downloadText(page, 'export-curve')
+  expect(half.name).toContain('-x0.5')
+  expect(half.text.split(/\r?\n/)[1]).toBe('F (N) ×0.5,4,6')
+
   // Invalid values are rejected with a reason and the last valid factor stays.
   await page.getByTestId('result-multiplier-input').fill('-2')
   await expect(page.getByTestId('multiplier-error')).toBeVisible()
-  await expect(page.getByTestId('multiplier-active')).toContainText('0')
+  await expect(page.getByTestId('multiplier-active')).toContainText('0.5')
 
   // CNORMF components and magnitude scale once; the probe names both.
   await page.getByTestId('result-multiplier-input').fill('2')
@@ -348,6 +355,53 @@ test('a partial result opens on its last saved frame through File Open', async (
   await expect(
     page.getByTestId('open-partial-results').first(),
   ).toBeVisible()
+})
+
+test('a two-panel failure before Closing selects the body step curve', async ({
+  page,
+  request,
+}) => {
+  const job = await openFixture(request, 'partial-body')
+  await page.goto('/#results/' + job.id)
+  await expect(page.getByTestId('partial-notice')).toBeVisible()
+  await expect(page.getByTestId('partial-step')).toContainText('Body seating')
+  await expect(page.getByTestId('frame-count')).toHaveText('1 / 1')
+  // The curve belongs to the displayed step; the planned Closing step is
+  // present in the selector but is not presented as having data.
+  const select = page.getByTestId('curve-step')
+  await expect(select).toHaveValue('bodyseating')
+  await expect(page.getByTestId('selected-step')).toContainText('Body seating')
+  await expect(page.getByTestId('force-caption')).toContainText('Body panel travel')
+  await expect(select.locator('option', { hasText: 'Closing' })).toHaveCount(1)
+})
+
+test('the new controls are localized and fit a short Japanese window', async ({
+  browser,
+  request,
+}) => {
+  const job = await openFixture(request, 'arrows')
+  // No English init script: Japanese is the product default.
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  })
+  const page = await context.newPage()
+  await page.goto('/#results/' + job.id)
+  await expect(page.getByText('接触圧の矢印').first()).toBeVisible()
+  await expect(page.getByLabel('結果倍率')).toBeVisible()
+  await page.getByTestId('arrow-mode').selectOption('manual')
+  await expect(page.getByTestId('arrow-mode')).toHaveValue('manual')
+  await expect(
+    page.getByTestId('arrow-mode').locator('option:checked'),
+  ).toHaveText('手動（モデル mm）')
+  await expect(page.getByTestId('arrow-manual-mm')).toBeVisible()
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth + 1,
+      ),
+    )
+    .toBe(true)
+  await context.close()
 })
 
 
