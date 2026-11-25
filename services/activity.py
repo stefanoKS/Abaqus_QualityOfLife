@@ -51,6 +51,10 @@ def classify(job, now=None):
         # do not treat it as safe inactivity.
         return UNCERTAIN
     if solver in {"Failed", "Cancelled"}:
+        # A failed or cancelled solver may still have a queued/running extraction:
+        # that is real work on a stopped process, not an unresolved analysis.
+        if extraction in ACTIVE_EXTRACTION:
+            return ACTIVE
         return UNCERTAIN if owner else TERMINAL
     return UNCERTAIN
 

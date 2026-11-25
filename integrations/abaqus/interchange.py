@@ -5,8 +5,23 @@ import csv
 import json
 import os
 from pathlib import Path
+import shutil
 
 DEMO_NOTICE = "DEMO — synthetic results, not an Abaqus analysis."
+STAGING = ".extract-staging"
+
+
+def reset_staging(directory):
+    """Start one extraction attempt in a private staging directory.
+
+    Frames are written there and only moved into the run directory when the
+    whole generation validates, so a failed attempt cannot overwrite the last
+    usable frames or index.
+    """
+    path = Path(directory) / STAGING
+    shutil.rmtree(path, ignore_errors=True)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def write_json(path, data):
@@ -187,6 +202,9 @@ def result_header(metadata, mode, instances):
         "closing": metadata.get("closing"),
         "steps": metadata.get("steps"),
         "body": metadata.get("body"),
+        # Door-panel contact pressure intent and profile metadata. The
+        # extractor replaces this with the ODB-derived profile axis and fields.
+        "door_pressure": metadata.get("door_pressure"),
         # Measured per-profile clearance, contact side and projection direction.
         "assembly": metadata.get("assembly"),
         "fixture": metadata.get("fixture"),
@@ -195,23 +213,39 @@ def result_header(metadata, mode, instances):
             "Door reference point U1/U2/RF1/RF2 aligned by time within each step; "
             "the chart projects reaction and travel onto the closing direction."
         ),
-        "field_locations": {"U": "NODAL", "RF": "NODAL"},
+        "field_locations": {
+            "U": "NODAL",
+            "RF": "NODAL",
+            "CPRESS": "NODAL",
+            "CNORMF": "NODAL",
+        },
         "averaging": "ODB field values retain their stored output position without spatial averaging.",
         "instances": instances,
         "frames": [],
         "history": [],
         "unavailable": [],
+        # Solver outcome, extraction outcome and availability stay separate. A
+        # failed solver can still publish a partial, validated generation.
+        "availability": "complete",
+        "solver_outcome": metadata.get("solver_outcome"),
+        "failure_reason": metadata.get("failure_reason") or "",
+        "history_only": False,
+        "initial_only": False,
+        "skipped_frames": [],
+        "gaps": [],
     }
 
 
-def display_metadata(directory, result):
+def display_metadata(directory, result, base=None):
     """Run-wide camera bounds and per-component colour ranges.
 
     Computed once from the stored frames so playback never rescales the legend
     or refits the camera per frame, and never needs the whole history in the
     browser. The values are display metadata; the recorded fields are untouched.
+    ``base`` is the staging directory while an attempt is being validated.
     """
     directory = Path(directory)
+    base = Path(base) if base is not None else directory
     undeformed = [float("inf"), float("-inf")] * 3
     deformed = [float("inf"), float("-inf")] * 3
     ranges = {
@@ -220,7 +254,7 @@ def display_metadata(directory, result):
     }
     present = set()
     for entry in result["frames"]:
-        frame = json.loads((directory / entry["file"]).read_text(encoding="utf-8"))
+        frame = json.loads((base / entry["file"]).read_text(encoding="utf-8"))
         displacements = frame.get("displacements") or {}
         for instance in result["instances"]:
             rows = displacements.get(instance["name"]) or []
@@ -274,6 +308,31 @@ def display_metadata(directory, result):
                     if derived is not None:
                         ranges["mises"] = max(ranges["mises"], derived)
                         present.add("mises")
+        # Contact normal force is displayed as a nodal magnitude while its signed
+        # stored components stay available to the probe.
+        for name, field in fields.items():
+            if name.split()[0].upper() != "CNORMF":
+                continue
+            for value in field.get("values") or []:
+                data = value.get("data") or []
+                if data:
+                    ranges["CNormf"] = max(
+                        ranges.get("CNormf", 0.0),
+                        (sum(float(component) ** 2 for component in data)) ** 0.5,
+                    )
+                    present.add("CNormf")
+        # Door-panel pressure is stored in the frame in display kPa. The run-wide
+        # maximum sets one arrow scale and one graph bound across every frame.
+        door = frame.get("door_pressure") or {}
+        has_pressure = False
+        for profile in (door.get("profiles") or {}).values():
+            for value in profile.get("pressure_kpa") or []:
+                if value is None:
+                    continue
+                has_pressure = True
+                ranges["pressure"] = max(ranges.get("pressure", 0.0), abs(float(value)))
+        if has_pressure:
+            present.add("pressure")
     finite = lambda box: all(abs(v) != float("inf") for v in box)  # noqa: E731
     undeformed = undeformed if finite(undeformed) else [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
     deformed = deformed if finite(deformed) else list(undeformed)
@@ -289,23 +348,90 @@ def display_metadata(directory, result):
 
 
 def save_frame(directory, result, frame):
+    """Stage one readable frame and record its step/frame identity.
+
+    ``frame_ordinal`` walks every record the reader visited; ``step_ordinal`` is
+    its position inside the ODB step. A duplicate recovery frame or an equal-time
+    step boundary therefore keeps its own identity instead of collapsing on time.
+    """
     filename = f"frame-{len(result['frames']):05d}.json"
     frame.update({"version": 1, "mode": result["mode"], "notice": result["notice"]})
-    write_json(Path(directory) / filename, frame)
-    result["frames"].append(
-        {
-            "time": frame["time"],
-            "step": frame["step"],
-            "step_id": frame.get("step_id") or canonical_step(frame["step"]),
-            "file": filename,
-        }
-    )
+    write_json(Path(directory) / STAGING / filename, frame)
+    entry = {
+        "time": frame["time"],
+        "step": frame["step"],
+        "step_id": frame.get("step_id") or canonical_step(frame["step"]),
+        "file": filename,
+    }
+    for key in (
+        "odb_step",
+        "step_ordinal",
+        "step_frame_ordinal",
+        "frame_ordinal",
+        "native_frame_id",
+        "increment",
+        "local_time",
+        "total_time",
+    ):
+        if key in frame:
+            entry[key] = frame[key]
+    result["frames"].append(entry)
 
 
-def finish(directory, result):
-    if not result["frames"]:
-        raise ValueError("The ODB contains no extractable result frames.")
+def _validate_generation(base, result):
+    """Prove every listed frame is the record the index says it is."""
+    for entry in result["frames"]:
+        name = entry.get("file", "")
+        if not name.startswith("frame-") or not name.endswith(".json"):
+            raise ValueError(f"Invalid frame name {name!r}.")
+        path = Path(base) / name
+        if not path.is_file():
+            raise ValueError(f"Frame {name!r} was listed but not written.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if payload.get("time") != entry.get("time"):
+            raise ValueError(f"Frame {name!r} does not match its recorded time.")
+        if (payload.get("step_id") or canonical_step(payload.get("step"))) != entry.get(
+            "step_id"
+        ):
+            raise ValueError(f"Frame {name!r} does not match its recorded step.")
+
+
+def finish(directory, result, availability=None, require_frames=False):
+    """Validate one attempt and publish it as a single consistent generation.
+
+    Frames and history are written to a private staging directory first; they
+    replace the canonical files only after the index-to-frame identity, step
+    order and units have been checked. A history-only recovery is published
+    explicitly and never invents a contour or a frame cursor.
+    """
     directory = Path(directory)
+    staging = directory / STAGING
+    if not result["frames"] and not result.get("history"):
+        if require_frames:
+            raise ValueError("The ODB contains no readable result frames.")
+        raise ValueError("The ODB contains no readable field frames or history.")
+    if not result["frames"]:
+        result["history_only"] = True
+        result["initial_only"] = False
+    else:
+        result["history_only"] = False
+        if all(
+            abs(float(entry.get("total_time", entry.get("time", 0.0)))) <= 1e-12
+            for entry in result["frames"]
+        ):
+            result["initial_only"] = True
+    if availability is None:
+        availability = result.get("availability") or "complete"
+    result["availability"] = "partial" if availability == "partial" else "complete"
+    # A caller may hand already-written frames directly (retained fixtures and
+    # unit tests); staged attempts are preferred and moved into place only after
+    # the whole generation validates.
+    staged = bool(result["frames"]) and all(
+        (staging / entry["file"]).is_file() for entry in result["frames"]
+    )
+    base = staging if staged else directory
+    _validate_generation(base, result)
+    directory.mkdir(parents=True, exist_ok=True)
     path = directory / "history.csv"
     tmp = directory / "history.csv.tmp"
     multi_step = len(result.get("steps") or []) > 1
@@ -352,8 +478,30 @@ def finish(directory, result):
                 values.append(row.get("role") or "")
             writer.writerow(values)
     os.replace(tmp, path)
-    # A single bounded pass over the stored frames records the run-wide camera
+    # A single bounded pass over the staged frames records the run-wide camera
     # bounds and colour ranges before the index is published.
-    result["display"] = display_metadata(directory, result)
-    # Publish the index only after every listed frame and history has reached disk.
+    result["display"] = display_metadata(directory, result, base=base)
+    if result["frames"]:
+        last = result["frames"][-1]
+        result["last_frame_ordinal"] = last.get("frame_ordinal", len(result["frames"]) - 1)
+        result["last_native_frame_id"] = last.get("native_frame_id")
+        result["last_increment"] = last.get("increment")
+        result["last_step"] = last.get("step")
+        result["last_step_id"] = last.get("step_id")
+        result["last_local_s"] = last.get("local_time")
+        result["last_total_s"] = last.get("total_time", last.get("time"))
+    else:
+        result["last_frame_ordinal"] = None
+        result["last_native_frame_id"] = None
+        result["last_increment"] = None
+        last_history = result["history"][-1] if result["history"] else None
+        result["last_step"] = last_history.get("step") if last_history else None
+        result["last_step_id"] = last_history.get("step_id") if last_history else None
+        result["last_local_s"] = None
+        result["last_total_s"] = last_history.get("time") if last_history else None
+    # Move validated frames into place, then publish the index last.
+    if staged:
+        for entry in result["frames"]:
+            os.replace(staging / entry["file"], directory / entry["file"])
     write_json(directory / "results.json", result)
+    shutil.rmtree(staging, ignore_errors=True)

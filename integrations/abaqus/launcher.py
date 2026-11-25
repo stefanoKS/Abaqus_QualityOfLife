@@ -183,11 +183,11 @@ def start_extraction(launcher, job_dir, log_stream):
     job_dir = Path(job_dir)
     if not (job_dir / "analysis.odb").is_file() or not (job_dir / "result-metadata.json").is_file():
         raise ValueError("Extraction requires analysis.odb and its submitted metadata.")
-    # A cancelled previous extraction may have finished writing just before cancellation.
-    # Its index cannot count as success evidence for the new invocation.
-    (job_dir / "results.json").unlink(missing_ok=True)
+    # The extractor stages a new generation in a private directory and publishes
+    # it only after validation. Existing results.json/frames are therefore left
+    # untouched here: a failed attempt must retain the prior usable generation.
     # Importable pure stdlib helpers live next to the extractor under safe internal names.
-    for filename in ("extract_odb.py", "interchange.py"):
+    for filename in ("extract_odb.py", "interchange.py", "door_pressure.py"):
         shutil.copyfile(HERE / filename, job_dir / filename)
     return _start(launcher, ["python", "extract_odb.py"], job_dir, log_stream)
 

@@ -962,6 +962,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/{jid}/extract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Extract Available
+         * @description Queue one extraction-only attempt for an eligible terminal run.
+         *
+         *     This never relaunches a solver. It is the explicit path for a historical
+         *     failed/cancelled run whose native ODB may still be readable, and for a
+         *     recoverable extraction error.
+         */
+        post: operations["extract_available_api_jobs__jid__extract_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/jobs/{jid}/result-file": {
         parameters: {
             query?: never;
@@ -1082,6 +1106,11 @@ export interface components {
             force_normalization: "total" | "per_mm";
             /** Outputs */
             outputs?: ("U" | "RF" | "S" | "LE" | "CSTRESS")[];
+            /**
+             * Door Pressure
+             * @default true
+             */
+            door_pressure: boolean;
         };
         /** Analysis */
         "Analysis-Output": {
@@ -1121,6 +1150,11 @@ export interface components {
             force_normalization: "total" | "per_mm";
             /** Outputs */
             outputs: ("U" | "RF" | "S" | "LE" | "CSTRESS")[];
+            /**
+             * Door Pressure
+             * @default true
+             */
+            door_pressure: boolean;
         };
         /**
          * BodyMotion
@@ -1907,6 +1941,27 @@ export interface components {
             result_file?: string | null;
             /** Publication */
             publication?: string | null;
+            /**
+             * Result State
+             * @default none
+             */
+            result_state: string;
+            /** Result */
+            result?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Extraction Error
+             * @default
+             */
+            extraction_error: string;
+            /**
+             * Salvage
+             * @default 0
+             */
+            salvage: number;
+            /** Cancel Scope */
+            cancel_scope?: string | null;
         };
         /** LibraryCreate */
         LibraryCreate: {
@@ -4917,6 +4972,37 @@ export interface operations {
         };
     };
     retry_api_jobs__jid__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Job"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    extract_available_api_jobs__jid__extract_post: {
         parameters: {
             query?: never;
             header?: never;

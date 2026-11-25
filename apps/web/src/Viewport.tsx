@@ -47,6 +47,7 @@ export function Viewport(props: ViewportProps) {
       props.panelOffset,
       props.rigidInstances,
       props.elementValues,
+      props.nodalValues,
       props.resultMin,
       props.deformationScale,
       props.nodeMarkers,
@@ -357,6 +358,11 @@ export function Viewport(props: ViewportProps) {
       cut?.active ? { ...cut, hover: cutHover ?? cut.hover ?? null } : null
     )
   }, [props.cut, cutHover])
+  // Pressure glyphs are an overlay on the exact displayed geometry: the same
+  // frame, deformation toggle and scale as the contour. They are never picked.
+  useEffect(() => {
+    controller.current?.setPressureArrows(props.pressureArrows ?? null)
+  }, [props.pressureArrows, scene])
 
   useEffect(() => {
     hover.current = null

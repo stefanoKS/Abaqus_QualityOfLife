@@ -53,6 +53,7 @@ ACTION_STAGES = {"import", "components", "materials", "mesh", "mounting", "conta
 CLEARANCE_FINDINGS = {
     "no_x_overlap": "motion.no_x_overlap",
     "side_ambiguous": "motion.side_ambiguous",
+    "panel.contact_side_ambiguous": "motion.side_ambiguous",
     "initial_penetration": "motion.initial_penetration",
     "motion_away": "motion.direction_away",
     "unsupported_geometry": "motion.unsupported_geometry",
@@ -146,16 +147,18 @@ def _motion_issues(setup):
 def _assembly(active, setup, findings):
     """Measured door/body clearance for the Motion diagnosis.
 
-    Returns ``None`` before a compatible mesh exists. A real geometric
-    rejection becomes a motion blocker carrying the same stable code the deck
+    Returns ``None`` before a compatible mesh exists. A preparation rejection
+    becomes a blocker carrying the same stable code, stage and role the deck
     writer raises, so the browser explains the condition before an engineer
-    tries to prepare a deck that would be refused.
+    tries to prepare a deck that would be refused. A rejection without a typed
+    code (an unexpected reader failure) also blocks: readiness must never claim
+    the writer will accept geometry it has not measured.
     """
     if active is None:
         return None
     import json
 
-    from integrations.abaqus.deck import ClearanceError, assembly_assessment
+    from integrations.abaqus.deck import PreparationError, assembly_assessment
 
     try:
         mesh = json.loads(
@@ -186,13 +189,18 @@ def _assembly(active, setup, findings):
                     )
                 )
         return result
-    except ClearanceError as exc:
+    except PreparationError as exc:
+        stage = exc.stage if exc.stage in STAGE_ACTION else "motion"
+        code = CLEARANCE_FINDINGS.get(exc.code, exc.code)
+        params = dict(exc.details)
+        if exc.role and "role" not in params:
+            params["role"] = exc.role
         findings.append(
             finding(
-                CLEARANCE_FINDINGS.get(exc.code, "motion.unsupported_geometry"),
-                "motion",
+                code,
+                stage,
                 BLOCKER,
-                dict(exc.details),
+                params,
                 artifact="mesh:" + active["id"],
             )
         )
@@ -200,11 +208,30 @@ def _assembly(active, setup, findings):
             "door": None,
             "body": None,
             "code": exc.code,
+            "stage": stage,
+            "role": exc.role,
             "error": str(exc),
             "details": dict(exc.details),
         }
     except (OSError, ValueError, KeyError) as exc:
-        return {"door": None, "body": None, "error": str(exc)}
+        # The writer would refuse the same unreadable or unsupported geometry.
+        # Returning silently made Prepare look available and produced a
+        # deterministic worker failure instead of an actionable explanation.
+        findings.append(
+            finding(
+                "motion.unsupported_geometry",
+                "motion",
+                BLOCKER,
+                {"reason": str(exc) or type(exc).__name__},
+                artifact="mesh:" + active["id"],
+            )
+        )
+        return {
+            "door": None,
+            "body": None,
+            "code": "unsupported_geometry",
+            "error": str(exc),
+        }
 
 
 def evaluate(rid):
@@ -580,6 +607,12 @@ def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, c
         "mesh.missing",
         "mesh.artifact_missing",
         "mesh.artifact_corrupt",
+        "mesh.duplicate_node",
+        "mesh.invalid_element",
+        "mesh.invalid_region",
+        "mesh.integration_rule",
+        "mesh.inverted_element",
+        "mesh.missing_part",
         "mounting.missing",
         "mounting.awaiting_mesh",
         "material.unassigned",
@@ -598,6 +631,13 @@ def _stage_states(setup, findings, fixture_count, mesh_usable, geometry_ready, c
         "components.no_moving_panel",
         "components.duplicate_moving_panel",
         "components.duplicate_moving_body",
+        # A missing/duplicate body is repaired by the role selector. Panel
+        # topology defects (branch, island, self-intersection, ambiguous side)
+        # are drawing defects and stay "blocked" with their own explanation.
+        "components.no_moving_body",
+        "components.one_moving_panel",
+        "components.unsupported_role",
+        "components.rigid_role",
         "deck.missing",
     }
     by_stage = {}

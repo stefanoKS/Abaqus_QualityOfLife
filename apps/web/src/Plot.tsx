@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import Plotly from 'plotly.js-basic-dist-min'
 import { nextAxisRange, type AxisLike } from './plotAxis'
 
@@ -13,28 +13,44 @@ export function Plot({
   ylabel,
   active,
   onPick,
+  onHover,
   label,
   describedBy,
 }: {
-  x: number[]
-  y: number[]
+  /** Null (or NaN) marks a missing measurement; Plotly draws a gap there. */
+  x: (number | null)[]
+  y: (number | null)[]
   xlabel: string
   ylabel: string
   active?: number
   onPick?: (index: number) => void
+  /** Station under the pointer; null when the pointer leaves the curve. */
+  onHover?: (index: number | null) => void
   /** Full accessible description; the axis titles stay short enough to fit. */
   label?: string
   /** Id of the visible caption that carries the full engineering description. */
   describedBy?: string
 }) {
   const ref = useRef<HTMLDivElement>(null)
+  // A missing measurement stays a gap. Plotly uses NaN, so the arrays handed to
+  // it are finite-or-NaN even though the caller may pass null.
+  const seriesX = useMemo(
+    () => x.map((value) => (value === null || !Number.isFinite(value) ? Number.NaN : value)),
+    [x],
+  )
+  const seriesY = useMemo(
+    () => y.map((value) => (value === null || !Number.isFinite(value) ? Number.NaN : value)),
+    [y],
+  )
   const pick = useRef(onPick)
   pick.current = onPick
+  const hover = useRef(onHover)
+  hover.current = onHover
   const ready = useRef(false)
   const bound = useRef(false)
   // Previous series, used to tell a sign mirror from an ordinary frame change.
   const previous = useRef<{ x: number[]; y: number[] } | null>(null)
-  const cursor = active !== undefined && x[active] !== undefined ? active : -1
+  const cursor = active !== undefined && seriesX[active] !== undefined ? active : -1
 
   // Mount: one resize observer. Click binding waits until Plotly has created the
   // plot, because the div has no `on` method before that.
@@ -67,15 +83,15 @@ export function Plot({
     const layout = (
       el as unknown as { layout?: { xaxis?: AxisLike; yaxis?: AxisLike } }
     ).layout
-    const xRange = nextAxisRange(previous.current?.x, x, layout?.xaxis)
-    const yRange = nextAxisRange(previous.current?.y, y, layout?.yaxis)
-    previous.current = { x, y }
+    const xRange = nextAxisRange(previous.current?.x, seriesX, layout?.xaxis)
+    const yRange = nextAxisRange(previous.current?.y, seriesY, layout?.yaxis)
+    previous.current = { x: seriesX, y: seriesY }
     void Plotly.react(
       el,
       [
         {
-          x,
-          y,
+          x: seriesX,
+          y: seriesY,
           mode: 'lines+markers',
           line: { color: '#197968', width: 2 },
           marker: { size: 4 },
@@ -127,15 +143,29 @@ export function Plot({
         ).on('plotly_click', (e) => {
           if (e.points[0]?.curveNumber === 0) pick.current?.(e.points[0].pointIndex)
         })
+        ;(
+          el as unknown as {
+            on: (
+              key: string,
+              fn: (e: { points: { pointIndex: number; curveNumber: number }[] }) => void,
+            ) => void
+          }
+        ).on('plotly_hover', (e) => {
+          if (e.points[0]?.curveNumber === 0) hover.current?.(e.points[0].pointIndex)
+        })
+        ;(
+          el as unknown as { on: (key: string, fn: () => void) => void }
+        ).on('plotly_unhover', () => hover.current?.(null))
       }
-      restyleCursor(el, x, y, cursor)
+      restyleCursor(el, seriesX, seriesY, cursor)
     })
-  }, [x, y, xlabel, ylabel])
+  }, [seriesX, seriesY, xlabel, ylabel])
 
   // Frame cursor only: Plotly.restyle never purges the plot or its axes.
   useEffect(() => {
-    if (ready.current && ref.current) restyleCursor(ref.current, x, y, cursor)
-  }, [cursor, x, y])
+    if (ready.current && ref.current)
+      restyleCursor(ref.current, seriesX, seriesY, cursor)
+  }, [cursor, seriesX, seriesY])
 
   return (
     <div

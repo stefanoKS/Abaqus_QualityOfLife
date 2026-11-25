@@ -37,7 +37,38 @@ KNOWN_FILES = {
     "result-metadata.json",
     "history.csv",
     "results.json",
+    "extraction-context.json",
 }
+
+
+def restore_index(directory, backup):
+    """Put the previous result index back after a failed/cancelled attempt.
+
+    The extractor publishes only a validated generation, but an attempt can
+    still be rejected by the worker (or interrupted after publishing). Keeping
+    the prior usable generation readable is the contract.
+    """
+    if backup is None or not backup.exists():
+        return
+    current = directory / "results.json"
+    if current.exists():
+        current.unlink()
+    backup.rename(current)
+
+
+def preparation_diagnostic(exc):
+    """Worker diagnostic for a failed job.
+
+    A typed preparation rejection keeps its stable code and owning stage, so the
+    browser can point at the same condition the readiness view explains. Other
+    failures keep their original message.
+    """
+    diagnostic = str(exc) or type(exc).__name__
+    code = getattr(exc, "code", None)
+    stage = getattr(exc, "stage", None)
+    if code:
+        diagnostic = f"{code}" + (f" [{stage}]" if stage else "") + f": {diagnostic}"
+    return diagnostic
 
 
 def manifest(directory):
@@ -58,8 +89,19 @@ class Cancelled(Exception):
     pass
 
 
-def checkpoint(jid):
-    if store.job(jid)["cancelled"]:
+class SolverTerminal(Exception):
+    """The solver ended unsuccessfully; the recorded fields already say why."""
+
+
+def checkpoint(jid, scope="solver"):
+    """Honour a cancellation aimed at this stage only.
+
+    A stale solver cancellation must not abort a later, separately authorized
+    extraction, and stopping an extraction must not be read as cancelling a
+    solver that had already stopped.
+    """
+    row = store.job(jid)
+    if row["cancelled"] and (row.get("cancel_scope") or "solver") == scope:
         raise Cancelled()
 
 
@@ -88,7 +130,7 @@ def log(directory, message):
         stream.write(time.strftime("%Y-%m-%d %H:%M:%S %z ") + message + "\n")
 
 
-def monitor(jid, owner, directory, start, filename, solving=False):
+def monitor(jid, owner, directory, start, filename, solving=False, scope="solver"):
     with (directory / filename).open("ab", buffering=0) as stream:
         process = start(stream)
         try:
@@ -98,7 +140,7 @@ def monitor(jid, owner, directory, start, filename, solving=False):
                 birth = None
             store.update(jid, owner, pid=process.pid, process_started=birth)
             while process.poll() is None:
-                checkpoint(jid)
+                checkpoint(jid, scope)
                 if solving:
                     info = launcher.progress(directory)
                     waiting = "license" in str(info.get("phase", "")).lower()
@@ -130,6 +172,7 @@ def perform(row, owner):
     extracting = row["extraction"] == "Running"
     fields = {}
     imported = None
+    index_backup = None
     try:
         checkpoint(jid)
         setup = Project.model_validate(store.revision(row["revision"])["setup"])
@@ -277,13 +320,33 @@ def perform(row, owner):
                 ok, reason = launcher.solver_evidence(directory, code)
                 log(directory, reason)
                 if not ok:
-                    raise ValueError(reason)
+                    # A terminal solver failure is still an opportunity to read
+                    # whatever the analysis saved. Queue exactly one automatic
+                    # extraction-only attempt when a native candidate exists; the
+                    # extractor validates readability rather than this check.
+                    fields.update(
+                        solver="Failed",
+                        diagnostic=reason,
+                        phase="Solver failed; checking saved results",
+                    )
+                    possible, why = store._candidate_evidence(directory)
+                    if possible:
+                        fields.update(
+                            extraction="Queued",
+                            phase="Awaiting result recovery",
+                            salvage=1,
+                        )
+                    else:
+                        log(directory, "No result recovery candidate: " + why)
+                    raise SolverTerminal(reason)
             checkpoint(jid)
             fields.update(solver="Succeeded", extraction="Queued", phase="Awaiting extraction")
         else:
             previous_index = directory / "results.json"
+            index_backup = None
             if previous_index.exists():
-                previous_index.rename(directory / ("prior-index-" + store.new_id() + ".json"))
+                index_backup = directory / ("prior-index-" + store.new_id() + ".json")
+                previous_index.rename(index_backup)
             mesh = json.loads((directory / "mesh.json").read_text(encoding="utf-8"))
             metadata_path = directory / "result-metadata.json"
             fixture_labels = row["fixture_labels"]
@@ -303,6 +366,17 @@ def perform(row, owner):
                 results.write_demo(setup, mesh, directory, fixture_labels)
             else:
                 results.write_metadata(setup, mesh, directory, fixture_labels)
+                # The submitted metadata stays immutable. The terminal solver
+                # facts travel in a separate attempt-scoped context file.
+                (directory / "extraction-context.json").write_text(
+                    store.encoded(
+                        {
+                            "solver_outcome": row["solver"],
+                            "failure_reason": row.get("diagnostic") or "",
+                        }
+                    ),
+                    encoding="utf-8",
+                )
                 code = monitor(
                     jid,
                     owner,
@@ -311,23 +385,63 @@ def perform(row, owner):
                         launcher.configured_launcher(), directory, stream
                     ),
                     "extract.log",
+                    scope="extraction",
                 )
                 store.update(jid, owner, extraction_exit=code)
                 if code:
                     raise ValueError("ODB extraction failed. See extract.log.")
             index = json.loads((directory / "results.json").read_text(encoding="utf-8"))
-            if (
-                index["mode"] != row["mode"]
-                or not index["frames"]
-                or not (directory / "history.csv").is_file()
-            ):
-                raise ValueError("Extractor returned an invalid result manifest.")
+            history_only = bool(index.get("history_only"))
+            if index["mode"] != row["mode"]:
+                raise ValueError("Extractor returned a result for another job mode.")
+            if not index["frames"] and not history_only:
+                raise ValueError(index.get("diagnostic") or "Extractor returned no frames.")
+            if (directory / "history.csv").is_file() is False:
+                raise ValueError("Extractor returned no history file.")
             for frame in index["frames"]:
                 name = frame["file"]
                 if not re.fullmatch(r"frame-\d+\.json", name) or not (directory / name).is_file():
                     raise ValueError("Extractor returned a missing or invalid frame.")
-            checkpoint(jid)
-            fields.update(extraction="Succeeded", phase="Results ready")
+            checkpoint(jid, "extraction")
+            availability = index.get("availability") or "complete"
+            generation = int(row.get("result_generation") or 0) + 1
+            summary = {
+                "availability": availability,
+                "solver_outcome": index.get("solver_outcome") or row["solver"],
+                "failure_reason": index.get("failure_reason") or row.get("diagnostic") or "",
+                "last_step": index.get("last_step"),
+                "last_step_id": index.get("last_step_id"),
+                "last_role": next(
+                    (
+                        step.get("role")
+                        for step in (index.get("steps") or [])
+                        if (step.get("id") or step.get("name")) == index.get("last_step_id")
+                    ),
+                    None,
+                ),
+                "last_local_s": index.get("last_local_s"),
+                "last_total_s": index.get("last_total_s"),
+                "frames": len(index.get("frames") or []),
+                "history_only": history_only,
+                "initial_only": bool(index.get("initial_only")),
+                "skipped": len(index.get("skipped_frames") or []),
+                "frame_ordinal": index.get("last_frame_ordinal"),
+                "native_frame_id": index.get("last_native_frame_id"),
+                "increment": index.get("last_increment"),
+                "generation": generation,
+                "index_sha256": store.digest(directory / "results.json"),
+                "diagnostic": row.get("diagnostic") or "",
+            }
+            fields.update(
+                extraction="Succeeded",
+                phase="Partial results ready" if availability == "partial" else "Results ready",
+                result_state=availability,
+                result_summary=store.encoded(summary),
+                result_generation=generation,
+                extraction_error="",
+                salvage=0,
+                cancel_scope=None,
+            )
     except ProcessUncertain as exc:
         log(directory, traceback.format_exc())
         store.update(
@@ -338,19 +452,52 @@ def perform(row, owner):
             manifest=manifest(directory),
         )
         return  # Retain ownership. A replacement worker cannot claim this process.
+    except SolverTerminal as exc:
+        # The solver fields were recorded before raising; no additional state to
+        # invent. A salvageable ODB already queued an extraction-only attempt.
+        log(directory, "Terminal solver outcome: " + str(exc))
     except Cancelled:
-        fields.update({("extraction" if extracting else "solver"): "Cancelled"}, phase="Cancelled")
+        if extracting:
+            fields.update(extraction="Cancelled", phase="Extraction cancelled")
+            restore_index(directory, index_backup)
+        else:
+            fields.update(solver="Cancelled", phase="Solver cancelled")
+            possible, why = store._candidate_evidence(directory)
+            if possible:
+                fields.update(
+                    extraction="Queued", phase="Awaiting result recovery", salvage=1
+                )
+            else:
+                fields["extraction"] = "Pending"
+                log(directory, "No result recovery candidate: " + why)
     except Exception as exc:
         log(directory, traceback.format_exc())
-        fields.update(
-            {("extraction" if extracting else "solver"): "Failed"},
-            phase="Extraction failed" if extracting else "Preparation or execution failed",
-            diagnostic=str(exc) or type(exc).__name__,
-        )
+        if extracting:
+            fields.update(
+                extraction="Failed",
+                extraction_error=preparation_diagnostic(exc),
+                phase="Extraction failed",
+            )
+            restore_index(directory, index_backup)
+        else:
+            fields.update(
+                solver="Failed",
+                phase="Preparation or execution failed",
+                diagnostic=preparation_diagnostic(exc),
+            )
+            # A failure after the solver wrote an ODB is still recoverable.
+            possible, why = store._candidate_evidence(directory)
+            if possible:
+                fields.update(
+                    extraction="Queued", phase="Awaiting result recovery", salvage=1
+                )
+            else:
+                log(directory, "No result recovery candidate: " + why)
     log(directory, fields["phase"])
-    # Publish the portable result file after a successful extraction, without the
-    # browser: the output folder was captured at submit. Solver success,
-    # extraction success and file publication stay separate states.
+    # Publish the portable result file after a validated extraction, without the
+    # browser: the output folder was captured at submit. A partial generation is
+    # written as a distinguishable file. Solver success, extraction success and
+    # file publication stay separate states.
     if extracting and fields.get("extraction") == "Succeeded" and row.get("output_dir"):
         try:
             from services import portable_files
@@ -362,15 +509,25 @@ def perform(row, owner):
             fields.update(publication="Failed")
     # Serialize a last-moment cancellation against publishing the terminal state.
     with store.connection(True) as db:
-        current = db.execute("SELECT owner,cancelled FROM jobs WHERE id=?", (jid,)).fetchone()
+        current = db.execute(
+            "SELECT owner,cancelled,result_state FROM jobs WHERE id=?", (jid,)
+        ).fetchone()
         if current["owner"] != owner:
             raise store.Conflict("Worker lease lost")
         if current["cancelled"]:
-            fields.update(
-                {("extraction" if extracting else "solver"): "Cancelled"}, phase="Cancelled"
-            )
-            if not extracting:
-                fields["extraction"] = "Pending"
+            if extracting and fields.get("extraction") == "Succeeded":
+                # The attempt already published a validated generation. The
+                # cancellation arrived too late to discard it; the next explicit
+                # extraction clears the stale flag.
+                fields.update(cancel_scope=None)
+            else:
+                fields.update(
+                    {("extraction" if extracting else "solver"): "Cancelled"},
+                    phase="Cancelled",
+                )
+                if not extracting:
+                    fields["extraction"] = "Pending"
+                    fields["salvage"] = 0
         elif imported is not None and fields.get("solver") == "Succeeded":
             try:
                 store.append_revision(

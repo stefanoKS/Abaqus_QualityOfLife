@@ -14,6 +14,7 @@ from .interchange import (
     align_histories,
     canonical_step,
     finish,
+    reset_staging,
     result_header,
     save_frame,
     write_json,
@@ -30,6 +31,64 @@ def _force_basis(project):
     if project.schema_version < 4 or project.analysis.reporting_width_basis == "legacy_thickness":
         return "legacy_unscaled"
     return "per_mm" if project.analysis.force_normalization == "per_mm" else "total_width"
+
+
+def _door_pressure_metadata(project, panel):
+    """Submitted output plan and contact attribution for the door profile.
+
+    The profile geometry itself is derived from the ODB's own R2D2 connectivity
+    during extraction, so this block records intent, aliases and the one unit
+    conversion. A disabled plan is recorded explicitly and produces no graph.
+    """
+    enabled = bool(getattr(project.analysis, "door_pressure", False))
+    component = panel[0]["component"] if panel else None
+    alias = next(
+        (
+            component_row.alias.strip() or component_row.name
+            for component_row in project.components
+            if component_row.id == component
+        ),
+        "PANEL-1",
+    )
+    if not enabled:
+        return {"enabled": False, "instances": []}
+    if project.schema_version >= 4 and project.contact.friction is None:
+        attribution = {
+            "kind": "door_seal",
+            "label": "door–seal",
+            "basis": (
+                "Submitted named pair ASSEMBLY_WS-1_SEAL_EXTERIOR ↔ "
+                "ASSEMBLY_PANEL-1_PANEL_FACE; the rigid door has no other "
+                "included counterpart."
+            ),
+        }
+    else:
+        attribution = {
+            "kind": "door_seal",
+            "label": "door–seal",
+            "basis": (
+                "Legacy all-exterior contact domain; the rigid door's only "
+                "included counterpart is the weatherstrip."
+            ),
+        }
+    return {
+        "enabled": True,
+        "instances": [
+            {"instance": "PANEL-1", "component": component, "alias": alias}
+        ],
+        "native_unit": "MPa",
+        "display_unit": "kPa",
+        "conversion": 1000.0,
+        "force_unit": "N",
+        "field_location": "NODAL",
+        "contact_attribution": attribution,
+        "request": {
+            "pressure": "CPRESS",
+            "force": "CFORCE",
+            "nset": "DOOR_PROFILE_NODES",
+            "global_stress_selected": "CSTRESS" in project.analysis.outputs,
+        },
+    }
 
 
 def _metadata(project, nodes, ws, panel, fixture=None, body=None):
@@ -156,6 +215,7 @@ def _metadata(project, nodes, ws, panel, fixture=None, body=None):
             "legacy_scalar": project.contact.friction,
         },
         "requested": project.analysis.outputs,
+        "door_pressure": _door_pressure_metadata(project, panel),
         "placement": placement,
         "assembly": {"door": door, "body": seated},
         "fixture": {
@@ -288,6 +348,7 @@ def write_playback(project, mesh, job_dir, fixture=None, mode="DEMO", notice=Non
         )
 
     result = result_header(metadata, mode, instances)
+    reset_staging(job_dir)
     if notice:
         result["notice"] = notice
         result["manufactured"] = True

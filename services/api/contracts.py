@@ -399,3 +399,9 @@ class Job(BaseModel):
     output_dir: str | None = None
     result_file: str | None = None
     publication: str | None = None
+    # Solver outcome, extraction outcome and result availability stay separate.
+    result_state: str = "none"
+    result: dict = Field(default_factory=dict)
+    extraction_error: str = ""
+    salvage: int = 0
+    cancel_scope: str | None = None

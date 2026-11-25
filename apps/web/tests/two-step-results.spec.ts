@@ -44,7 +44,7 @@ test('a licensed two-step result opens on the door step and switches to the body
 
   const exported = async () => {
     const pending = page.waitForEvent('download')
-    await page.getByRole('button', { name: 'Export displayed curve (2 rows)' }).click()
+    await page.getByRole('button', { name: 'Export load CSV (2 rows)' }).click()
     const download = await pending
     return {
       text: await readFile((await download.path())!, 'utf8'),
@@ -52,7 +52,7 @@ test('a licensed two-step result opens on the door step and switches to the body
     }
   }
   const body = await exported()
-  expect(body.name).toContain('body-curve-')
+  expect(body.name).toContain('body-BODY-1-load-')
   expect(body.name).toContain('bodyseating')
   expect(body.text.split(/\r?\n/).filter(Boolean)).toHaveLength(2)
 
@@ -66,7 +66,7 @@ test('a licensed two-step result opens on the door step and switches to the body
     )
     .toBeCloseTo(2.3)
   const door = await exported()
-  expect(door.name).toContain('door-curve-')
+  expect(door.name).toContain('door-PANEL-1-load-')
   expect(door.name).toContain('closing')
   const rows = door.text.split(/\r?\n/).filter(Boolean)
   expect(rows).toHaveLength(2)

@@ -31,7 +31,7 @@ async function completedRun(
 
 async function exportCsv(page: import('@playwright/test').Page) {
   const pending = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'Export displayed curve (2 rows)' }).click()
+  await page.getByRole('button', { name: 'Export load CSV (2 rows)' }).click()
   const file = await pending
   const path = await file.path()
   expect(path).toBeTruthy()
@@ -60,27 +60,49 @@ test('door response is projected, sign-reversible and exported as displayed', as
   // The closing direction is stated instead of being implied by an axis name.
   await expect(page.locator('.property-body')).toContainText('0.000, -1.000')
 
+  // The default stroke interval is 1.0 mm and the default represented width is
+  // 100 mm, so the ordinate label states the actual N/100mm basis.
+  await expect(page.getByTestId('stroke-interval')).toHaveValue('1')
   const { csv: plain, name: plainName } = await exportCsv(page)
-  expect(plainName).toMatch(/^door-curve-.+-closing-total-W100mm\.csv$/)
-  // Exactly two numeric rows and one column per aligned sample: no preamble,
-  // header, index or time column.
+  expect(plainName).toMatch(/^door-PANEL-1-load-.+-closing-W100mm-dx1mm\.csv$/)
+  // Exactly two rows, labels in column A and one numeric column per grid point:
+  // no preamble, time column or metadata row.
   expect(plain.startsWith('#')).toBe(false)
   expect(plain).not.toContain('time_s')
   const first = rows(plain)
   expect(first).toHaveLength(2)
+  expect(first[0][0]).toBe('stroke(mm)')
+  expect(first[1][0]).toBe('F (N/100mm)')
   expect(first[0].length).toBe(first[1].length)
   expect(first[0].length).toBeGreaterThan(2)
-  // Row 1: step-relative displacement magnitude (starts at zero, grows).
-  expect(Number(first[0][0])).toBeCloseTo(0, 6)
+  // Row 1 starts at zero and reaches the measured end; row 2 carries the
+  // signed projected reaction in the recorded 100 mm basis.
+  expect(Number(first[0][1])).toBeCloseTo(0, 6)
   expect(Number(first[0].at(-1))).toBeGreaterThan(0)
-  // Row 2: signed projected force in the selected total basis (100 mm width).
-  expect(Number(first[1][0])).toBeCloseTo(0, 6)
+  expect(Number(first[1][1])).toBeCloseTo(0, 6)
   expect(Number(first[1].at(-1))).toBeGreaterThan(0)
   expect(
-    first.flat().every((value) => value === '' || Number.isFinite(Number(value))),
+    first
+      .map((row) => row.slice(1))
+      .flat()
+      .every((value) => value === '' || Number.isFinite(Number(value))),
   ).toBeTruthy()
   // The basis is stated next to the button, and in the filename.
-  await expect(page.getByTestId('export-basis')).toContainText('W = 100 mm')
+  await expect(page.getByTestId('export-basis')).toContainText('F (N/100mm)')
+
+  // A custom interval is independent of the chart and changes both the labels
+  // and the filename. 2.5 mm on a 10 mm stroke gives 0, 2.5, 5, 7.5, 10.
+  await page.getByTestId('stroke-interval').fill('2.5')
+  const { csv: custom, name: customName } = await exportCsv(page)
+  expect(customName).toContain('-dx2.5mm')
+  const customRows = rows(custom)
+  expect(customRows[0].slice(1)).toEqual(['0', '2.5', '5', '7.5', '10'])
+
+  // Reverse X is a chart convention only: the exported stroke stays positive.
+  await page.getByLabel('Reverse X sign').check()
+  const { csv: xFlipped } = await exportCsv(page)
+  expect(rows(xFlipped)[0]).toEqual(customRows[0])
+  await page.getByLabel('Reverse X sign').uncheck()
 
   await page.getByLabel('Reverse Y sign').check()
   const { csv: flipped, name: flippedName } = await exportCsv(page)
@@ -88,8 +110,12 @@ test('door response is projected, sign-reversible and exported as displayed', as
   const mirrored = rows(flipped)
   expect(mirrored).toHaveLength(2)
   // Magnitudes stay nonnegative; the displayed force matches the flipped sign.
-  expect(Number(mirrored[0].at(-1))).toBeCloseTo(Number(first[0].at(-1)), 6)
-  expect(Number(mirrored[1].at(-1))).toBeCloseTo(-Number(first[1].at(-1)), 6)
+  expect(mirrored[0]).toEqual(customRows[0])
+  for (let index = 1; index < mirrored[1].length; index++) {
+    const original = Number(customRows[1][index])
+    const displayed = Number(mirrored[1][index])
+    expect(displayed).toBeCloseTo(-original, 9)
+  }
   await expect(page.getByTestId('export-basis')).toContainText('displayed force flipped')
 
   // The raw artifact keeps its original signed values regardless of display.

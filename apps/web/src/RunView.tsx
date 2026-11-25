@@ -21,6 +21,8 @@ import {
   type MaterialFaceAssignment,
 } from './viewportModel'
 import {
+  contactForceSamples,
+  contactForceValues,
   elementDisplayValues,
   misesFrom,
   stressCells,
@@ -30,6 +32,20 @@ import {
 export type { FieldId } from './features/run/fields'
 import { Plot } from './Plot'
 import { ProgressSummary } from './features/run/ProgressSummary'
+import {
+  DEFAULT_STATION_INTERVAL_MM,
+  DEFAULT_STROKE_INTERVAL_MM,
+  formatNumber,
+  loadBasisTag,
+  loadOrdinateLabel,
+  originalSamples,
+  parseSpacing,
+  safeName,
+  twoRowCsv,
+  uniformSamples,
+  type Sample,
+  type UniformResult,
+} from './features/run/export'
 import { labelFrom, useI18n, type TranslationKey } from './i18n'
 import { ACTIVE_POLL_MS, IDLE_POLL_MS, anyActive } from './shared/hooks/polling'
 
@@ -75,7 +91,23 @@ interface Index {
   notice: string
   mode: string
   units?: string
-  frames: { time: number; step?: string; step_id?: string; file: string }[]
+  /** A validated partial generation is distinguishable from a complete one. */
+  availability?: 'partial' | 'complete'
+  solver_outcome?: string
+  failure_reason?: string
+  history_only?: boolean
+  initial_only?: boolean
+  frames: {
+    time: number
+    step?: string
+    step_id?: string
+    file: string
+    frame_ordinal?: number
+    native_frame_id?: number | null
+    increment?: number | null
+    local_time?: number
+    total_time?: number
+  }[]
   history: HistoryRow[]
   force_unit: string
   instances: ResultInstance[]
@@ -89,6 +121,7 @@ interface Index {
   force_normalization?: 'total' | 'per_mm'
   closing?: Closing | null
   body?: Closing | null
+  door_pressure?: DoorPressureIndex | null
   steps?: {
     name: string
     id?: string
@@ -105,17 +138,72 @@ interface Index {
   history_components?: string[]
 }
 
+/** ODB-derived door profile axis, persisted once per result. */
+interface DoorProfileDefinition {
+  id: string
+  instance: string
+  component?: string | null
+  alias: string
+  origin_node: number
+  labels: number[]
+  stations_mm: number[]
+  points_mm: number[][]
+  length_mm: number
+  topology: string
+  supported: boolean
+  reason?: string | null
+  orientation?: string
+  maximum_pressure_kpa?: number
+}
+
+interface DoorPressureIndex {
+  enabled: boolean
+  profiles?: DoorProfileDefinition[]
+  instances?: { instance: string; component?: string | null; alias?: string }[]
+  native_unit?: string
+  display_unit?: string
+  conversion?: number
+  force_unit?: string
+  field_location?: string
+  contact_attribution?: { kind?: string; label?: string; basis?: string }
+  fields?: { pressure?: string[]; force?: string[] }
+  unavailable?: string[]
+}
+
+interface DoorProfileFrame {
+  supported?: boolean
+  reason?: string | null
+  labels?: number[]
+  pressure_mpa?: (number | null)[]
+  pressure_kpa?: (number | null)[]
+  cnormf_n?: ((number[] | null) | null)[]
+  force_magnitude_n?: (number | null)[]
+  ambiguous?: [number, string, string][]
+  availability?: Record<string, string>
+}
+
+interface DoorFrame {
+  profiles?: Record<string, DoorProfileFrame>
+  pressure_domain?: string | null
+  force_domain?: string | null
+  domains?: { pressure?: string[]; force?: string[] }
+  unavailable?: string[]
+}
+
 /** Fields the extractor may publish in addition to displacements. */
 interface Frame extends ResultFrame {
   fields?: Record<string, unknown>
   unavailable?: string[]
+  door_pressure?: DoorFrame | null
 }
 
 /** Run-wide display metadata recorded by extraction or derived for a retained run. */
 interface DisplayMeta {
   version: number
   bounds: { undeformed: number[]; deformed: number[]; extent: number[] }
-  ranges: Partial<Record<Component | 'mises' | 'S11' | 'S22' | 'S33' | 'S12', number>>
+  ranges: Partial<
+    Record<Component | 'mises' | 'S11' | 'S22' | 'S33' | 'S12' | 'CNormf' | 'pressure', number>
+  >
   source: string
 }
 
@@ -124,14 +212,16 @@ type Component = 'magnitude' | 'U1' | 'U2' | 'U3'
 const COMPONENTS: Component[] = ['magnitude', 'U1', 'U2', 'U3']
 
 type RangeMode = 'fixed' | 'auto' | 'manual'
-type RangeKind = 'stress' | 'displacement'
+type RangeKind = 'stress' | 'displacement' | 'contact'
 const DEFAULT_RANGE: Record<RangeKind, { min: number; max: number }> = {
   stress: { min: 0, max: 0.5 },
   displacement: { min: 0, max: 5 },
+  contact: { min: 0, max: 0.5 },
 }
 const DEFAULT_DRAFT: Record<RangeKind, { min: string; max: string }> = {
   stress: { min: '0', max: '0.5' },
   displacement: { min: '0', max: '5' },
+  contact: { min: '0', max: '0.5' },
 }
 
 const STRESS_FIELDS: FieldId[] = ['mises', 'S11', 'S22', 'S33', 'S12']
@@ -142,7 +232,12 @@ const isStressField = (field: FieldId) => STRESS_FIELDS.includes(field)
  * Display-only sign controls. They transform the projected curve for reading
  * and for the exported CSV; the stored result artifacts are never rewritten.
  */
-function displayedCurve(history: HistoryRow[], reverseX: boolean, reverseY: boolean) {
+function displayedCurve(
+  history: HistoryRow[],
+  reverseX: boolean,
+  reverseY: boolean,
+  factor = 1,
+) {
   return {
     x: history.map((row) => (reverseX ? -row.displacement : row.displacement)),
     // A missing measurement stays a gap: JavaScript's -null would become -0 and
@@ -150,34 +245,63 @@ function displayedCurve(history: HistoryRow[], reverseX: boolean, reverseY: bool
     y: history.map((row) => {
       const force = row.force
       if (force === null || force === undefined || !Number.isFinite(force)) return Number.NaN
-      return reverseY ? -force : force
+      const scaled = force * factor
+      return reverseY ? -scaled : scaled
     }),
   }
 }
 
+/** Apply the display factor once; an absent measurement stays absent. */
+function scaledValue(value: number | null | undefined, factor: number) {
+  return typeof value === 'number' && Number.isFinite(value) ? value * factor : null
+}
+
 /**
- * Gate D export: exactly two numeric rows, one column per aligned sample, in
- * the selected step. Row 1 is the step-relative displacement magnitude from the
- * measured U1/U2, row 2 the signed projected force in the selected basis.
- * Missing measurements stay empty cells; a measured zero stays `0`.
+ * One measured load sample per aligned result row.
+ *
+ * Row 1 of the export is the step-relative displacement magnitude,
+ * ``hypot(U1-U1_ref, U2-U2_ref)``, from a valid common reference sample — never
+ * the projected travel field. Row 2 is the step-direction projection already
+ * normalized by ``align_histories``. Missing components stay null; the display
+ * sign is applied exactly once to the force.
  */
-function twoRowExport(rows: HistoryRow[], reverseY: boolean) {
-  const sorted = [...rows].sort((a, b) => a.time - b.time)
-  const number = (value: unknown): value is number =>
+function loadExportSamples(rows: HistoryRow[], reverseY: boolean, factor = 1): Sample[] {
+  const ordered = [...rows].sort((a, b) => a.time - b.time)
+  const finite = (value: unknown): value is number =>
     typeof value === 'number' && Number.isFinite(value)
-  const firstU1 = sorted.find((row) => number(row.u1))?.u1 as number | undefined
-  const firstU2 = sorted.find((row) => number(row.u2))?.u2 as number | undefined
-  const magnitudes = sorted.map((row) => {
-    if (!number(row.u1) || !number(row.u2) || firstU1 === undefined || firstU2 === undefined)
-      return ''
-    return String(Number(Math.hypot(row.u1 - firstU1, row.u2 - firstU2).toPrecision(12)))
+  const reference = ordered.find((row) => finite(row.u1) && finite(row.u2))
+  const referenceU1 = reference && finite(reference.u1) ? reference.u1 : undefined
+  const referenceU2 = reference && finite(reference.u2) ? reference.u2 : undefined
+  return ordered.map((row) => {
+    const x =
+      referenceU1 !== undefined &&
+      referenceU2 !== undefined &&
+      finite(row.u1) &&
+      finite(row.u2)
+        ? Math.hypot(row.u1 - referenceU1, row.u2 - referenceU2)
+        : null
+    const y =
+      finite(row.force) ? (reverseY ? -row.force : row.force) * factor : null
+    return { x, y }
   })
-  const forces = sorted.map((row) => {
-    if (!number(row.force)) return ''
-    const value = reverseY ? -row.force : row.force
-    return String(Number(value.toPrecision(12)))
-  })
-  return { magnitudes, forces, count: sorted.length }
+}
+
+function exportUnavailableKey(result: UniformResult | null, spacingOk: boolean) {
+  if (!spacingOk) return 'run.exportSpacingInvalid'
+  if (!result) return 'run.exportUnavailable'
+  if (result.kind === 'invalid') {
+    return result.reason === 'too_many'
+      ? 'run.exportTooMany'
+      : 'run.exportSpacingInvalid'
+  }
+  if (result.kind === 'ambiguous') {
+    return result.reason === 'multivalued'
+      ? 'run.exportMultivalued'
+      : result.reason === 'unordered'
+        ? 'run.exportUnordered'
+        : 'run.exportUnavailable'
+  }
+  return null
 }
 
 function sourceLog(job: Job) {
@@ -255,6 +379,7 @@ export function RunView({
   const [rangeModes, setRangeModes] = useState<Record<RangeKind, RangeMode>>({
     stress: 'fixed',
     displacement: 'fixed',
+    contact: 'fixed',
   })
   const [rangeDrafts, setRangeDrafts] =
     useState<Record<RangeKind, { min: string; max: string }>>(DEFAULT_DRAFT)
@@ -280,7 +405,44 @@ export function RunView({
   // Display-only sign controls; the artifacts on disk keep their signed values.
   const [reverseX, setReverseX] = useState(false),
     [reverseY, setReverseY] = useState(false)
+  // Door-panel pressure view state. The profile axis is fixed per result; the
+  // arrows and the spatial graph always read the displayed frame's arrays.
+  const [pressureProfile, setPressureProfile] = useState<string | null>(null)
+  const [showPressureArrows, setShowPressureArrows] = useState(true)
+  const [pressureSelected, setPressureSelected] = useState<number | null>(null)
+  const [pressureHover, setPressureHover] = useState<number | null>(null)
+  // Two-row export controls. The interval is user-editable and independent per
+  // graph; the defaults match the accepted load (1.0 mm) and door-pressure
+  // station (1.3 mm) contracts. Uniform grids can be replaced by the original
+  // ordered samples when a curve is multivalued.
+  const [strokeInterval, setStrokeInterval] = useState(String(DEFAULT_STROKE_INTERVAL_MM))
+  const [stationInterval, setStationInterval] = useState(String(DEFAULT_STATION_INTERVAL_MM))
+  const [loadExportMode, setLoadExportMode] = useState<'uniform' | 'original'>('uniform')
+  const [pressureExportMode, setPressureExportMode] = useState<'uniform' | 'original'>(
+    'uniform',
+  )
+  // One dimensionless display factor for engineering responses. It is separate
+  // from geometric deformation exaggeration and from the reporting width; the
+  // stored measurements are never rewritten.
+  const [multiplier, setMultiplier] = useState(1)
+  const [multiplierDraft, setMultiplierDraft] = useState('1')
+  const [multiplierError, setMultiplierError] = useState(false)
+  // Pressure-arrow calibration: Automatic screen size is the initial mode;
+  // Manual keeps its own last valid model-space calibration per open result.
+  const [arrowMode, setArrowMode] = useState<'auto' | 'manual'>('auto')
+  const [manualMm, setManualMm] = useState('5')
+  const [manualMmValue, setManualMmValue] = useState(5)
+  const [manualMmError, setManualMmError] = useState(false)
   const active = !!job && anyActive([job])
+  const resultInfo = (job?.result ?? {}) as {
+    state?: string
+    available?: boolean
+    summary?: Record<string, unknown>
+    generation?: number
+  }
+  const resultSummary = resultInfo.summary ?? {}
+  const resultOpen = !!job && (job.status === 'Completed' || resultInfo.available === true)
+  const resultPartial = resultOpen && resultInfo.state === 'partial'
   useEffect(() => {
     const ctrl = new AbortController()
     const poll = () =>
@@ -316,7 +478,7 @@ export function RunView({
     return () => clearInterval(timer)
   }, [])
   useEffect(() => {
-    if (!resultView || job?.status !== 'Completed') return
+    if (!resultView || !resultOpen) return
     const ac = new AbortController()
     request<Index>(artifact(id, 'results.json'), 'GET', undefined, ac.signal)
       .then(setIndex)
@@ -324,11 +486,11 @@ export function RunView({
         if (!ac.signal.aborted) notify(err(e))
       })
     return () => ac.abort()
-  }, [job?.status, resultView, id, notify])
+  }, [resultOpen, resultView, id, notify, resultInfo.generation])
   // Run-wide bounds and colour ranges, recorded by extraction or derived once
   // server-side for a retained result. They never change during playback.
   useEffect(() => {
-    if (!resultView || job?.status !== 'Completed') return
+    if (!resultView || !resultOpen) return
     const ac = new AbortController()
     request<DisplayMeta>('/api/jobs/' + id + '/display-metadata', 'GET', undefined, ac.signal)
       .then(setDisplayMeta)
@@ -341,7 +503,7 @@ export function RunView({
         }
       })
     return () => ac.abort()
-  }, [job?.status, resultView, id, notify])
+  }, [resultOpen, resultView, id, notify, resultInfo.generation])
   // A new run starts from a clean frame state: no old probe, frame or camera key.
   useEffect(() => {
     frameCache.current.clear()
@@ -350,6 +512,17 @@ export function RunView({
     setPendingFrame(null)
     setFrameError(null)
     setDisplayMeta(null)
+    setIndex(null)
+    // A newly opened result starts at ×1 and Automatic arrows, including a
+    // portable file reopened under a new job identity.
+    setMultiplier(1)
+    setMultiplierDraft('1')
+    setMultiplierError(false)
+    setArrowMode('auto')
+    setManualMm('5')
+    setManualMmError(false)
+    setReverseX(false)
+    setReverseY(false)
   }, [id])
   // Only the newest request may commit. The last complete frame stays on screen
   // while the next one loads, so playback never blanks the viewport.
@@ -357,8 +530,8 @@ export function RunView({
   const generation = useRef(0)
   const deadline = useRef(0)
   const inflight = useRef(new Map<string, Promise<Frame>>())
-  const CACHE_LIMIT = 24
-  const READ_AHEAD = 4
+  const CACHE_LIMIT = 96
+  const READ_AHEAD = 6
   const CADENCE_MS = 220
   const loadFrame = useCallback(
     (file: string): Promise<Frame> => {
@@ -494,26 +667,90 @@ export function RunView({
     null
   const closingStepId = closingStepEntry?.id ?? closingStepEntry?.name ?? null
   const closingStepName = closingStepEntry?.name ?? null
-  // Open on the door-closing step by default in both modes.
+  const frameRestored = useRef(false)
+  const curveRestored = useRef(false)
   useEffect(() => {
-    if (!index) return
+    frameRestored.current = false
+    curveRestored.current = false
+  }, [id])
+  // A partial result lands paused on its last readable saved frame. A completed
+  // result keeps its established door-closing opening. Either choice survives
+  // Diagnostics, delayed requests and polling refreshes for this result.
+  useEffect(() => {
+    if (!index || frameRestored.current) return
+    frameRestored.current = true
+    try {
+      const saved = window.sessionStorage.getItem('aqol.frame.' + id)
+      const previous = saved === null ? Number.NaN : Number(saved)
+      if (
+        Number.isInteger(previous) &&
+        previous >= 0 &&
+        previous < index.frames.length
+      ) {
+        setN(previous)
+        return
+      }
+    } catch {
+      // A denied storage API only loses the restored position.
+    }
+    if (index.availability === 'partial') {
+      setN(Math.max(0, index.frames.length - 1))
+      return
+    }
     const first = index.frames.findIndex(
       (frame) =>
         !closingStepId ||
         (frame.step_id ? frame.step_id === closingStepId : frame.step === closingStepName),
     )
     setN(Math.max(0, first))
-  }, [index, closingStepId, closingStepName])
+  }, [index, closingStepId, closingStepName, id])
+  useEffect(() => {
+    if (!index) return
+    try {
+      window.sessionStorage.setItem('aqol.frame.' + id, String(n))
+    } catch {
+      // Position persistence is a convenience only.
+    }
+  }, [id, n, index])
   const [curveStep, setCurveStep] = useState<string | null>(null)
   const stepOptions = index?.steps?.length
     ? index.steps
     : (index?.closing?.steps ?? [])
   useEffect(() => {
-    if (!index) return
-    const options = index.steps?.length ? index.steps : (index.closing?.steps ?? [])
-    const preferred = options.find((step) => step.role === 'door') ?? options[options.length - 1]
+    if (!index || curveRestored.current) return
+    curveRestored.current = true
+    try {
+      const saved = window.sessionStorage.getItem('aqol.step.' + id)
+      if (saved && stepOptions.some((step) => (step.id ?? step.name) === saved)) {
+        setCurveStep(saved)
+        return
+      }
+    } catch {
+      // Ignore denied storage.
+    }
+    // A partial result opens on the step that owns the displayed last frame; a
+    // planned step that never ran is not selected as if it had data.
+    if (index.availability === 'partial' && index.frames.length) {
+      const last = index.frames[index.frames.length - 1]
+      const entry = stepOptions.find(
+        (step) => (step.id ?? step.name) === (last.step_id ?? last.step),
+      )
+      if (entry) {
+        setCurveStep(entry.id ?? entry.name)
+        return
+      }
+    }
+    const preferred = stepOptions.find((step) => step.role === 'door') ?? stepOptions[stepOptions.length - 1]
     setCurveStep(preferred ? (preferred.id ?? preferred.name) : null)
-  }, [index])
+  }, [index, id, stepOptions])
+  useEffect(() => {
+    if (!curveStep) return
+    try {
+      window.sessionStorage.setItem('aqol.step.' + id, curveStep)
+    } catch {
+      // Ignore denied storage.
+    }
+  }, [id, curveStep])
   const curveStepEntry = stepOptions.find(
     (step) => (step.id ?? step.name) === curveStep,
   )
@@ -557,6 +794,7 @@ export function RunView({
    * unchanged by this layout decision.
    */
   const forceUnit = index?.force_unit ?? 'N'
+  const factorTag = multiplier === 1 ? '' : ' ×' + formatNumber(multiplier)
   const travelAxisLabel =
     stepRole === 'body'
       ? t('run.bodyTravel')
@@ -564,15 +802,15 @@ export function RunView({
         ? t('run.doorTravel')
         : t('run.panelU2')
   const forceAxisLabel =
-    stepRole === 'body'
+    (stepRole === 'body'
       ? t('run.bodyReaction', { unit: forceUnit })
       : index?.closing && stepProvenance !== 'unknown'
         ? t('run.doorReaction', { unit: forceUnit })
         : stepDirection
           ? t('run.projectedReaction', { unit: forceUnit })
-          : t('run.panelRF2', { unit: forceUnit })
+          : t('run.panelRF2', { unit: forceUnit })) + factorTag
   const shortTravelAxis = t('run.displacementAxis')
-  const shortForceAxis = t('run.forceAxis', { unit: forceUnit })
+  const shortForceAxis = t('run.forceAxis', { unit: forceUnit }) + factorTag
   const plotDescription = `${travelAxisLabel} · ${forceAxisLabel}`
   const historyRows = useMemo(
     () =>
@@ -584,9 +822,37 @@ export function RunView({
     [index, curveStep, curveStepName],
   )
   const curve = useMemo(
-    () => displayedCurve(historyRows, reverseX, reverseY),
-    [historyRows, reverseX, reverseY],
+    () => displayedCurve(historyRows, reverseX, reverseY, multiplier),
+    [historyRows, reverseX, reverseY, multiplier],
   )
+  // Load export: one measured sample per aligned row, then an optional uniform
+  // stroke grid or the original acquisition-ordered samples. Reverse X is a
+  // display choice for the chart only; the exported stroke stays positive.
+  const loadSamples = useMemo(
+    () => loadExportSamples(historyRows, reverseY, multiplier),
+    [historyRows, reverseY, multiplier],
+  )
+  const loadSpacing = parseSpacing(strokeInterval)
+  const loadSpacingValue = loadSpacing.ok ? loadSpacing.value : 0
+  const loadGrid = useMemo<UniformResult | null>(
+    () => (loadSpacingValue > 0 ? uniformSamples(loadSamples, loadSpacingValue) : null),
+    [loadSamples, loadSpacingValue],
+  )
+  const loadExportPoints =
+    loadExportMode === 'original'
+      ? originalSamples(loadSamples)
+      : loadGrid?.kind === 'ok'
+        ? loadGrid.points
+        : []
+  const loadExportIssue =
+    loadExportMode === 'original'
+      ? loadExportPoints.length
+        ? null
+        : 'run.exportUnavailable'
+      : exportUnavailableKey(loadGrid, loadSpacing.ok) ??
+        (loadExportPoints.length ? null : 'run.exportUnavailable')
+  const loadOrdinate = loadOrdinateLabel(index ?? {})
+  const loadBasis = loadBasisTag(index ?? {})
   // The frame identity that is actually on screen, not the one being requested.
   const shownFrame = displayedFrame ?? n
   const shownEntry = index?.frames[shownFrame]
@@ -601,6 +867,20 @@ export function RunView({
         )
       : undefined
   const stressAvailable = !!displayMeta && displayMeta.ranges.mises !== undefined
+  const contactAvailable = !!displayMeta && displayMeta.ranges.CNormf !== undefined
+  const fieldIsContact = field === 'CNormf'
+  const contactSamples = useMemo(() => contactForceSamples(frame), [frame])
+  const contactValues = useMemo(() => contactForceValues(contactSamples), [contactSamples])
+  // The contour and the probe read the same displayed magnitude. The stored
+  // signed components remain in `contactSamples`; the factor is applied once.
+  const contactDisplayValues = useMemo(() => {
+    const values: Record<string, Record<number, number>> = {}
+    for (const [instance, nodes] of Object.entries(contactValues)) {
+      values[instance] = {}
+      for (const [node, value] of Object.entries(nodes)) values[instance][Number(node)] = value * multiplier
+    }
+    return values
+  }, [contactValues, multiplier])
   // Default to von Mises with element probing whenever the run carries stress.
   useEffect(() => {
     if (!displayMeta) return
@@ -622,6 +902,17 @@ export function RunView({
     () => (fieldIsStress ? elementDisplayValues(stressSampleCells, field) : undefined),
     [fieldIsStress, stressSampleCells, field],
   )
+  const displayElementValues = useMemo(() => {
+    if (!elementValues) return undefined
+    const values: Record<string, Record<number, number>> = {}
+    for (const [instance, cells] of Object.entries(elementValues)) {
+      values[instance] = {}
+      for (const [element, value] of Object.entries(cells)) {
+        values[instance][Number(element)] = value * multiplier
+      }
+    }
+    return values
+  }, [elementValues, multiplier])
   // Face-to-material assignments, names and colours come from the job's
   // immutable submitted revision, never from a later editable head. The key is
   // the effective pinned card identity, so two distinct CAD faces that share a
@@ -664,13 +955,20 @@ export function RunView({
   }, [setup, faceMaterials])
   const displacementKey: Component =
     field === 'U1' ? 'U1' : field === 'U2' ? 'U2' : 'magnitude'
-  const rangeKey: Component | 'mises' | 'S11' | 'S22' | 'S33' | 'S12' = fieldIsStress
-    ? field === 'mises'
-      ? 'mises'
-      : (field as 'S11' | 'S22' | 'S33' | 'S12')
-    : displacementKey
+  const rangeKey: Component | 'mises' | 'S11' | 'S22' | 'S33' | 'S12' | 'CNormf' =
+    fieldIsContact
+      ? 'CNormf'
+      : fieldIsStress
+        ? field === 'mises'
+          ? 'mises'
+          : (field as 'S11' | 'S22' | 'S33' | 'S12')
+        : displacementKey
   const autoRange = displayMeta ? (displayMeta.ranges[rangeKey] ?? null) : undefined
-  const rangeKind: RangeKind = fieldIsStress ? 'stress' : 'displacement'
+  const rangeKind: RangeKind = fieldIsContact
+    ? 'contact'
+    : fieldIsStress
+      ? 'stress'
+      : 'displacement'
   const rangeMode = rangeModes[rangeKind]
   const manual = rangeDrafts[rangeKind]
   const limits = rangeLimits[rangeKind]
@@ -689,17 +987,21 @@ export function RunView({
   // cannot invent solver evidence.
   const rangeUnavailable =
     displayMeta !== null && displayMeta.ranges[rangeKey] === undefined
-  const unit = fieldIsStress
-    ? index?.units === 'N-mm-s-tonne'
-      ? 'MPa'
-      : t('run.unitUnknown')
-    : 'mm'
+  const unit = fieldIsContact
+    ? 'N'
+    : fieldIsStress
+      ? index?.units === 'N-mm-s-tonne'
+        ? 'MPa'
+        : t('run.unitUnknown')
+      : 'mm'
   const fieldLabel = t(('run.field.' + field) as TranslationKey)
   // Scalar values actually drawn: magnitudes for displacement, max-IP values
-  // for stress. Probe and CSV readings stay unclipped.
+  // for stress, |CNORMF| for contact force. Probe readings stay unclipped.
   const displayValues = useMemo(() => {
+    if (fieldIsContact)
+      return Object.values(contactDisplayValues).flatMap((values) => Object.values(values))
     if (fieldIsStress)
-      return Object.values(elementValues ?? {}).flatMap((values) => Object.values(values))
+      return Object.values(displayElementValues ?? {}).flatMap((values) => Object.values(values))
     if (!frame) return []
     const axis = displacementKey === 'U1' ? 0 : displacementKey === 'U2' ? 1 : -1
     const values: number[] = []
@@ -710,7 +1012,7 @@ export function RunView({
         if (Number.isFinite(value)) values.push(value)
       }
     return values
-  }, [fieldIsStress, elementValues, frame, displacementKey])
+  }, [fieldIsContact, contactDisplayValues, fieldIsStress, displayElementValues, frame, displacementKey])
   let frameMax = 0
   let frameMin = 0
   for (const value of displayValues) {
@@ -736,9 +1038,256 @@ export function RunView({
       | 'S12'
     return displayMeta?.ranges[key] !== undefined
   })
-  const fieldOptions: FieldId[] = stressAvailable
-    ? [...stressOptions, ...DISPLACEMENT_FIELDS]
-    : DISPLACEMENT_FIELDS
+  const fieldOptions: FieldId[] = [
+    ...(stressAvailable ? stressOptions : []),
+    ...(contactAvailable ? (['CNormf'] as FieldId[]) : []),
+    ...DISPLACEMENT_FIELDS,
+  ]
+  // --- Door-panel contact pressure -----------------------------------------
+  const doorIndex = index?.door_pressure ?? null
+  const doorProfiles = useMemo(
+    () =>
+      (doorIndex?.profiles ?? []).filter(
+        (entry) => entry.supported && (entry.labels?.length ?? 0) > 0,
+      ),
+    [doorIndex],
+  )
+  // Persisted orientation: choosing a profile never re-derives its axis. The
+  // default is the profile with the largest run-wide measured pressure.
+  useEffect(() => {
+    if (!doorProfiles.length) {
+      setPressureProfile(null)
+      return
+    }
+    setPressureProfile((current) =>
+      doorProfiles.some((entry) => entry.id === current)
+        ? current
+        : [...doorProfiles].sort(
+            (a, b) => (b.maximum_pressure_kpa ?? 0) - (a.maximum_pressure_kpa ?? 0),
+          )[0].id,
+    )
+  }, [doorProfiles])
+  const pressureEntry =
+    doorProfiles.find((entry) => entry.id === pressureProfile) ?? doorProfiles[0] ?? null
+  useEffect(() => {
+    setPressureSelected(null)
+    setPressureHover(null)
+  }, [pressureEntry?.id])
+  const pressureFrame = frame?.door_pressure ?? null
+  const pressureData = pressureEntry
+    ? (pressureFrame?.profiles?.[pressureEntry.id] ?? null)
+    : null
+  const displacementByLabel = useMemo(() => {
+    const rows = pressureEntry ? (frame?.displacements?.[pressureEntry.instance] ?? []) : []
+    return new Map(rows.map((row) => [row[0], row.slice(1)]))
+  }, [frame, pressureEntry?.instance])
+  const pressureRows = useMemo(() => {
+    if (!pressureEntry) return []
+    const scale = deformed ? deformationScale : 0
+    return (pressureEntry.labels ?? []).map((label, position) => {
+      const xy = pressureEntry.points_mm?.[position] ?? null
+      const u = displacementByLabel.get(label)
+      const anchor = xy
+        ? ([
+            xy[0] + (u?.[0] ?? 0) * scale,
+            xy[1] + (u?.[1] ?? 0) * scale,
+          ] as [number, number])
+        : null
+      const rawPressure = pressureData?.pressure_kpa?.[position] ?? null
+      const native = pressureData?.pressure_mpa?.[position] ?? null
+      const rawForce = pressureData?.cnormf_n?.[position] ?? null
+      // The display factor is applied exactly once to the engineering response;
+      // the recorded native values stay available for the readout.
+      const force =
+        rawForce === null || rawForce === undefined
+          ? null
+          : rawForce.map((component) => Number(component) * multiplier)
+      const magnitude = force ? Math.hypot(...force) : 0
+      const rawMagnitude = rawForce ? Math.hypot(...rawForce) : 0
+      const stationValue = pressureEntry.stations_mm?.[position]
+      return {
+        label,
+        station:
+          typeof stationValue === 'number' && Number.isFinite(stationValue)
+            ? stationValue
+            : null,
+        pressure: scaledValue(rawPressure, multiplier),
+        rawPressure,
+        native,
+        force,
+        rawForce,
+        magnitude,
+        anchor,
+        direction:
+          rawForce && rawMagnitude > 1e-12
+            ? ([rawForce[0] / rawMagnitude, rawForce[1] / rawMagnitude] as [
+                number,
+                number,
+              ])
+            : null,
+      }
+    })
+  }, [pressureEntry, pressureData, displacementByLabel, deformed, deformationScale, multiplier])
+  const pressureMaximum = useMemo(() => {
+    const recorded = displayMeta?.ranges.pressure
+    if (typeof recorded === 'number' && recorded > 0) return recorded
+    return pressureRows.reduce(
+      (largest, row) =>
+        row.rawPressure === null
+          ? largest
+          : Math.max(largest, Math.abs(row.rawPressure)),
+      0,
+    )
+  }, [displayMeta?.ranges.pressure, pressureRows])
+  const displayedPressureMaximum = pressureMaximum * multiplier
+  const pressureStationsOk =
+    !!pressureEntry &&
+    Array.isArray(pressureEntry.stations_mm) &&
+    pressureEntry.stations_mm.length === pressureEntry.labels.length &&
+    pressureEntry.stations_mm.every(
+      (value) => typeof value === 'number' && Number.isFinite(value),
+    )
+  const pressureArrows = useMemo(() => {
+    if (!pressureEntry) return null
+    const arrows = pressureRows.flatMap((row, rowIndex) =>
+      row.anchor && row.direction && row.pressure !== null && Math.abs(row.pressure) > 0
+        ? [
+            {
+              anchor: row.anchor,
+              direction: row.direction,
+              // The glyph length reads the displayed (multiplied) pressure; its
+              // automatic denominator stays the unscaled run reference.
+              pressureKpa: row.pressure,
+              station: row.station ?? 0,
+              node: row.label,
+              row: rowIndex,
+            },
+          ]
+        : [],
+    )
+    const first = pressureRows[0]
+    const second = pressureRows[1]
+    let hint: [number, number] | null = null
+    if (first?.anchor && second?.anchor) {
+      const dx = second.anchor[0] - first.anchor[0]
+      const dy = second.anchor[1] - first.anchor[1]
+      const length = Math.hypot(dx, dy)
+      if (length > 1e-12) hint = [dx / length, dy / length]
+    }
+    return {
+      profileId: pressureEntry.id,
+      name: pressureEntry.alias,
+      arrows,
+      pixelsPerKPa: 0,
+      maximumKpa: pressureMaximum,
+      mode: arrowMode,
+      manualMmPer10Kpa: manualMmValue,
+      origin: first?.anchor ?? null,
+      directionHint: hint,
+      selected: pressureHover ?? pressureSelected,
+    }
+  }, [
+    pressureEntry,
+    pressureRows,
+    pressureMaximum,
+    arrowMode,
+    manualMmValue,
+    pressureHover,
+    pressureSelected,
+  ])
+  const pressureStation = pressureHover ?? pressureSelected
+  const pressureFocus =
+    pressureStation !== null ? (pressureRows[pressureStation] ?? null) : null
+  const pressureHasSamples = pressureRows.some((row) => row.pressure !== null)
+  const pressureReason = !doorIndex
+    ? ('no_metadata' as const)
+    : !doorIndex.enabled
+      ? ('disabled' as const)
+      : !doorProfiles.length
+        ? (doorIndex.profiles?.find((entry) => !entry.supported)?.reason ?? 'no_profile')
+        : !pressureFrame
+          ? ('frame_missing' as const)
+          : pressureData?.supported === false
+            ? (pressureData.reason ?? 'no_profile')
+            : pressureData?.availability?.pressure === 'pressure_field_missing'
+              ? ('pressure_field_missing' as const)
+              : pressureData?.availability?.pressure === 'pressure_not_reported_for_instance'
+                ? ('pressure_not_reported_for_instance' as const)
+                : !pressureHasSamples
+                  ? ('no_samples' as const)
+                  : null
+  // Pressure export: the selected profile's ordered station axis against the
+  // displayed frame's door-side pressure. The profile ID, ordered node identity
+  // and frame are checked before any bytes are produced; a mismatched or
+  // missing array is an explanatory state, never a silent substitution.
+  const pressureIdentityOk =
+    pressureStationsOk &&
+    !!pressureData &&
+    !!pressureEntry &&
+    Array.isArray(pressureData.labels) &&
+    pressureData.labels.length === pressureEntry.labels.length &&
+    pressureData.labels.every((label, index) => label === pressureEntry.labels[index]) &&
+    (pressureData.pressure_kpa?.length ?? 0) === pressureEntry.labels.length &&
+    pressureRows.length === pressureEntry.labels.length
+  const pressureSamples = useMemo<Sample[]>(
+    () =>
+      pressureRows.map((row) => ({
+        x: Number.isFinite(row.station) ? row.station : null,
+        y:
+          typeof row.pressure === 'number' && Number.isFinite(row.pressure)
+            ? row.pressure
+            : null,
+      })),
+    [pressureRows],
+  )
+  const pressureSpacing = parseSpacing(stationInterval)
+  const pressureSpacingValue = pressureSpacing.ok ? pressureSpacing.value : 0
+  const pressureGrid = useMemo<UniformResult | null>(
+    () =>
+      pressureSpacingValue > 0
+        ? uniformSamples(pressureSamples, pressureSpacingValue)
+        : null,
+    [pressureSamples, pressureSpacingValue],
+  )
+  const pressureExportPoints =
+    pressureExportMode === 'original'
+      ? originalSamples(pressureSamples)
+      : pressureGrid?.kind === 'ok'
+        ? pressureGrid.points
+        : []
+  const pressureExportIssue = pressureReason
+    ? 'run.pressureExportUnavailable'
+    : !pressureStationsOk
+      ? 'run.pressureStationsUnavailable'
+      : !pressureIdentityOk
+        ? 'run.pressureArrayMismatch'
+        : pressureExportMode === 'original'
+          ? pressureExportPoints.length
+            ? null
+            : 'run.pressureExportUnavailable'
+          : exportUnavailableKey(pressureGrid, pressureSpacing.ok) ??
+            (pressureExportPoints.length ? null : 'run.pressureExportUnavailable')
+  const pressureCurve = {
+    x: pressureRows.map((row) => row.station),
+    y: pressureRows.map((row) =>
+      row.pressure === null || !Number.isFinite(row.pressure) ? Number.NaN : row.pressure,
+    ),
+  }
+  const pressureAxisLabel = t('run.pressureAxis') + factorTag
+  const loadOrdinateDisplay = loadOrdinate + factorTag
+  const pressurePositive = pressureRows.filter(
+    (row) => row.pressure !== null && row.pressure > 0,
+  ).length
+  const pressureGaps = pressureRows.filter((row) => row.pressure === null).length
+  const pressurePatches = pressureRows.reduce(
+    (count, row, index) => {
+      const positive = row.pressure !== null && row.pressure > 0
+      const previous =
+        index > 0 && pressureRows[index - 1].pressure !== null && pressureRows[index - 1].pressure! > 0
+      return count + (positive && !previous ? 1 : 0)
+    },
+    0,
+  )
   function applyManual(next: { min: string; max: string }) {
     setRangeDrafts((old) => ({ ...old, [rangeKind]: next }))
     const min = Number(next.min),
@@ -762,6 +1311,53 @@ export function RunView({
     setRangeDrafts((old) => ({ ...old, [rangeKind]: DEFAULT_DRAFT[rangeKind] }))
     setRangeLimits((old) => ({ ...old, [rangeKind]: DEFAULT_RANGE[rangeKind] }))
   }
+  // The multiplier is committed from its own draft. Negative, non-finite and
+  // blank values never replace the last valid factor; the reason is localized.
+  function applyMultiplier(text: string) {
+    setMultiplierDraft(text)
+    const trimmed = text.trim()
+    if (trimmed === '') {
+      setMultiplierError(false)
+      return
+    }
+    const value = Number(trimmed)
+    if (!Number.isFinite(value) || value < 0) {
+      setMultiplierError(true)
+      return
+    }
+    setMultiplierError(false)
+    setMultiplier(value)
+  }
+  function resetMultiplier() {
+    setMultiplier(1)
+    setMultiplierDraft('1')
+    setMultiplierError(false)
+  }
+  // Manual arrow calibration: 10 kPa = N mm. Invalid drafts keep the last valid
+  // physical calibration so the viewport never renders a fabricated length.
+  function applyManualMm(text: string) {
+    setManualMm(text)
+    const trimmed = text.trim()
+    if (trimmed === '') {
+      setManualMmError(false)
+      return
+    }
+    const value = Number(trimmed)
+    if (!Number.isFinite(value) || value <= 0) {
+      setManualMmError(true)
+      return
+    }
+    setManualMmError(false)
+    setManualMmValue(value)
+  }
+  async function recoverResults(kind: 'extract' | 'retry') {
+    try {
+      await request('/api/jobs/' + id + '/' + kind, 'POST')
+      refresh((value) => value + 1)
+    } catch (error) {
+      notify(err(error))
+    }
+  }
   const plotPick = useCallback(
     (i: number) => {
       if (index && historyRows[i]) {
@@ -778,28 +1374,56 @@ export function RunView({
     },
     [index, historyRows],
   )
-  function exportCurve() {
-    if (!index) return
-    const { magnitudes, forces, count } = twoRowExport(historyRows, reverseY)
-    if (!count) return
+  function exportLoad() {
+    if (!index || loadExportIssue || !loadExportPoints.length) return
     const role = stepRole === 'body' ? 'body' : 'door'
-    const width = index.reporting_width_mm ?? index.thickness
-    const basis = index.force_normalization === 'per_mm' ? 'per_mm' : 'total'
     const step = curveStep ?? 'step'
+    const interval = loadExportMode === 'original' ? 'original' : `dx${formatNumber(loadSpacingValue)}mm`
     const filename =
       role +
-      '-curve-' +
+      '-' +
+      safeName(stepInstance) +
+      '-load-' +
       id.slice(0, 8) +
       '-' +
-      step.replace(/[^A-Za-z0-9_-]/g, '') +
+      safeName(step) +
       '-' +
-      basis +
-      (basis === 'total' ? '-W' + String(Number(width)) + 'mm' : '') +
+      loadBasis +
+      '-' +
+      safeName(interval) +
+      (loadExportMode === 'original' ? '-ordered' : '') +
       (reverseY ? '-force-flipped' : '') +
+      (multiplier === 1 ? '' : '-x' + formatNumber(multiplier)) +
+      (resultPartial ? '-partial' : '') +
       '.csv'
-    // Two numeric rows only: no preamble, header, index or time column. Adjacent
-    // UI and the filename carry panel, step, unit, width and sign.
-    download(filename, [magnitudes.join(','), forces.join(',')].join('\r\n') + '\r\n')
+    // Two rows only: the engineering label in column A and numeric samples from
+    // column B. Adjacent UI and the filename carry panel, step, basis, sign and
+    // interval; no preamble, header or time column is written.
+    download(filename, twoRowCsv('stroke(mm)', loadOrdinateDisplay, loadExportPoints))
+  }
+  function exportPressure() {
+    if (!index || !pressureEntry || pressureExportIssue || !pressureExportPoints.length) return
+    const interval =
+      pressureExportMode === 'original'
+        ? 'original'
+        : `dx${formatNumber(pressureSpacingValue)}mm`
+    const frame = `frame-${String(shownFrame).padStart(5, '0')}`
+    const filename =
+      'door-pressure-' +
+      id.slice(0, 8) +
+      '-' +
+      safeName(pressureEntry.id) +
+      '-' +
+      safeName(frame) +
+      '-' +
+      safeName(pressureEntry.alias) +
+      '-' +
+      safeName(interval) +
+      (pressureExportMode === 'original' ? '-nodes' : '') +
+      (multiplier === 1 ? '' : '-x' + formatNumber(multiplier)) +
+      (resultPartial ? '-partial' : '') +
+      '.csv'
+    download(filename, twoRowCsv('door station(mm)', pressureAxisLabel, pressureExportPoints))
   }
   if (!job) return <main className="page">{t('run.opening')}</main>
   const disabled = index?.unavailable ?? []
@@ -808,6 +1432,30 @@ export function RunView({
   const probeText = (() => {
     if (!sel) return t('run.probePrompt')
     const identity = sel.instance + ' · ' + sel.kind + ' ' + sel.label
+    const factorTag =
+      multiplier === 1 ? '' : ' · ×' + formatNumber(multiplier)
+    if (fieldIsContact) {
+      const sample =
+        sel.instance && sel.label !== undefined
+          ? contactSamples.get(sel.instance + ':' + sel.label)
+          : undefined
+      if (!sample) return identity + ' · ' + t('run.contactForceUnavailable')
+      const components = sample.components
+        .map((value, axis) => {
+          const name = axis === 0 ? 'Fx' : axis === 1 ? 'Fy' : 'Fz'
+          return name + ' ' + Number((value * multiplier).toPrecision(4))
+        })
+        .join(', ')
+      return (
+        identity +
+        ' · |CNORMF| ' +
+        Number((sample.magnitude * multiplier).toPrecision(4)) +
+        ' N · ' +
+        components +
+        ' N' +
+        factorTag
+      )
+    }
     if (sel.kind === 'element' && fieldIsStress) {
       const cell =
         sel.instance && sel.label !== undefined
@@ -815,12 +1463,14 @@ export function RunView({
           : undefined
       if (!cell || !cell.samples.length)
         return identity + ' · ' + t('run.stressUnavailable')
-      const maximum = Math.max(...cell.samples.map((sample) => sample.value))
+      const maximum = Math.max(
+        ...cell.samples.map((sample) => sample.value * multiplier),
+      )
       const samples = cell.samples
         .map(
           (sample) =>
             (sample.ip === undefined ? '' : 'IP ' + sample.ip + ': ') +
-            sample.value.toPrecision(4) +
+            Number((sample.value * multiplier).toPrecision(4)) +
             (sample.section === undefined ? '' : ' (SP ' + sample.section + ')'),
         )
         .join(', ')
@@ -831,7 +1481,8 @@ export function RunView({
         ' · ' +
         t('run.samples') +
         ': ' +
-        samples
+        samples +
+        factorTag
       )
     }
     if (sel.kind === 'element') {
@@ -871,9 +1522,11 @@ export function RunView({
       return identity + ' · ' + field + ' ' + t('run.uUnavailable')
     return identity + ' · ' + field + ' ' + value.toPrecision(4) + ' mm'
   })()
-  const legendLabel = fieldIsStress
-    ? t('run.legendStress', { field: fieldLabel, unit })
-    : t('run.legendTitle', { variable: 'U', component: fieldLabel })
+  const legendLabel = fieldIsContact
+    ? t('run.legendContactForce', { field: fieldLabel, unit })
+    : fieldIsStress
+      ? t('run.legendStress', { field: fieldLabel, unit })
+      : t('run.legendTitle', { variable: 'U', component: fieldLabel })
   return (
     <main className="page run-view">
       <div className="crumb">
@@ -897,7 +1550,7 @@ export function RunView({
       <div className="run-banner">
         <Badge value={job.status} />
         <span>{job.mode === 'DEMO' ? t('demo.notice') : job.mode}</span>
-        {resultView && index && (
+        {resultView && index && !resultPartial && (
           // A usable completed result is stated here instead of in a full-width
           // progress card, so the geometry and response panes get the height.
           <span className="banner-complete" data-testid="run-complete">
@@ -920,6 +1573,61 @@ export function RunView({
         <Clock />
         {elapsed(job)}
       </div>
+      {resultPartial && (
+        <div className="partial-notice" data-testid="partial-notice" data-state="partial">
+          <strong>{t('run.partialTitle')}</strong>
+          <span data-testid="partial-step">
+            {t('run.partialStep', {
+              step: String(resultSummary.last_step ?? '—'),
+            })}
+          </span>
+          <span data-testid="partial-frame">
+            {t('run.partialFrame', {
+              ordinal: String(resultSummary.frame_ordinal ?? '—'),
+              total: String(resultSummary.frames ?? 0),
+            })}
+          </span>
+          <span data-testid="partial-time">
+            {t('run.partialTime', {
+              local:
+                typeof resultSummary.last_local_s === 'number'
+                  ? Number(resultSummary.last_local_s).toFixed(3)
+                  : '—',
+              total:
+                typeof resultSummary.last_total_s === 'number'
+                  ? Number(resultSummary.last_total_s).toFixed(3)
+                  : '—',
+            })}
+          </span>
+          {job.increment != null && job.step_time != null && (
+            <span data-testid="partial-solver-progress">
+              {t('run.partialSolverProgress', {
+                increment: String(job.increment),
+                time: Number(job.step_time).toFixed(3),
+              })}
+            </span>
+          )}
+          {Boolean(resultSummary.history_only) && (
+            <span data-testid="partial-history-only">{t('run.partialHistoryOnly')}</span>
+          )}
+          {Boolean(resultSummary.initial_only) && (
+            <span data-testid="partial-initial-only">{t('run.partialInitialOnly')}</span>
+          )}
+          {!!job.extraction_error && (
+            <span className="error-text" data-testid="partial-extraction-error">
+              {job.extraction_error}
+            </span>
+          )}
+          {!!job.diagnostic && (
+            <span className="error-text" data-testid="partial-diagnostic">
+              {job.diagnostic}
+            </span>
+          )}
+          <button type="button" onClick={() => go('diagnostics/' + id)}>
+            {t('progress.openDiagnostics')}
+          </button>
+        </div>
+      )}
       {resultView && index ? (
         <>
           {/* A usable completed result gives its height back to the geometry and
@@ -960,7 +1668,12 @@ export function RunView({
                 {t('run.stressUnavailable')}
               </p>
             )}
-            {!fieldIsStress && !displacementAvailable && frame && (
+            {fieldIsContact && !contactAvailable && (
+              <p className="notice" data-testid="contact-force-unavailable">
+                {t('run.contactForceUnavailable')}
+              </p>
+            )}
+            {!fieldIsStress && !fieldIsContact && !displacementAvailable && frame && (
               <p className="notice" data-testid="displacement-unavailable">
                 {t('run.uUnavailable')}
               </p>
@@ -975,8 +1688,10 @@ export function RunView({
                 results={{ instances: index.instances, frame, bounds: displayMeta?.bounds?.extent ?? null }}
                 deformed={deformed}
                 deformationScale={deformationScale}
-                elementValues={fieldIsStress ? elementValues : undefined}
-                resultComponent={fieldIsStress ? 'magnitude' : displacementKey}
+                elementValues={fieldIsStress ? displayElementValues : undefined}
+                nodalValues={fieldIsContact ? contactDisplayValues : undefined}
+                pressureArrows={showPressureArrows ? pressureArrows : null}
+                resultComponent={fieldIsStress || fieldIsContact ? 'magnitude' : displacementKey}
                 resultRange={rangeUnavailable ? null : (resultRange ?? null)}
                 resultMin={effectiveMin}
                 resultUnit={unit}
@@ -1093,6 +1808,22 @@ export function RunView({
                 <span className="range-summary" data-testid="range-summary">
                   {formatRange(effectiveMin)} – {formatRange(effectiveMax)} {unit}
                 </span>
+                {rangeMode === 'auto' && multiplier !== 1 && autoRange != null && (
+                  <small data-testid="range-auto-reference">
+                    {t('run.rangeAutoReference', {
+                      value: formatRange(autoRange),
+                      unit,
+                    })}
+                  </small>
+                )}
+                {multiplier !== 1 && !rangeUnavailable && (
+                  <small data-testid="range-extrema">
+                    {t('run.rangeExtrema', {
+                      max: formatRange(frameMax),
+                      unit,
+                    })}
+                  </small>
+                )}
                 <button type="button" onClick={resetRange}>
                   {t('run.rangeReset')}
                 </button>
@@ -1143,6 +1874,75 @@ export function RunView({
                   />
                 </label>
               </div>
+              {/* Pressure arrows live with the other field-visualization
+                  controls below the viewport. One toggle serves every field;
+                  its calibration is independent of zoom and deformation. */}
+              <fieldset className="arrow-controls" data-testid="arrow-controls">
+                <legend>{t('run.pressureArrows')}</legend>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    data-testid="pressure-arrows-toggle"
+                    checked={showPressureArrows}
+                    disabled={!doorProfiles.length}
+                    title={
+                      doorProfiles.length
+                        ? undefined
+                        : t('run.pressureArrowsUnavailable')
+                    }
+                    onChange={(event) => setShowPressureArrows(event.target.checked)}
+                  />
+                  {t('run.pressureArrows')}
+                </label>
+                <label>
+                  {t('run.arrowMode')}
+                  <select
+                    data-testid="arrow-mode"
+                    aria-label={t('run.arrowMode')}
+                    value={arrowMode}
+                    disabled={!doorProfiles.length}
+                    onChange={(event) =>
+                      setArrowMode(event.target.value as 'auto' | 'manual')
+                    }
+                  >
+                    <option value="auto">{t('run.arrowAuto')}</option>
+                    <option value="manual">{t('run.arrowManual')}</option>
+                  </select>
+                </label>
+                {arrowMode === 'manual' ? (
+                  <label>
+                    {t('run.arrowManualCalibration')}
+                    <input
+                      type="number"
+                      min={1e-9}
+                      step="any"
+                      inputMode="decimal"
+                      data-testid="arrow-manual-mm"
+                      aria-label={t('run.arrowManualCalibration')}
+                      value={manualMm}
+                      onChange={(event) => applyManualMm(event.target.value)}
+                    />
+                    <small>{t('run.arrowManualUnit')}</small>
+                  </label>
+                ) : (
+                  <small data-testid="arrow-auto-note">
+                    {t('run.arrowAutoNote', {
+                      value: Number(pressureMaximum.toPrecision(4)),
+                      unit: doorIndex?.display_unit ?? 'kPa',
+                    })}
+                  </small>
+                )}
+                {manualMmError && (
+                  <small className="error-text" role="alert" data-testid="arrow-manual-error">
+                    {t('run.arrowManualInvalid')}
+                  </small>
+                )}
+                {!doorProfiles.length && (
+                  <small className="field-hint" data-testid="arrow-unavailable">
+                    {t('run.pressureArrowsUnavailable')}
+                  </small>
+                )}
+              </fieldset>
               {/* Material outlines are an independent display preference (default
                   off). They are separate from mesh edges, node markers, the
                   selected field and the deformation scale. */}
@@ -1208,6 +2008,39 @@ export function RunView({
               {t('run.doorResponse')}
             </div>
             <div className="property-body">
+              <fieldset className="result-multiplier" data-testid="result-multiplier">
+                <legend>{t('run.resultMultiplier')}</legend>
+                <label>
+                  {t('run.multiplierLabel')}
+                  <input
+                    type="number"
+                    min={0}
+                    step="any"
+                    inputMode="decimal"
+                    aria-label={t('run.resultMultiplier')}
+                    data-testid="result-multiplier-input"
+                    value={multiplierDraft}
+                    onChange={(event) => applyMultiplier(event.target.value)}
+                    onBlur={() => {
+                      if (multiplierDraft.trim() === '') setMultiplierError(true)
+                    }}
+                  />
+                  <small>×</small>
+                </label>
+                <button type="button" onClick={resetMultiplier} data-testid="multiplier-reset">
+                  {t('run.multiplierReset')}
+                </button>
+                {multiplierError && (
+                  <small className="error-text" role="alert" data-testid="multiplier-error">
+                    {t('run.multiplierInvalid')}
+                  </small>
+                )}
+                {multiplier !== 1 && (
+                  <small data-testid="multiplier-active">
+                    {t('run.multiplierActive', { factor: formatNumber(multiplier) })}
+                  </small>
+                )}
+              </fieldset>
               <h2>{t('run.forceDisplacement')}</h2>
               <p>{index.closing ? t('run.plotHelp') : t('run.plotHelpLegacy')}</p>
               {stepOptions.length > 1 && (
@@ -1297,22 +2130,309 @@ export function RunView({
                       {t('run.reverseY')}
                     </label>
                   </fieldset>
-                  <button className="wide" onClick={exportCurve} data-testid="export-curve">
+                  <div className="export-controls" data-testid="load-export">
+                    <label className="action-field export-interval">
+                      {t('run.exportInterval')}
+                      <input
+                        type="number"
+                        min={1e-9}
+                        step="any"
+                        inputMode="decimal"
+                        data-testid="stroke-interval"
+                        value={strokeInterval}
+                        onChange={(event) => setStrokeInterval(event.target.value)}
+                      />
+                      <small>{t('run.exportIntervalUnit')}</small>
+                    </label>
+                    <label className="action-field export-mode">
+                      {t('run.exportSampling')}
+                      <select
+                        data-testid="load-sampling"
+                        value={loadExportMode}
+                        onChange={(event) =>
+                          setLoadExportMode(event.target.value as 'uniform' | 'original')
+                        }
+                      >
+                        <option value="uniform">{t('run.exportUniform')}</option>
+                        <option value="original">{t('run.exportOriginal')}</option>
+                      </select>
+                    </label>
+                  </div>
+                  <p className="export-note" data-testid="export-endpoint-rule">
+                    {t('run.exportEndpointRule')}
+                  </p>
+                  <button
+                    className="wide"
+                    onClick={exportLoad}
+                    data-testid="export-curve"
+                    disabled={!!loadExportIssue}
+                    title={loadExportIssue ? t(loadExportIssue as TranslationKey) : undefined}
+                  >
                     <Download />
-                    {t('run.exportCurveTwoRows')}
+                    {t('run.exportLoadTwoRows')}
                   </button>
-                  <small data-testid="export-basis">
-                    {t('run.exportBasis', {
-                      panel: stepInstance,
-                      step: curveStepName ?? 'Closing',
-                      unit: index.force_unit,
-                      width: String(index.reporting_width_mm ?? index.thickness),
-                      sign: reverseY ? t('run.exportFlipped') : t('run.exportAsMeasured'),
-                    })}
-                  </small>
+                  {loadExportIssue ? (
+                    <p className="notice" data-testid="load-export-issue">
+                      {t(loadExportIssue as TranslationKey)}
+                    </p>
+                  ) : (
+                    <small data-testid="export-basis">
+                      {t('run.exportBasis', {
+                        panel: stepInstance,
+                        step: curveStepName ?? 'Closing',
+                        unit: loadOrdinate,
+                        sign: reverseY ? t('run.exportFlipped') : t('run.exportAsMeasured'),
+                      })}
+                    </small>
+                  )}
                 </>
               ) : (
                 <p>{t('run.historyUnavailable')}</p>
+              )}
+              {/* Door-panel contact pressure is a separate spatial view. Its
+                  curve and its glyphs read the same displayed frame, so a
+                  scrub, playback step or delayed frame cannot desynchronize. */}
+              <h2>{t('run.doorPressure')}</h2>
+              <p>{t('run.doorPressureHelp')}</p>
+              {doorProfiles.length ? (
+                <>
+                  {doorProfiles.length > 1 && (
+                    <label>
+                      {t('run.pressureProfile')}
+                      <select
+                        aria-label={t('run.pressureProfile')}
+                        data-testid="pressure-profile"
+                        value={pressureEntry?.id ?? ''}
+                        onChange={(event) => setPressureProfile(event.target.value)}
+                      >
+                        {doorProfiles.map((entry) => (
+                          <option key={entry.id} value={entry.id}>
+                            {entry.alias}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <div className="pressure-controls">
+                    {pressureEntry && (
+                      <small data-testid="pressure-profile-basis">
+                        {t('run.pressureProfileBasis', {
+                          profile: pressureEntry.alias,
+                          length: Number(pressureEntry.length_mm.toPrecision(6)),
+                        })}
+                      </small>
+                    )}
+                  </div>
+                  {pressureReason ? (
+                    <p className="notice" data-testid="pressure-unavailable">
+                      {t('run.pressureUnavailable')} · {pressureReason}
+                    </p>
+                  ) : (
+                    <>
+                      <p
+                        className="plot-caption"
+                        id="pressure-plot-caption"
+                        data-testid="pressure-caption"
+                      >
+                        <span>{pressureAxisLabel}</span>
+                        <span className="plot-caption-x">{t('run.pressureDistanceAxis')}</span>
+                      </p>
+                      {pressureStationsOk ? (
+                        <div
+                          data-testid="pressure-chart"
+                          data-profile={pressureEntry?.id ?? ''}
+                          data-samples={pressureRows.length}
+                          data-positive={pressurePositive}
+                          data-patches={pressurePatches}
+                          data-gaps={pressureGaps}
+                          data-maximum-kpa={pressureMaximum}
+                          data-displayed-maximum-kpa={displayedPressureMaximum}
+                        >
+                          <Plot
+                            x={pressureCurve.x}
+                            y={pressureCurve.y}
+                            xlabel={t('run.pressureDistanceAxis')}
+                            ylabel={pressureAxisLabel}
+                            label={
+                              pressureAxisLabel + ' · ' + t('run.pressureDistanceAxis')
+                            }
+                            describedBy="pressure-plot-caption"
+                            active={pressureStation ?? undefined}
+                            onPick={(index) => setPressureSelected(index)}
+                            onHover={setPressureHover}
+                          />
+                        </div>
+                      ) : (
+                        <p className="notice" data-testid="pressure-stations-unavailable">
+                          {t('run.pressureStationsUnavailable')}
+                        </p>
+                      )}
+                      {showPressureArrows && pressureStationsOk && (
+                        <div className="pressure-scale" data-testid="pressure-scale">
+                          <svg width={70} height={12} aria-hidden="true">
+                            <line
+                              x1={2}
+                              y1={6}
+                              x2={58}
+                              y2={6}
+                              stroke="#0f6b57"
+                              strokeWidth={2}
+                            />
+                            <polygon points="58,1 68,6 58,11" fill="#0f6b57" />
+                          </svg>
+                          <small data-testid="pressure-reference">
+                            {arrowMode === 'manual'
+                              ? t('run.arrowManualLegend', {
+                                  mm: formatNumber(manualMmValue),
+                                })
+                              : t('run.pressureReferenceScale', {
+                                  value: Number(
+                                    displayedPressureMaximum.toPrecision(4),
+                                  ),
+                                  unit: doorIndex?.display_unit ?? 'kPa',
+                                })}
+                          </small>
+                        </div>
+                      )}
+                      {pressureFocus ? (
+                        <div
+                          className="pressure-readout"
+                          data-testid="pressure-readout"
+                          data-node={pressureFocus.label}
+                          data-station={pressureFocus.station ?? ''}
+                          data-pressure={pressureFocus.pressure ?? ''}
+                          data-native-mpa={pressureFocus.native ?? ''}
+                          data-raw-kpa={pressureFocus.rawPressure ?? ''}
+                          data-fx={pressureFocus.force?.[0] ?? ''}
+                          data-fy={pressureFocus.force?.[1] ?? ''}
+                        >
+                          <p>
+                            {t('run.pressureStationReadout', {
+                              profile: pressureEntry?.alias ?? '',
+                              node: String(pressureFocus.label),
+                              station:
+                                pressureFocus.station === null
+                                  ? '—'
+                                  : Number(pressureFocus.station.toPrecision(6)),
+                            })}
+                          </p>
+                          <p>
+                            {t('run.pressureValueReadout', {
+                              pressure:
+                                pressureFocus.pressure === null
+                                  ? '—'
+                                  : Number(pressureFocus.pressure.toPrecision(6)),
+                              unit: doorIndex?.display_unit ?? 'kPa',
+                              native:
+                                pressureFocus.native === null
+                                  ? '—'
+                                  : Number(pressureFocus.native.toPrecision(6)),
+                              nativeUnit: doorIndex?.native_unit ?? 'MPa',
+                            })}
+                            {multiplier !== 1 && (
+                              <span data-testid="pressure-factor">
+                                {' · '}
+                                {t('run.multiplierActive', {
+                                  factor: formatNumber(multiplier),
+                                })}
+                              </span>
+                            )}
+                          </p>
+                          {pressureFocus.force ? (
+                            <p>
+                              {t('run.pressureForceReadout', {
+                                fx: Number(pressureFocus.force[0].toPrecision(6)),
+                                fy: Number(
+                                  (pressureFocus.force[1] ?? 0).toPrecision(6),
+                                ),
+                                unit: doorIndex?.force_unit ?? 'N',
+                              })}
+                            </p>
+                          ) : (
+                            <p>{t('run.pressureNoForce')}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <small data-testid="pressure-readout-prompt">
+                          {t('run.pressureSelectStation')}
+                        </small>
+                      )}
+                      <div className="export-controls" data-testid="pressure-export">
+                        <label className="action-field export-interval">
+                          {t('run.exportInterval')}
+                          <input
+                            type="number"
+                            min={1e-9}
+                            step="any"
+                            inputMode="decimal"
+                            data-testid="station-interval"
+                            value={stationInterval}
+                            onChange={(event) => setStationInterval(event.target.value)}
+                          />
+                          <small>{t('run.exportIntervalUnit')}</small>
+                        </label>
+                        <label className="action-field export-mode">
+                          {t('run.exportSampling')}
+                          <select
+                            data-testid="pressure-sampling"
+                            value={pressureExportMode}
+                            onChange={(event) =>
+                              setPressureExportMode(
+                                event.target.value as 'uniform' | 'original',
+                              )
+                            }
+                          >
+                            <option value="uniform">{t('run.exportUniform')}</option>
+                            <option value="original">{t('run.exportOriginalNodes')}</option>
+                          </select>
+                        </label>
+                      </div>
+                      <p className="export-note" data-testid="pressure-endpoint-rule">
+                        {t('run.pressureEndpointRule', {
+                          frame: String(shownFrame),
+                          step: shownEntry?.step ?? '—',
+                        })}
+                      </p>
+                      <button
+                        className="wide"
+                        onClick={exportPressure}
+                        data-testid="export-pressure"
+                        disabled={!!pressureExportIssue}
+                        title={
+                          pressureExportIssue
+                            ? t(pressureExportIssue as TranslationKey)
+                            : undefined
+                        }
+                      >
+                        <Download />
+                        {t('run.exportPressureTwoRows')}
+                      </button>
+                      {pressureExportIssue ? (
+                        <p className="notice" data-testid="pressure-export-issue">
+                          {t(pressureExportIssue as TranslationKey)}
+                        </p>
+                      ) : (
+                        <small data-testid="pressure-export-basis">
+                          {t('run.pressureExportBasis', {
+                            profile: pressureEntry?.alias ?? '—',
+                            step: shownEntry?.step ?? '—',
+                            frame: String(shownFrame),
+                            unit: doorIndex?.display_unit ?? 'kPa',
+                          })}
+                        </small>
+                      )}
+                    </>
+                  )}
+                  {!!pressureData?.ambiguous?.length && (
+                    <p className="error-text" data-testid="pressure-ambiguous">
+                      {t('run.pressureAmbiguous', {
+                        count: pressureData?.ambiguous?.length ?? 0,
+                      })}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p data-testid="pressure-unavailable">{t('run.pressureUnavailable')}</p>
               )}
               <dl>
                 <div>
@@ -1389,6 +2509,27 @@ export function RunView({
                     {t('diag.openSourceLog')}
                   </button>
                 </>
+              )}
+              {['Failed', 'Cancelled'].includes(job.solver) && !resultOpen && (
+                <div className="recovery-actions" data-testid="recovery-actions">
+                  <button
+                    type="button"
+                    data-testid="extract-available"
+                    onClick={() => void recoverResults('extract')}
+                  >
+                    {t('run.extractAvailable')}
+                  </button>
+                  {['Failed', 'Cancelled'].includes(job.extraction) && (
+                    <button
+                      type="button"
+                      data-testid="retry-extraction"
+                      onClick={() => void recoverResults('retry')}
+                    >
+                      {t('dashboard.retryExtraction')}
+                    </button>
+                  )}
+                  <small>{t('run.extractAvailableHelp')}</small>
+                </div>
               )}
               <dl>
                 {(

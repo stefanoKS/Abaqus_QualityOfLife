@@ -332,25 +332,40 @@ def open_model(path: str) -> dict:
     }
 
 
-def _export_name(revision: dict, job: dict) -> str:
+def _export_name(revision: dict, job: dict, partial: bool = False) -> str:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     model = _safe_name(revision["setup"].get("name", "model"), "model")
     run = _safe_name(job.get("name", "run"), "run")
-    return f"{model}-{run}-{stamp}-{str(job['id'])[:8]}{RESULT_SUFFIX}"
+    suffix = "-partial" if partial else ""
+    return f"{model}-{run}-{stamp}-{str(job['id'])[:8]}{suffix}{RESULT_SUFFIX}"
 
 
 def package_job(job_id: str, folder: str | None = None, allow_running: bool = False) -> dict:
     job = store.job(job_id)
     # The worker calls this before it publishes the terminal row, so it asserts
     # the extraction outcome itself through ``allow_running``.
-    if job["mode"] not in {"ABAQUS"} or (not allow_running and job["status"] != "Completed"):
+    if job["mode"] not in {"ABAQUS"}:
         raise portable.PortableError(
-            "not-completed", "A result file is written only after a completed extraction."
+            "not-completed", "A result file is written only for an Abaqus analysis."
         )
-    if not allow_running and job.get("extraction") != "Succeeded":
-        raise portable.PortableError(
-            "extraction", "The solver finished but extraction did not; the result file is not published."
-        )
+    if not allow_running:
+        # Availability is a validated generation fact, not a status guess: a
+        # failed solver with a usable partial index may be exported.
+        if job.get("extraction") != "Succeeded":
+            raise portable.PortableError(
+                "extraction",
+                "The result extraction did not succeed; the result file is not published.",
+            )
+        if job.get("result_state") not in {"partial", "complete"}:
+            raise portable.PortableError(
+                "not-completed", "No validated result generation is available to export."
+            )
+    directory = store.job_dir(job_id)
+    index_path = directory / "results.json"
+    if not index_path.is_file():
+        raise portable.PortableError("missing-index", "The result index is missing.")
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    availability = index.get("availability") or "complete"
     target_folder = Path(folder or job.get("output_dir") or "")
     if not str(target_folder):
         raise portable.PortableError(
@@ -358,11 +373,6 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
         )
     if not target_folder.is_dir():
         raise portable.PortableError("folder", "The output folder is not available.")
-    directory = store.job_dir(job_id)
-    index_path = directory / "results.json"
-    if not index_path.is_file():
-        raise portable.PortableError("missing-index", "The result index is missing.")
-    index = json.loads(index_path.read_text(encoding="utf-8"))
     frames = {}
     for frame in index.get("frames", []):
         name = frame.get("file", "")
@@ -383,6 +393,18 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
             "extraction": job.get("extraction"),
             "input_hash": job.get("input_hash"),
         },
+        "result": {
+            "availability": availability,
+            "solver_outcome": index.get("solver_outcome") or job.get("solver"),
+            "failure_reason": index.get("failure_reason") or job.get("diagnostic") or "",
+            "last_step": index.get("last_step"),
+            "last_step_id": index.get("last_step_id"),
+            "last_local_s": index.get("last_local_s"),
+            "last_total_s": index.get("last_total_s"),
+            "frame_ordinal": index.get("last_frame_ordinal"),
+            "frames": len(index.get("frames") or []),
+            "history_only": bool(index.get("history_only")),
+        },
         "revision": {
             "id": revision["id"],
             "number": revision["number"],
@@ -402,12 +424,18 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
         provenance,
     )
     result = portable.write_container(
-        target_folder / _export_name(revision, job),
+        target_folder / _export_name(revision, job, availability == "partial"),
         portable.RESULT_KIND,
         members,
-        {"name": job["name"], "job": job["id"], "revision": revision["id"]},
+        {
+            "name": job["name"],
+            "job": job["id"],
+            "revision": revision["id"],
+            "availability": availability,
+        },
     )
     store.set_publication(job_id, result["path"], "Saved")
+    result["availability"] = availability
     return result
 
 
@@ -420,7 +448,10 @@ def open_result(path: str) -> dict:
         provenance = json.loads(members["provenance.json"].decode("utf-8"))
     except (KeyError, ValueError) as exc:
         raise portable.PortableError("result-json", "The result contents are not valid JSON.") from exc
-    if not index.get("frames"):
+    availability = index.get("availability") or provenance.get("result", {}).get(
+        "availability"
+    ) or "complete"
+    if not index.get("frames") and not index.get("history_only"):
         raise portable.PortableError("result-empty", "The result file has no frames.")
     revision = store.save(Project.model_validate(setup).model_dump(mode="json"))
     job = store.import_result_job(
@@ -428,9 +459,11 @@ def open_result(path: str) -> dict:
         provenance.get("job", {}).get("name") or revision["setup"].get("name", "Imported result"),
         members,
         provenance,
+        availability="partial" if availability == "partial" else "complete",
     )
     return {
         "job": job,
         "path": str(Path(path)),
         "manifest": container["manifest"],
+        "availability": availability,
     }

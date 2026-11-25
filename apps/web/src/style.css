@@ -2613,6 +2613,19 @@ button.destructive.solid:hover:not(:disabled) {
   padding: 4px 6px;
   font-size: 0.78rem;
 }
+.action-deck .deck-diagnostic {
+  display: block;
+  margin: 2px 0;
+  padding: 3px 5px;
+  border-left: 2px solid var(--color-danger, #b91c1c);
+  background: var(--color-danger-soft, #fef2f2);
+  color: var(--color-text, #1f2937);
+  overflow-wrap: anywhere;
+}
+.action-deck .deck-diagnostics {
+  display: inline-block;
+  margin-top: 2px;
+}
 .action-links {
   display: flex;
   flex-direction: column;
@@ -2679,6 +2692,64 @@ button.destructive.solid:hover:not(:disabled) {
 }
 .force-basis p {
   margin: 0;
+}
+/* Door-panel pressure: one run-wide glyph scale, a reference arrow and the
+   station readout that ties the graph to the door. */
+.pressure-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 10px;
+  flex-wrap: wrap;
+  margin: 2px 0 8px;
+}
+.pressure-scale {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 2px 0 8px;
+  font-size: 0.8rem;
+  color: var(--color-text-muted, #55686f);
+  flex-wrap: wrap;
+}
+.pressure-scale svg {
+  overflow: visible;
+}
+/* Two-row CSV export: an independent interval and sampling mode per graph. */
+.export-controls {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  margin: 8px 0 2px;
+}
+.export-controls .action-field {
+  margin: 0;
+}
+.export-controls .export-interval input {
+  width: 7.5rem;
+}
+.export-controls .export-mode select {
+  min-width: 9rem;
+}
+.export-note {
+  margin: 2px 0 6px;
+  font-size: 0.78rem;
+  color: var(--color-text-muted, #55686f);
+}
+.pressure-readout {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border-left: 3px solid #0f6b57;
+  background: #f3f7f6;
+  font-size: 0.82rem;
+  color: var(--color-text, #1c2b31);
+}
+.pressure-readout p {
+  margin: 0;
+}
+.pressure-readout p + p {
+  margin-top: 2px;
 }
 /* Compact material swatch legend for the optional outlines overlay. */
 .material-controls {
@@ -2869,4 +2940,72 @@ button.destructive.solid:hover:not(:disabled) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ---- Partial results, result multiplier and arrow calibration ---------------- */
+.partial-notice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid #e6b9a9;
+  border-radius: var(--radius);
+  background: #fff7f3;
+  font-size: var(--text-meta);
+}
+.partial-notice strong {
+  color: #a33b26;
+}
+.partial-notice .error-text {
+  flex-basis: 100%;
+}
+.result-multiplier {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-primary-soft);
+}
+.result-multiplier legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+.result-multiplier label,
+.arrow-controls label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.result-multiplier input {
+  width: 88px;
+}
+.arrow-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+.arrow-controls legend {
+  padding: 0 4px;
+  font-weight: 600;
+}
+.arrow-controls input[type='number'] {
+  width: 84px;
+}
+.recovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
 }

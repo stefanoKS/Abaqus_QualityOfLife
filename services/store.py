@@ -157,6 +157,33 @@ def initialize():
         for name in ("output_dir", "result_file", "publication"):
             if name not in jobs_columns:
                 db.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
+        # Solver outcome, extraction outcome and result availability are three
+        # independent facts. These columns are additive: an older database opens
+        # unchanged, and the backfill below only marks positively completed
+        # historical extractions as complete.
+        if "result_state" not in jobs_columns:
+            db.execute(
+                "ALTER TABLE jobs ADD COLUMN result_state TEXT NOT NULL DEFAULT 'none'"
+            )
+        if "result_summary" not in jobs_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN result_summary TEXT")
+        if "extraction_error" not in jobs_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN extraction_error TEXT")
+        if "result_generation" not in jobs_columns:
+            db.execute(
+                "ALTER TABLE jobs ADD COLUMN result_generation INTEGER NOT NULL DEFAULT 0"
+            )
+        if "salvage" not in jobs_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN salvage INTEGER NOT NULL DEFAULT 0")
+        if "cancel_scope" not in jobs_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN cancel_scope TEXT")
+        # Historical rows that positively finished extraction already carry a
+        # published index; treating them as complete keeps their established
+        # opening behaviour. Partial rows are only ever written by the new path.
+        db.execute(
+            "UPDATE jobs SET result_state='complete' WHERE result_state='none' "
+            "AND solver='Succeeded' AND extraction='Succeeded'"
+        )
         # Compressible neo-Hookean library cards add two parameters; older
         # versions keep NULL and are read unchanged.
         material_columns = {
@@ -781,6 +808,33 @@ def status(r):
     return solver
 
 
+def result_summary(row):
+    """Parsed persisted result summary, or ``None`` when no result was published."""
+    raw = row.get("result_summary")
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def result_available(row):
+    """True when a validated result generation exists for this job.
+
+    Solver outcome, extraction outcome and result availability stay independent:
+    a failed solver can carry a valid partial generation, and a successful solve
+    can have none. The persisted state is authoritative; a legacy completed row
+    is marked complete by :func:`initialize`.
+    """
+    state = row.get("result_state") or "none"
+    if state in {"partial", "complete"}:
+        return True
+    # Compatibility for a row read before the additive migration ran.
+    return row.get("solver") == "Succeeded" and row.get("extraction") == "Succeeded"
+
+
 def public(row):
     result = dict(row)
     result["status"] = status(result)
@@ -796,6 +850,18 @@ def public(row):
     )
     snapshot = result.pop("fixture_labels", None)
     result["fixture_labels"] = None if snapshot is None else json.loads(snapshot)
+    summary = result_summary(result)
+    result["result"] = {
+        "state": result.get("result_state") or "none",
+        "available": result_available(result),
+        "summary": summary,
+        "generation": result.get("result_generation") or 0,
+        "extraction_error": result.get("extraction_error") or "",
+        **(summary or {}),
+    }
+    result["result_state"] = result["result"]["state"]
+    result["extraction_error"] = result.get("extraction_error") or ""
+    result["salvage"] = int(result.get("salvage") or 0)
     result.pop("token", None)
     return result
 
@@ -1095,11 +1161,13 @@ def set_publication(jid, result_file, publication):
         )
 
 
-def import_result_job(revision, name, members, provenance):
+def import_result_job(revision, name, members, provenance, availability="complete"):
     """Materialize an opened portable result as a read-only historical job.
 
     The result is never resubmitted or re-extracted; the row exists so the
     existing viewer can display exactly the packaged frames, history and index.
+    ``availability`` carries a packaged partial generation through the same
+    badge, last-frame and solver-outcome fields as the live run.
     """
     jid = new_id()
     directory = job_dir(jid)
@@ -1118,11 +1186,37 @@ def import_result_job(revision, name, members, provenance):
             manifest.append(target.name)
     now = time.time()
     source = provenance.get("job", {}) if isinstance(provenance, dict) else {}
+    index = {}
+    try:
+        import json as _json
+
+        index = _json.loads(members.get("results.json", b"{}").decode("utf-8"))
+    except (TypeError, ValueError):
+        index = {}
+    state = "partial" if availability == "partial" else "complete"
+    summary = {
+        "availability": state,
+        "solver_outcome": index.get("solver_outcome") or source.get("solver"),
+        "failure_reason": index.get("failure_reason") or "",
+        "last_step": index.get("last_step"),
+        "last_step_id": index.get("last_step_id"),
+        "last_role": index.get("last_role"),
+        "last_local_s": index.get("last_local_s"),
+        "last_total_s": index.get("last_total_s"),
+        "frames": len(index.get("frames") or []),
+        "history_only": bool(index.get("history_only")),
+        "initial_only": bool(index.get("initial_only")),
+        "frame_ordinal": index.get("last_frame_ordinal"),
+        "native_frame_id": index.get("last_native_frame_id"),
+        "increment": index.get("last_increment"),
+        "imported": True,
+    }
     with connection(True) as db:
         db.execute(
             """INSERT INTO jobs(id,revision,name,mode,scenario,cpus,token,created,started,ended,
-                   solver,extraction,phase,manifest,result_file,publication)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   solver,extraction,phase,diagnostic,step,increment,step_time,manifest,
+                   result_file,publication,result_state,result_summary,result_generation)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 jid,
                 str(revision),
@@ -1134,12 +1228,21 @@ def import_result_job(revision, name, members, provenance):
                 now,
                 source.get("created") or now,
                 source.get("ended") or now,
+                "Failed" if state == "partial" else "Succeeded",
                 "Succeeded",
-                "Succeeded",
-                "Results imported from a portable file",
+                "Partial result imported from a portable file"
+                if state == "partial"
+                else "Results imported from a portable file",
+                index.get("failure_reason") or "",
+                index.get("last_step"),
+                index.get("last_increment"),
+                index.get("last_local_s"),
                 encoded(sorted(set(manifest))),
                 str(source.get("id") or ""),
                 "Imported",
+                state,
+                encoded(summary),
+                1,
             ),
         )
     return job(jid)
@@ -1198,24 +1301,29 @@ def claim(owner):
     with connection(True) as db:
         # Synthetic DEMO execution is withdrawn. A queued legacy DEMO row is never
         # converted into a licensed job, relocated or relaunched.
-        row = db.execute("""SELECT id,solver FROM jobs WHERE owner IS NULL AND cancelled=0
+        row = db.execute("""SELECT id,solver FROM jobs WHERE owner IS NULL
           AND mode IN ('ABAQUS', 'MESH', 'DECK', 'IMPORT')
-          AND (solver='Queued' OR (solver='Succeeded' AND extraction='Queued'))
+          AND (
+            (solver='Queued' AND cancelled=0)
+            OR (solver='Succeeded' AND extraction='Queued' AND cancelled=0)
+            OR (solver IN ('Failed','Cancelled') AND extraction='Queued'
+                AND salvage=1 AND cancelled=0)
+          )
           ORDER BY created LIMIT 1""").fetchone()
         if not row:
             return None
-        extracting = row["solver"] == "Succeeded"
+        extracting = row["solver"] != "Queued"
         now = time.time()
         db.execute(
             """UPDATE jobs SET owner=?,heartbeat=?,started=coalesce(started,?),
-          solver=?,extraction=?,phase=? WHERE id=?""",
+          solver=?,extraction=?,phase=?,cancel_scope=NULL,cancelled=0 WHERE id=?""",
             (
                 owner,
                 now,
                 now,
-                "Succeeded" if extracting else "Preparing",
+                row["solver"] if extracting else "Preparing",
                 "Running" if extracting else "Pending",
-                "Extracting results" if extracting else "Preparing input",
+                "Recovering saved results" if extracting else "Preparing input",
                 row["id"],
             ),
         )
@@ -1243,6 +1351,12 @@ def update(jid, owner, **values):
         "mesh_digest",
         "mesh_compat",
         "fixture_hash",
+        "result_state",
+        "result_summary",
+        "extraction_error",
+        "result_generation",
+        "salvage",
+        "cancel_scope",
     }
     if not values.keys() <= columns:
         raise ValueError("Unsupported worker update")
@@ -1260,11 +1374,23 @@ def cancel(jid):
         row = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         if not row:
             raise KeyError("Job not found")
-        if status(row) in TERMINAL:
+        # A finished solver may still have a queued or running extraction (a
+        # salvage attempt, or the existing retry path). Cancelling then stops the
+        # extraction only; it must never be read later as cancelling a solver that
+        # had already stopped, and it must not block a deliberate new attempt.
+        if row["solver"] in {"Succeeded", "Failed", "Cancelled"}:
+            if row["extraction"] not in {"Queued", "Running"}:
+                raise Conflict("Job has already finished.")
+            scope = "extraction"
+        elif status(row) in TERMINAL:
             raise Conflict("Job has already finished.")
-        db.execute("UPDATE jobs SET cancelled=1 WHERE id=?", (jid,))
+        else:
+            scope = "solver"
+        db.execute(
+            "UPDATE jobs SET cancelled=1,cancel_scope=? WHERE id=?", (scope, jid)
+        )
         if not row["owner"]:
-            column = "extraction" if row["solver"] == "Succeeded" else "solver"
+            column = "solver" if scope == "solver" else "extraction"
             db.execute(
                 f"UPDATE jobs SET {column}='Cancelled',phase='Cancelled in queue',ended=? WHERE id=?",
                 (time.time(), jid),
@@ -1272,18 +1398,67 @@ def cancel(jid):
     return job(jid)
 
 
-def retry(jid):
+def _candidate_evidence(directory):
+    """Whether a terminal run left a possible native result to re-read.
+
+    This is only a candidate test: nothing here claims the ODB is readable,
+    complete or that the process stopped. The extractor validates the file
+    itself; an unreadable or empty ODB produces a concrete diagnostic.
+    """
+    odb = directory / "analysis.odb"
+    metadata = directory / "result-metadata.json"
+    if not odb.is_file() or not metadata.is_file() or not odb.stat().st_size:
+        return False, "No native ODB candidate and submitted metadata are available."
+    return True, ""
+
+
+def authorize_extraction(jid):
+    """Queue one extraction-only attempt for a terminal run; never a solver.
+
+    Used both by the automatic salvage path and by an explicit engineer action on
+    an eligible historical job. A stale solver cancellation flag is cleared here
+    so it cannot suppress reading an already stopped analysis. The previous
+    usable result generation stays readable while the new attempt runs.
+    """
     with connection(True) as db:
-        changed = db.execute(
-            """UPDATE jobs SET extraction='Queued',cancelled=0,ended=NULL,
-            diagnostic='',phase='Awaiting extraction',extraction_exit=NULL WHERE id=?
-            AND mode IN ('DEMO','ABAQUS')
-            AND owner IS NULL AND solver='Succeeded' AND extraction IN ('Failed','Cancelled')""",
-            (jid,),
+        row = db.execute("SELECT * FROM jobs WHERE id=?", (str(jid),)).fetchone()
+        if row is None:
+            raise KeyError("Job not found")
+        if row["mode"] != "ABAQUS":
+            raise Conflict("Only an Abaqus analysis has native results to recover.")
+        if row["owner"]:
+            raise Conflict("This run is still owned by a worker; wait for reconciliation.")
+        if row["solver"] not in {"Succeeded", "Failed", "Cancelled"}:
+            raise Conflict("Wait for the solver to finish before extracting results.")
+        if row["extraction"] in {"Queued", "Running"}:
+            raise Conflict("An extraction is already queued for this run.")
+        possible, reason = _candidate_evidence(job_dir(jid))
+        if not possible:
+            raise Conflict(reason)
+        db.execute(
+            """UPDATE jobs SET extraction='Queued',cancelled=0,cancel_scope=NULL,
+               salvage=1,extraction_error='',phase='Awaiting result recovery',
+               extraction_exit=NULL,ended=NULL WHERE id=?""",
+            (str(jid),),
         )
-        if not changed.rowcount:
-            raise Conflict("Only unsuccessful extraction after a successful solve can be retried.")
     return job(jid)
+
+
+def retry(jid):
+    """Retry extraction after a failed attempt or a partial generation.
+
+    A partial result can be re-read from the same ODB when the engineer believes
+    more frames are available; this still never relaunches a solver.
+    """
+    row = job(jid)
+    if row["solver"] not in {"Succeeded", "Failed", "Cancelled"}:
+        raise Conflict("Only a finished solver can have its results retried.")
+    recoverable = row["extraction"] in {"Failed", "Cancelled", "Pending"} or (
+        row.get("result_state") == "partial"
+    )
+    if not recoverable:
+        raise Conflict("Only an unsuccessful or partial extraction can be retried.")
+    return authorize_extraction(jid)
 
 
 def deletion_journal_dir():

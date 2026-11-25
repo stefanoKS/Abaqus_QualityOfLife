@@ -1,7 +1,7 @@
 import { FileText, LoaderCircle, Play, RefreshCw, ShieldCheck } from 'lucide-react'
 import type { Job } from '../../api'
 import { artifact } from '../../api'
-import { useI18n, labelFrom } from '../../i18n'
+import { useI18n, labelFrom, type TranslationKey } from '../../i18n'
 
 /**
  * Prepare and Submit are one compact group at the top of the Results
@@ -18,6 +18,7 @@ export function AnalysisActions({
   submitting,
   deck,
   deckReady,
+  deckIssue,
   prepareReason,
   submitReason,
   runName,
@@ -41,6 +42,8 @@ export function AnalysisActions({
   submitting: boolean
   deck: Job | null
   deckReady: boolean
+  /** Actual deck state: failed/cancelled/preparing/superseded/stale fixture. */
+  deckIssue: { code: string; detail?: string; phase?: string } | null
   prepareReason: string
   submitReason: string
   runName: string
@@ -112,20 +115,53 @@ export function AnalysisActions({
           <span id="prepare-note" className="sr-only">
             {t('review.prepareNeverMesh')}
           </span>
-          {deck && (
-            <div className="action-deck build-info" data-testid="deck-status">
-              <strong>{deckReady ? t('mesh.inputReady') : t('mesh.deckStale')}</strong>
-              {deckReady ? (
-                <span className="action-links">
-                  <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
-                    <FileText /> {t('mesh.inspectDeck')}
-                  </a>
-                  <a href={artifact(deck.id, 'analysis.inp')} download>
-                    {t('actions.downloadDeck')}
-                  </a>
-                </span>
-              ) : (
-                <small>{t('mesh.deckStaleHint')}</small>
+          {deckReady && deck ? (
+            <div className="action-deck build-info" data-testid="deck-status" data-state="ready">
+              <strong>{t('mesh.inputReady')}</strong>
+              <span className="action-links">
+                <a href={artifact(deck.id, 'analysis.inp')} target="_blank" rel="noreferrer">
+                  <FileText /> {t('mesh.inspectDeck')}
+                </a>
+                <a href={artifact(deck.id, 'analysis.inp')} download>
+                  {t('actions.downloadDeck')}
+                </a>
+              </span>
+            </div>
+          ) : (
+            <div
+              className="action-deck build-info"
+              data-testid="deck-status"
+              data-state={deckIssue?.code ?? 'mesh.deckMissing'}
+            >
+              <strong>{t((deckIssue?.code ?? 'mesh.deckMissing') as TranslationKey)}</strong>
+              {deckIssue?.detail && (
+                <small className="deck-diagnostic" data-testid="deck-diagnostic">
+                  {deckIssue.detail}
+                </small>
+              )}
+              {deckIssue?.phase && (
+                <small data-testid="deck-failed-stage">
+                  {t('mesh.deckFailedStage', { stage: deckIssue.phase })}
+                </small>
+              )}
+              <small data-testid="deck-hint">
+                {t(
+                  (deckIssue?.code === 'mesh.deckStaleFixture'
+                    ? 'mesh.deckStaleFixtureHint'
+                    : deckIssue?.code === 'mesh.deckFailed' ||
+                        deckIssue?.code === 'mesh.deckCancelled'
+                      ? 'mesh.deckFailureHint'
+                      : deckIssue?.code === 'mesh.deckMissing'
+                        ? 'mesh.deckMissingHint'
+                        : deckIssue?.code === 'mesh.deckPreparing'
+                          ? 'mesh.deckPreparingHint'
+                          : 'mesh.deckStaleHint') as TranslationKey,
+                )}
+              </small>
+              {deck && (
+                <a className="deck-diagnostics" href={'#diagnostics/' + deck.id}>
+                  {t('mesh.deckOpenDiagnostics')}
+                </a>
               )}
             </div>
           )}

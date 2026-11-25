@@ -96,14 +96,137 @@ def run_worker(owner):
     return processed
 
 
+def parse_rigid_parts(text):
+    """Part name -> node coordinates, R2D2 connectivity and SPOS surface names."""
+    parts, part, mode = {}, None, None
+    for line in text.splitlines():
+        if line.startswith("*Part, name="):
+            part = line.split("name=", 1)[1].strip()
+            parts[part] = {"nodes": {}, "elements": [], "surfaces": []}
+        elif line.startswith("*End Part"):
+            part, mode = None, None
+        elif line.startswith("*Surface, type=ELEMENT"):
+            if part:
+                parts[part]["surfaces"].append(line.split("name=", 1)[1].strip())
+        elif line.startswith("*Node"):
+            mode = "nodes"
+        elif line.startswith("*Element, type=R2D2"):
+            mode = "elements"
+        elif line.startswith("*"):
+            mode = None
+        elif part and mode == "nodes":
+            label, x, y = line.split(",")[:3]
+            parts[part]["nodes"][int(label)] = (float(x), float(y))
+        elif part and mode == "elements":
+            label, first, second = (int(value) for value in line.split(",")[:3])
+            parts[part]["elements"].append((label, first, second))
+    return parts
+
+
+def parse_nset(text, name):
+    import re
+
+    block = re.search(r"\*Nset, nset=" + re.escape(name) + r"[^\n]*\n(.*?)(?=\n\*|\Z)", text, re.S | re.I)
+    if not block:
+        return None
+    return sorted(int(value) for value in re.findall(r"\d+", block.group(1)))
+
+
+def rigid_spos_checks(parts, seal_segments, tolerance=1e-6):
+    """Local first-contact SPOS orientation for every rigid part.
+
+    The check is independent of the writer's decision: it walks the generated
+    R2D2 connectivity, recomputes each normal and compares it with the
+    direction to the nearest seal segment at the closest elements.
+    """
+    from math import hypot
+
+    from shapely.geometry import Point
+    from shapely.ops import nearest_points
+    from shapely.geometry import MultiLineString
+
+    seal = MultiLineString(
+        [[(segment[0], segment[1]), (segment[2], segment[3])] for segment in seal_segments]
+    )
+    rows = []
+    for name, part in parts.items():
+        distances = []
+        for element, first, second in part["elements"]:
+            a, b = part["nodes"][first], part["nodes"][second]
+            midpoint = Point((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+            distance = midpoint.distance(seal)
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            length = hypot(dx, dy)
+            normal = (-dy / length, dx / length)
+            _, on_seal = nearest_points(midpoint, seal)
+            vx, vy = on_seal.x - midpoint.x, on_seal.y - midpoint.y
+            vlength = hypot(vx, vy)
+            dot = 0.0 if vlength <= 0 else (normal[0] * vx + normal[1] * vy) / vlength
+            distances.append((distance, dot, element, midpoint))
+        if not distances:
+            continue
+        closest = min(item[0] for item in distances)
+        near = [item for item in distances if item[0] <= closest + max(0.5, closest * 0.02)]
+        rows.append(
+            {
+                "part": name,
+                "elements": len(distances),
+                "closest_mm": closest,
+                "near": len(near),
+                "min_dot": min(item[1] for item in near),
+                "sum_dot": sum(item[1] for item in near),
+            }
+        )
+    return rows
+
+
+def seal_boundary_segments(nodes, continuum):
+    """Exterior seal sides in the assembled mesh coordinate system."""
+    from collections import defaultdict
+
+    sides = defaultdict(list)
+    for element in continuum:
+        connectivity = element["nodes"]
+        for index, node in enumerate(connectivity):
+            side = tuple(sorted((node, connectivity[(index + 1) % len(connectivity)])))
+            sides[side].append((element["id"], index + 1))
+    segments = []
+    for side, entries in sides.items():
+        if len(entries) != 1:
+            continue
+        a, b = nodes[side[0]], nodes[side[1]]
+        x0, y0, x1, y1 = float(a[0]), float(a[1]), float(b[0]), float(b[1])
+        if x0 > x1:
+            x0, y0, x1, y1 = x1, y1, x0, y0
+        segments.append((x0, y0, x1, y1))
+    return segments
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--drawing", type=Path, default=DRAWING)
     parser.add_argument("--evidence", type=Path, default=ROOT / ".local" / "dwg-acceptance")
     parser.add_argument("--licensed", action="store_true", help="also submit a real Abaqus run")
-    parser.add_argument("--travel", type=float, default=-5.5)
-    parser.add_argument("--duration", type=float, default=1.3)
+    # A signed Y travel keeps the historical door-only invocation working; the
+    # two-panel case uses explicit stroke/angle so the body seats upward and the
+    # door closes downward (the operator's 10 mm settings).
+    parser.add_argument("--travel", type=float, default=None)
+    parser.add_argument("--door-stroke", type=float, default=10.0)
+    parser.add_argument("--door-angle", type=float, default=-90.0)
+    parser.add_argument("--body-stroke", type=float, default=10.0)
+    parser.add_argument("--body-angle", type=float, default=90.0)
+    parser.add_argument("--door-duration", type=float, default=1.0)
+    parser.add_argument("--body-duration", type=float, default=1.0)
+    parser.add_argument(
+        "--fixture-tolerance",
+        type=float,
+        default=0.5,
+        help="mm band above the lowest seal boundary selected as the mounting foot",
+    )
     options = parser.parse_args()
+    if options.travel is not None:
+        options.door_stroke = abs(options.travel)
+        options.door_angle = -90.0 if options.travel <= 0 else 90.0
 
     if not options.drawing.is_file():
         raise SystemExit(f"Drawing not found: {options.drawing}")
@@ -183,14 +306,31 @@ def main():
                 component["role"] = "vehicle_body"
         for face in setup["faces"]:
             face["material"] = "bulb_foam" if not face["cavity"] else None
-        setup["motion"]["travel"] = options.travel
-        setup["motion"]["duration"] = options.duration
+        # Version-4 motion: nonnegative stroke and an in-plane angle. The body
+        # seats upward (+90 deg) and the door closes downward (-90 deg).
+        setup["motion"]["stroke"] = options.door_stroke
+        setup["motion"]["angle"] = options.door_angle
+        setup["motion"]["duration"] = options.door_duration
+        setup["motion"]["body"]["stroke"] = options.body_stroke
+        setup["motion"]["body"]["angle"] = options.body_angle
+        setup["motion"]["body"]["duration"] = options.body_duration
         saved = api.put(
             "/api/projects/" + revision["project"],
             json={"setup": setup, "base": revision["id"]},
         )
         assert saved.is_success, saved.text
         saved = saved.json()
+        print(f"mode         : {saved['setup']['analysis']['mode']}")
+        print(
+            "door motion  : "
+            f"{saved['setup']['motion']['stroke']} mm at "
+            f"{saved['setup']['motion']['angle']} deg"
+        )
+        print(
+            "body motion  : "
+            f"{saved['setup']['motion']['body']['stroke']} mm at "
+            f"{saved['setup']['motion']['body']['angle']} deg"
+        )
 
         mesh_job = api.post("/api/meshes", json={"revision": saved["id"], "token": store.new_id()})
         assert mesh_job.is_success, mesh_job.text
@@ -204,7 +344,8 @@ def main():
         print(f"elements     : {mesh_json['counts']}")
         print(f"excluded     : {mesh_json.get('excluded')}")
 
-        # Box selection: the mounting foot is the lowest weatherstrip boundary.
+        # The mounting foot is a band of the lowest weatherstrip boundary, not a
+        # single node: one free node leaves the seal free to translate.
         coords = {node["id"]: node["xyz"] for node in mesh_json["nodes"]}
         seal_edges = {
             edge["id"] for edge in saved["setup"]["edges"] if edge["component"] == seal[0]
@@ -217,9 +358,17 @@ def main():
                 for node in nodes
             }
         )
+        if not candidates:
+            raise SystemExit("the seal has no meshed mounting boundary")
         lowest = min(coords[node][1] for node in candidates)
-        labels = [f"WS-1:{node}" for node in candidates if coords[node][1] <= lowest + 1e-6]
+        labels = [
+            f"WS-1:{node}"
+            for node in candidates
+            if coords[node][1] <= lowest + options.fixture_tolerance
+        ]
         print(f"fixture      : {len(labels)} nodes {labels}")
+        if len(labels) < 2:
+            fail("the reviewed fixture needs at least two nodes to constrain the seal")
         fixture = api.put("/api/meshes/" + mesh["id"] + "/fixture", json={"labels": labels})
         assert fixture.is_success, fixture.text
 
@@ -245,6 +394,141 @@ def main():
             fail("WSFIX does not match the saved selection")
         if not labels:
             fail("the reviewed fixture is empty")
+
+        # Parse the actual generated deck: original rigid identities, SPOS sides,
+        # both steps, contact pairs and the requested pressure output.
+        parts = parse_rigid_parts(text)
+        rigid = [e for e in mesh_json["elements"] if e["type"] == "R2D2"]
+        role_of_component = {c["id"]: c["role"] for c in saved["setup"]["components"]}
+        expected_rigid = {}
+        for element in rigid:
+            part = {
+                "moving_panel": "PANEL",
+                "vehicle_body": "BODY",
+            }.get(role_of_component.get(element["component"]))
+            if part:
+                expected_rigid.setdefault(part, {})[element["id"]] = list(element["nodes"])
+        for part in ("PANEL", "BODY"):
+            if part not in expected_rigid:
+                if part == "BODY" and saved["setup"]["analysis"]["mode"] == "door_only":
+                    continue
+                fail(f"the deck is missing the {part} rigid profile")
+                continue
+            if part not in parts:
+                fail(f"the deck has no *Part, name={part}")
+                continue
+            generated = {
+                label: (first, second) for label, first, second in parts[part]["elements"]
+            }
+            if set(generated) != set(expected_rigid[part]):
+                fail(f"{part} R2D2 element identities differ from the mesh")
+            changed = [
+                label
+                for label in set(generated) & set(expected_rigid[part])
+                if generated[label] != tuple(expected_rigid[part][label])
+            ]
+            # A reversal of each pair is the allowed contact-side orientation; the
+            # node set and element identity must be preserved exactly.
+            bad = [
+                label
+                for label in changed
+                if sorted(generated[label]) != sorted(expected_rigid[part][label])
+            ]
+            if bad:
+                fail(f"{part} R2D2 connectivity changed for elements {bad[:4]}")
+            print(
+                f"{part:5} rigid  : {len(generated)} elements, "
+                f"{len(changed)} pairs reversed for SPOS, identities preserved"
+            )
+            if parts[part]["surfaces"] != [f"{part}_FACE"]:
+                fail(f"{part} has the wrong surface definitions {parts[part]['surfaces']}")
+            block = re.search(
+                r"\*Surface, type=ELEMENT, name=" + part + r"_FACE\n(.*?)(?=\n\*|\Z)",
+                text,
+                re.S,
+            )
+            if not block or "PROFILE, SPOS" not in block.group(1):
+                fail(f"{part}_FACE does not use PROFILE, SPOS")
+
+        continuum = [e for e in mesh_json["elements"] if e["type"] != "R2D2"]
+        nodes = {n["id"]: n["xyz"] for n in mesh_json["nodes"]}
+        checks = rigid_spos_checks(parts, seal_boundary_segments(nodes, continuum))
+        for row in checks:
+            print(
+                f"SPOS {row['part']:5} : closest {row['closest_mm']:.4f} mm, "
+                f"{row['near']} first-contact elements, min dot {row['min_dot']:+.6f}"
+            )
+            if row["min_dot"] <= 0:
+                fail(f"{row['part']} SPOS faces away from the seal at first contact")
+
+        door_nodes = sorted(
+            {node for _, first, second in parts["PANEL"]["elements"] for node in (first, second)}
+        )
+        if parse_nset(text, "DOOR_PROFILE_NODES") != door_nodes:
+            fail("DOOR_PROFILE_NODES does not equal the generated door R2D2 node set")
+        if "*Contact Output, nset=DOOR_PROFILE_NODES" not in text:
+            fail("the deck does not request door-profile contact output")
+        door_output = re.search(
+            r"\*Contact Output, nset=DOOR_PROFILE_NODES\n(.*?)(?=\n\*|\Z)", text, re.S
+        )
+        door_tokens = (
+            {token.strip() for token in door_output.group(1).split(",") if token.strip()}
+            if door_output
+            else set()
+        )
+        global_stress = re.search(r"\*Contact Output\n([^\n]*)", text)
+        global_tokens = (
+            {token.strip() for token in global_stress.group(1).split(",") if token.strip()}
+            if global_stress
+            else set()
+        )
+        # The licensed pilot pattern: global CSTRESS plus door CFORCE, or the
+        # scoped pair CFORCE, CSTRESS when global stress is off. Either way the
+        # deck must request both the door force and the pressure field.
+        if "CFORCE" not in door_tokens:
+            fail("door-profile contact output must request CFORCE")
+        if "CPRESS" not in door_tokens and "CSTRESS" not in global_tokens:
+            fail("door-profile pressure output must request CPRESS or global CSTRESS")
+        if "*Contact Inclusions" not in text:
+            fail("the deck has no general-contact inclusions")
+        if "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_PANEL-1_PANEL_FACE" not in text:
+            fail("the door/seal contact pair is missing")
+        if saved["setup"]["analysis"]["mode"] == "body_then_door":
+            if "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_BODY-1_BODY_FACE" not in text:
+                fail("the body/seal contact pair is missing")
+            if "ASSEMBLY_WS-1_SEAL_EXTERIOR, ASSEMBLY_WS-1_SEAL_EXTERIOR" not in text:
+                fail("the seal self-contact pair is missing")
+        no_cavity = [face for face in saved["setup"]["faces"] if not face["cavity"]]
+        sections = re.findall(r"\*Solid Section, elset=REGION_\d+, material=MAT_\d+", text)
+        print(f"sections     : {len(sections)} for {len(no_cavity)} filled region(s), cavities excluded")
+        if len(sections) != len(no_cavity):
+            fail("the deck must write one solid section per filled region and none for cavities")
+        steps = re.findall(r"\*Step, name=([^,\n]+)", text)
+        print(f"steps        : {steps}")
+        if saved["setup"]["analysis"]["mode"] == "body_then_door":
+            if steps[:2] != ["Body seating", "Closing"]:
+                fail("the two-step deck must contain Body seating then Closing")
+            body_step = text.split("*Step, name=Body seating", 1)[1].split("*End Step", 1)[0]
+            door_step = text.split("*Step, name=Closing", 1)[1].split("*End Step", 1)[0]
+            body_delta = [
+                float(value)
+                for value in re.findall(r"BODY_RP, 2, 2, (-?[0-9.eE+]+)", body_step)[:1]
+            ]
+            door_delta = [
+                float(value)
+                for value in re.findall(r"PANEL_RP, 2, 2, (-?[0-9.eE+]+)", door_step)[:1]
+            ]
+            expected_body = options.body_stroke * (1 if options.body_angle == 90 else -1)
+            expected_door = options.door_stroke * (1 if options.door_angle == 90 else -1)
+            print(f"body delta   : {body_delta} (expected {expected_body})")
+            print(f"door delta   : {door_delta} (expected {expected_door})")
+            if not body_delta or abs(body_delta[0] - expected_body) > 1e-6:
+                fail("the body seating step does not prescribe the configured upward travel")
+            if not door_delta or abs(door_delta[0] - expected_door) > 1e-6:
+                fail("the closing step does not prescribe the configured downward travel")
+        elif steps != ["Closing"]:
+            fail("the door-only deck must contain one Closing step")
+        print(f"WSFIX labels : {written}")
 
         if not options.licensed:
             print("result       : native path complete, no solver tokens consumed")
@@ -302,11 +586,16 @@ def main():
             fail("the extracted history is empty")
         else:
             last = history[-1]
-            ok, travel = travel_attained(history, options.travel)
-            required = abs(float(options.travel))
+            import math as math_module
+
+            prescribed_dy = options.door_stroke * math_module.sin(
+                math_module.radians(options.door_angle)
+            )
+            ok, travel = travel_attained(history, prescribed_dy)
+            required = abs(float(prescribed_dy))
             print(f"travel       : {travel:.4f} mm of {required:.4f} mm prescribed")
             if not ok:
-                fail("prescribed travel was not attained")
+                fail("prescribed door travel was not attained")
             contact = first_contact(history)
             if contact is None:
                 print("contact      : no contact found")

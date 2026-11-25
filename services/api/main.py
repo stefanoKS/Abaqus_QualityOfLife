@@ -116,8 +116,18 @@ GIT = _git_head()
 
 
 def revision_payload(row):
-    """Attach the mesh-compatibility digest so the browser can decide mesh reuse."""
-    return {**row, "mesh_compat": engineering.mesh_compat(Project.model_validate(row["setup"]))}
+    """Attach the mesh-compatibility digest so the browser can decide mesh reuse.
+
+    The validated setup is returned, not the raw stored dictionary, so additive
+    defaults (including the door-pressure output plan) are visible to the
+    editor on a revision saved before those fields existed.
+    """
+    project = Project.model_validate(row["setup"])
+    return {
+        **row,
+        "setup": project.model_dump(mode="json"),
+        "mesh_compat": engineering.mesh_compat(project),
+    }
 
 
 def assert_editable(pid):
@@ -860,11 +870,18 @@ def job_list(response: Response):
         "pid",
         "process_started",
         "cancelled",
+        "result_state",
+        "extraction_error",
+        "salvage",
+        "cancel_scope",
+        "result_file",
+        "publication",
     )
     result = []
     for job in store.jobs(store.ALL_MODES):
         row = {key: job.get(key) for key in keys}
         row["activity"] = activity.classify(job)
+        row["result"] = job.get("result")
         result.append(row)
     return result
 
@@ -1308,6 +1325,17 @@ def retry(jid: UUID):
     return store.retry(str(jid))
 
 
+@app.post("/api/jobs/{jid}/extract", response_model=Job)
+def extract_available(jid: UUID):
+    """Queue one extraction-only attempt for an eligible terminal run.
+
+    This never relaunches a solver. It is the explicit path for a historical
+    failed/cancelled run whose native ODB may still be readable, and for a
+    recoverable extraction error.
+    """
+    return store.authorize_extraction(str(jid))
+
+
 @app.post("/api/jobs/{jid}/result-file")
 def retry_result_file(jid: UUID, body: ResultFileRetry | None = None):
     """Retry saving a completed result to a folder without resubmitting the solver."""
@@ -1328,8 +1356,8 @@ def display_metadata(jid: UUID):
     index digest. Original artifacts are never rewritten and no solver runs.
     """
     job = store.job(jid)
-    if job["status"] != "Completed":
-        raise store.Conflict("Results are available only after extraction completes.")
+    if not job["result"]["available"]:
+        raise store.Conflict("Results are available only after a validated extraction.")
     import json as _json
 
     directory = store.job_dir(jid)

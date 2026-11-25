@@ -22,7 +22,8 @@ export interface ReadinessFinding {
 export interface AssemblyMotion {
   role: 'door' | 'body'
   instance: string
-  side: 'above' | 'below'
+  /** Measured contact side; a curved/oblique profile can sit left or right. */
+  side: 'above' | 'below' | 'left' | 'right'
   direction: number[]
   initial_offset_mm: number
   clearance_mm: number
@@ -31,6 +32,8 @@ export interface AssemblyMotion {
   /** True when travel is exactly 0: the panel holds its assembled position. */
   hold?: boolean
   reaches_initial_gap: boolean
+  angle_deg?: number
+  delta_mm?: number[]
 }
 
 /**
@@ -104,5 +107,7 @@ export function findingVars(
     vars.label = t(('assembly.role.' + vars.label) as TranslationKey)
   if (vars.side === 'above') vars.side = t('assembly.sideAbove')
   else if (vars.side === 'below') vars.side = t('assembly.sideBelow')
+  else if (vars.side === 'left') vars.side = t('assembly.sideLeft')
+  else if (vars.side === 'right') vars.side = t('assembly.sideRight')
   return vars
 }

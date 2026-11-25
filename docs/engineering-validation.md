@@ -1,5 +1,296 @@
 # Engineering validation
 
+## Readable field output from a cancelled Closing run · 2026-11-26
+
+This reference supports the [partial-results execution handoff](partial-results-arrows-multiplier-handoff.txt). The isolated job database records `313893f2-7a6a-46ab-acb6-a1878922150f` as solver Cancelled and extraction Pending. Its last retained status line reports step time 0.855 s. The cancelled-run ODB has SHA-256 `5faf3255638e3cb033f1bd45b2b0ee6c9fa3bf38b3f0f94e430b036c45f528ea` and size 40,894,464 bytes. The inspection used a copy of the ODB and opened it with `readOnly=True` under the installed Abaqus 2024 Python. The original directory contains a retained lock file.
+
+| Native Closing output | Read from the copy |
+|---|---|
+| Last saved field frame | 43 frames, final ordinal 42, native frame ID 162, increment 162 |
+| Local and cumulative time | 0.8399999737739563 s, step start 0 s |
+| Selected door profile | PANEL-1, 49 nodes over 24 mm, 26 nodes with positive pressure |
+| Peak node | 238 at station 17.5 mm, deformed XY (5.5, 8.53999996185) mm at true scale |
+| Nodal CPRESS | 2.83070802689 MPa, equivalent to 2830.70802689 kPa |
+| Signed nodal CNORMF | (0.00834000576, 1.41455960274) N |
+
+A direct `odbAccess` read enumerated steps, frames, increments and field values. A second check used `abq2024 python scripts/read_app_odb_node.py <copied-analysis.odb> --step Closing`. These measurements establish native output available for recovery from this retained cancellation. Verification of the proposed app workflow and separate failed-solver cases remains pending. This inspection launched no solve.
+
+## OTR curved-profile decks and resampled exports · 2026-11-26
+
+The [execution brief](otr-deck-and-resampled-exports-handoff.md) defines the slice. **No solver was
+launched for this delivery.** The deck path is input-generation evidence; the numerical export checks
+re-read two already accepted licensed result packages. Solver convergence, mesh/stroke sensitivity
+and physical correlation remain separate, unestablished work.
+
+### OTR geometry and generated decks — PASS
+
+The original `examples/OTR.dwg` (`aacc24c7…`) and `examples/OTR_single.dwg` (`52c9e554…`) imported
+through the normal API → worker → DXF/DWG path and produced completed two-step decks. The upper
+profile is the door and the lower profile is the body; the CAD component IDs swap between files
+(`section2`/`section3`), so the roles were selected by measured mean Y, never by ordinal.
+
+| Case | Door/body components | Door / body R2D2 elements | Deck SHA-256 | WSFIX labels |
+|---|---|---|---:|---|
+| OTR | `section2` / `section3` | 95 / 71 | `1521a89c0278…` | 26, 27, 248–254, 258 (10) |
+| OTR_single | `section3` / `section2` | 95 / 71 | `b57c0c0be182…` | 52, 53, 414–420, 424 (10) |
+
+The body chain is an open, simple 71-element R2D2 profile of length 27.388 mm and includes a local
+return in X. The generated deck keeps every original R2D2 element ID and node identity; only the
+per-element node order may reverse to select SPOS. Both decks contain one `*Solid Section` for the one
+filled region and none for the cavities, `Body seating` then `Closing`, door–seal and body–seal pairs
+plus seal self-contact, and `*Contact Output, nset=DOOR_PROFILE_NODES` with CFORCE alongside global
+CSTRESS.
+
+The independent local SPOS check recomputed each normal from the generated connectivity and compared
+it with the direction to the nearest seal segment in the predicted first-contact neighborhood:
+
+| Part | Closest separation | First-contact elements | Minimum local dot |
+|---|---:|---:|---:|
+| PANEL (door) | 4.6816 mm | 10 | **+0.922995** |
+| BODY (body) | 2.3023 mm | 8 | **+0.859663** |
+
+The geometry-only sweep predicts first contact at **4.8487 mm** of the 10 mm downward door stroke and
+**8.1912 mm** of the 10 mm upward body stroke. These are undeformed-seal geometric checks, not solver
+contact or convergence.
+
+### Load CSV — numerical reference — PASS
+
+Real browser downloads from the accepted licensed run `9efc065a-805c-4215-b651-3349f6ebba24`
+(Closing, default sign, represented width 100 mm):
+
+| Stroke (mm) | 0 | 1 | 2 | 2.5 |
+|---|---:|---:|---:|---:|
+| Reference F (N/100mm) | 0 | 0 | 8.26096907258 | 51.3679385185 |
+| Downloaded F (N/100mm) | 0 | 0 | 8.26096907258 | 51.3679385185 |
+
+At the custom 0.65 mm interval the grid is `0, 0.65, 1.3, 1.95, 2.5`; the downloaded value at
+**1.95 mm** is **5.61357017395 N/100mm** (reference 5.6135701740), interpolated between the measured
+strokes 1.8999999762 (2.9661700130) and 2.0 (8.2609690726). The exact end 2.5 mm is appended once.
+
+### Door pressure CSV — numerical reference — PASS
+
+`9efc065a` final Closing frame, 24 mm profile, 1.3 mm interval:
+
+| Station (mm) | 11.7 | 13.0 | 14.3 | 24.0 |
+|---|---:|---:|---:|---:|
+| Reference CPRESS (kPa) | 67.1798393130 | 125.8664876223 | 52.4925112724 | 0 |
+| Downloaded CPRESS (kPa) | 67.179839313 | 125.866487622 | 52.4925112724 | 0 |
+
+The 24.0 mm measured endpoint appears exactly once. Original profile nodes retain the measured peak
+**165.369302 kPa at 13.5 mm**.
+
+`GENKOU-reference.aqresult`, Step-2 final, selected `UPPER_ROOFBARA-1` (non-axis-aligned,
+nonuniform 73.5880868374 mm profile):
+
+| Station (mm) | 35.1 | 45.5 | 55.9 | 73.5880868374 |
+|---|---:|---:|---:|---:|
+| Reference CPRESS (kPa) | 17.0842183789 | 0 | 14.0379243522 | 0 |
+| Downloaded CPRESS (kPa) | 17.0842183789 | 0 | 14.0379243522 | 0 |
+
+The last station appears once. Original profile nodes retain the measured **45.5090888 kPa peak at
+56.405592 mm** and show nonuniform station spacing.
+
+### Portability and immutability — PASS
+
+The retained live job `9efc065a` in a copied data root and the same `.aqresult` reopened in a fresh
+disposable root produced **byte-identical** load (0.65 mm) and pressure (1.3 mm, final frame) CSVs.
+The `.aqresult` SHA-256, the live `results.json` and the live `history.csv` were unchanged after both
+reads and downloads. A manufactured legacy load-only result exported `F (N)` correctly and showed
+pressure unavailable.
+
+### Regression suite — PASS with known suite-load cases
+
+Final build `c4081e11df79`: Python **391 passed, 1 skipped**; translations 1045 keys; encoding 48
+files; typecheck/build pass. The full isolated browser suite was **186 passed, 4 failed, 10 skipped**
+(200 tests, 22.8 min). The four failures are the previously recorded suite-load cases (`gate-f`
+playback cadence, `motion-preview` body/door, `offset-picking`, centred `partition` mixed draft); a
+combined isolation rerun gave 8 passed, 1 skipped and `offset-picking`, and `offset-picking` passed
+alone in 16.1 s. None is an OTR-deck or export regression.
+
+Local detail: [deck summary](../.local/evidence/otr-deck-exports/deck-summary.json),
+[Gate A OTR proof](../.local/evidence/otr-deck-exports/gate-a-otr.json),
+[acceptance log](../.local/evidence/otr-deck-exports/acceptance.log), representative downloaded CSVs
+under `.local/evidence/otr-deck-exports/`, and `browser-full.log`.
+
+
+## Door-panel contact pressure implementation · Gates A–F · 2026-11-25
+
+The [execution brief](door-panel-pressure-handoff.md) defines the feature. This delivery was
+implemented on the working tree after `001d2db` and exercised against the three supplied
+Abaqus/Standard 2023 ODBs and new licensed Abaqus/Standard 2024 runs. **Solver execution, extraction
+and the local numerical/UI acceptance are separate evidence from mesh sensitivity and physical
+correlation, which remain unestablished.**
+
+### Gate A · Deck and contact identity — PASS
+
+The generated one-step deck for the 49-node panel profile contains exactly one
+`*Nset, nset=DOOR_PROFILE_NODES, instance=PANEL-1`; the set equals the unique geometric R2D2 nodes,
+excludes `PANEL_RP`, seal and body nodes. With global stress on it requests `*Contact Output \n
+CSTRESS` once and `*Contact Output, nset=DOOR_PROFILE_NODES \n CFORCE` once; with global stress off
+the door set requests `CFORCE, CSTRESS` together. `U` is present in `*Node Output`. The two-step deck
+has the same request in both `Body seating` and `Closing`, and the body profile never appears in the
+door set. An output-only opt-out and re-opt-in left `mesh_compat` unchanged; the opt-out deck hash
+differed, the original INP bytes stayed identical, and the re-opted deck returned to the exact
+original SHA-256.
+
+| Case | Door nodes | Steps | Original INP SHA-256 | Door output off | Re-opt-in |
+|---|---:|---:|---|---|---|
+| one-step hollow | 49 | 1 | `c2c54ab272f5…` | `66796f0b7034…`, no door set | byte-identical to original |
+| body-then-door | 49 | 2 | `d9842ffd2cae…` | `bbbb65d2757f…`, no door set | byte-identical to original |
+
+Local detail: [gate-a-deck.json](../.local/evidence/door-panel-pressure/gate-a-deck.json).
+
+### Gate B · Numerical reference — PASS (exact)
+
+The production extractor (`scripts/reference_extract.py`, shared `extract_odb`/`door_pressure`
+modules) was run under Abaqus Python 2024 against all three supplied ODBs. The independent reader
+(`scripts/reference_door_pressure.py`) was run separately at Step-1 final, Step-2 initial, Step-2
+middle (array index 50) and Step-2 final. All **608 stations × 12 frames = 7,296 station samples**
+matched on labels, station, pressure, both signed `CNORMF` components and null masks. Maximum
+absolute differences were **0 mm station, 0 kPa pressure and 0 N force component**; the required
+tolerances were 0.0001 mm, 0.001 kPa and 0.0000001 N. Positive-node counts were 30 / 35 / 39 at the
+three final frames, matching the handoff. Native frame IDs (205, 251, 233 at the final Step-2 frame)
+and times were retained.
+
+| Case | Step-1 final (native) | Step-2 initial | Step-2 middle (native) | Step-2 final (native) | Positive nodes (final) |
+|---|---:|---:|---|---:|---:|
+| GENKOU | 0 kPa (117) | 0 kPa (0) | 608 stations (77) | 30 positive (205) | 30 |
+| HK01 | 0 kPa (116) | 0 kPa (0) | 608 stations (110) | 35 positive (251) | 35 |
+| HK02 | 0 kPa (120) | 0 kPa (0) | 608 stations (100) | 39 positive (233) | 39 |
+
+The production frame `door_pressure` arrays retain the native `pressure_mpa` and the display
+`pressure_kpa`, `CNORMF` components, per-node ambiguity entries, per-profile orientation/stations and
+the two MPa→kPa units. Local detail:
+[gate-b-comparison.json](../.local/evidence/door-panel-pressure/gate-b-comparison.json).
+
+### Gate C · Licensed current workflow — PASS (small synthetic case)
+
+Two isolated licensed runs were completed through the normal browser workflow
+(Dashboard → New project → Import DXF → roles → materials → mesh → fixture → motion → Prepare →
+Submit) on disposable `SEAL_DATA`. The accepted run
+`9efc065a-805c-4215-b651-3349f6ebba24` used the 24 mm imported door profile, a 2.5 mm closing stroke
+over 0.5 s, default reporting width 100 mm and solver thickness 1 mm. Solver and extraction both
+succeeded; exit codes 0/0. It produced 26 frames. The deck requested `CFORCE` once on the door set
+and global `CSTRESS`, with `U`; no duplicate pressure request was present. The ODB contains one
+`CPRESS` and one `CNORMF` field key (`General_Contact_Faces/General_Contact_Faces`) and the
+pointed-at node 230, station **13.5 mm**, measured **165.36930203437805 kPa** native
+**0.16536930203437805 MPa** with `CNORMF` **(2.5648099835962057e-05, 0.08260141313076019) N**.
+Eleven door nodes were positive and the UI drew 11 arrows. The first attempt with a 6.5 mm stroke
+(`313893f2-…`) was cancelled at step time 0.855 after 1461 increments without a completed result and
+is not acceptance evidence.
+
+| Artifact | Value |
+|---|---|
+| Run | `9efc065a-805c-4215-b651-3349f6ebba24` |
+| Submitted INP SHA-256 | `58b467ad206c1378df164ac11ad72a103e56a6a2bca460a5f4cfe35c8e3f0ba0` |
+| ODB SHA-256 | `b0eddc73e5f4108d88ce8a0b4c618ef894b3b539c0c1d2a8d57e7242d9f01645` |
+| Results index SHA-256 | `bf69102fb3b2ee010f8adcdbf5a6c262aac30f569896f1ada8b6b2fc4ecd729b` |
+| `.aqresult` SHA-256 | `7b6e159754b54dbbfeed3b3877a621ec974db7fbddd96d931a44c0ab95d22073` |
+
+The same nonzero node was read directly from the ODB (`scripts/read_app_odb_node.py`, Abaqus Python
+2024), from the live Results artifacts and from the reopened `.aqresult`: pressure, native MPa and
+both force components were bit-identical (differences 0.0). Local detail:
+[gate-c-evidence.json](../.local/gate-c/evidence/gate-c-evidence.json) and
+[gate-c-odb-node.json](../.local/gate-c/evidence/gate-c-odb-node.json).
+
+The required **body-plus-door** case was also executed through the same API → worker →
+Abaqus/Standard → extractor path in a second isolated root: run
+**`25fa7055-7cbe-4b20-9257-f1f5841525b6`**, 4.0 mm body seating / 2.5 mm door closing at 0.4 s each,
+42 frames (21 per step), solver and extraction exit 0/0. The deck requested door output in both
+steps. The door profile has 49 stations; Body seating had **zero** positive door pressure and
+Closing had 9 positive stations. The final closing peak was node 250 at station **11.5 mm**, native
+**0.005145416595041752 MPa** = **5.145416595041752 kPa** with CNORMF
+**(−3.088685787133727e-07, 0.002571261487901211) N**. INP SHA-256
+`24f990cdf3698f28342c64d6c1686d98ad2d8173dc5d1aabd89b573619c35acc`; ODB
+`9194b691d804bb1da315828dec5ab0364b5b930a123739bd6bbcc49162eea33b`; index
+`46467c0f23fbc566d4ceeefd2dfdc8bb58d30febfffe2b9ff756fa3bf4720859`. Local detail:
+[gate-c-twostep.json](../.local/gate-c/gate-c-twostep.json).
+
+### Gate D · Arrow and graph behavior — PASS (browser)
+
+A disposable result packaged from the supplied GENKOU ODB (`scripts/reference_extract.py` plus the
+portable container) was opened in the normal Results UI. The profile selector exposed all six upper
+profiles. On `UPPER_ROOFBARA-1` the final Step-2 frame had 124 stations, **6 positive stations in two
+separated patches**, no null gaps and a run-wide maximum of 46.5045 kPa. Selecting the graph point at
+node 17 recovered station **56.405592 mm**, **45.509089 kPa**, native **0.045509089 MPa** and
+`CNORMF` **(0.021603798, 0.014067459) N**; the plotted arrow direction dotted with the normalized
+world force above 0.999. The glyph anchor matched the independently re-projected deformed node
+within the 2 CSS px requirement. A measured-zero frame (array index 50) showed a zero line and zero
+arrows; step transition, a delayed frame fetch, profile changes and playback kept the arrows, graph,
+frame label and camera together. At 1280 × 720 both axis titles remained inside the viewport. Local
+screenshots: [EN](../.local/evidence/door-panel-pressure/gate-d-genkou-en.png) and
+[JA](../.local/evidence/door-panel-pressure/gate-d-genkou-ja.png).
+
+Playback timing on the licensed run, same build and data, measured through the frame-count mutation
+stream: arrows on median **280.8 ms**, p95 296.3 ms, one camera signature; arrows off median
+**266.3 ms**, p95 280.8 ms, one camera signature. The difference is 14.5 ms in the median; no camera
+jump or stale frame was observed. Local detail:
+[gate-f-timing.json](../.local/gate-c/evidence/gate-f-timing.json).
+
+### Gate E · Portability and history — PASS
+
+The worker published the licensed run as a `.aqresult`; opening it in an empty fresh data root
+preserved all 26 frames byte-for-byte, the index, frame order, the 49-label/24 mm profile axis,
+native MPa / display kPa / conversion and the history CSV. The source artifacts were hashed before
+and after and were unchanged. A retained pre-pressure vertical result was also packaged and reopened:
+it has no `door_pressure` metadata, but all 26 frames and history stayed identical, so older results
+remain readable. A DEMO result opened with **Door-panel contact pressure is unavailable for this
+result**, while its force–displacement plot, export, history CSV, units and `Synthetic data (DEMO)`
+provenance stayed available. Local detail: [gate-e-reopen.json](../.local/gate-c/evidence/gate-e-reopen.json),
+[gate-e-legacy.json](../.local/gate-e/gate-e-legacy.json) and
+[Gate E DEMO](../.local/evidence/door-panel-pressure/gate-e-demo.png).
+
+### Gate F · Regression and reporting — PASS (with known suite-load exceptions)
+
+- Python: **383 passed, 1 skipped** (the opt-in Abaqus-Python roundtrip), exit 0. New
+  `tests/test_door_pressure.py` covers profiles, orientation, units, duplicate/ambiguity, identity,
+  deck output combinations, the two-step deck and display metadata.
+- Translations **990 keys** both languages; encoding 47 files; typecheck pass; release
+  **`24102ca8108b`** (`index-Duef0qdY.js`, API 3); `scripts/schema.py` regenerated `generated.ts`
+  with only the additive `door_pressure` field.
+- Browser acceptance specs: `door-pressure.spec.ts` (external GENKOU, pass), `door-pressure-app.spec.ts`
+  (existing licensed run, pass), `door-pressure-run.spec.ts` (full Dashboard → import → Prepare →
+  licensed submit → Results, pass, 53.1 s), `door-pressure-timing.spec.ts` (arrows on/off, pass).
+- Full isolated browser suite on build `24102ca8108b`, port 19930: **171 passed, 4 failed,
+  8 skipped** (183 tests, 12.5 min). The four failures — `gate-a` camera Fit/reset comparison,
+  `materials` library validation, `offset-picking` and the centered `partition` guide — all passed
+  together in a 17.1 s isolated rerun on port 19931, so they are suite-load behaviour, not this
+  feature. The in-suite `gate-f` playback cadence passed. The door-pressure on/off measurement above
+  used the same licensed data and build.
+- DEMO browser check: pressure unavailable, one force chart, export and history CSV available,
+  provenance still `Synthetic data (DEMO)`. [Screenshot](../.local/evidence/door-panel-pressure/gate-e-demo.png).
+
+### Separate status
+
+- **Solver execution:** yes, two accepted small licensed runs (`9efc065a…` door-only and
+  `25fa7055…` body-then-door) plus the supplied reference ODB reads and one cancelled trial.
+- **Actual extraction:** yes, production extractor output, not a manufactured result.
+- **Mesh sensitivity / physical correlation:** **not established.** One mesh and one stroke were
+  solved; no refinement study, independent physical measurement or agreed tolerance exists.
+- **Software rendering:** the browser arrow/graph evidence used SwiftShader in Edge.
+- **Pressure sign:** the accepted frame contains compressive (positive) values only. Tensile sign
+  handling is implemented and unit-tested but not exercised by a solver result.
+
+## Door-panel contact pressure reference and keyword pilots · 2026-11-25
+
+The [execution brief](door-panel-pressure-handoff.md) defines the feature and release gates. On checkout `001d2db` the [independent reader](../scripts/reference_door_pressure.py) opened all three supplied Abaqus/Standard 2023 ODBs read-only under Abaqus Python 2024. The final-step door nodal CPRESS and CNORMF, station and deformed position matched a separate native ODB traversal at all **1,824 stations** across the three closing frames. The three final seating frames contained **1,824 measured zero pressure/force samples** on those same profiles. The original INP and ODB SHA-256 hashes were unchanged after the inspection. The measured units use the N–mm convention.
+
+| Reference ODB (SHA-256 prefix) | Final native frame | Upper profile, node | Station (mm) | CPRESS (kPa) |
+|---|---:|---|---:|---:|
+| GENKOU `41abb0adaca4` | 205 | UPPER_ROOFBARA-1, 17 | 56.405592 | 45.509089 |
+| HK01 `1eec6dc2a047` | 251 | UPPER_ROOF-1, 44 | 28.074212 | 47.434494 |
+| HK02 `e8a678a2a7ca` | 233 | UPPER_LOWER_HINGEBARA-1, 39 | 29.612239 | 30.820487 |
+
+Three new, sequential, synthetic Abaqus/Standard 2024 jobs completed, each on one CPU with five Standard tokens checked out. The normal mesh and INP writers produced their base decks. The test harness edited the contact output blocks and door NSET **in scratch copies** and submitted those copies directly. The one-step cases used solver thickness 1 mm, reporting width 100 mm and a 5.5 mm closing stroke. The two-step case used a 1.5 mm mesh and a moving body below the seal. The native reader tested field extraction; product pressure extraction and UI remain implementation gates.
+
+| Pilot | Submitted INP / ODB SHA-256 prefixes | Measured result |
+|---|---|---|
+| `pressureunique` | `5ca4c67ecc33` / `97a7d404583d` | Global CSTRESS plus door NSET CFORCE. All 49 door stations had one CPRESS and one CNORMF. All zero initially, 14 positive in the last frame. Closing node 262 at 18.5 mm had **102.009602 kPa**, CNORMF (−0.0001272505, +0.05108861) N. |
+| `pressureproof` | `3806c4d89ea3` / `62d48e204712` | Global CSTRESS plus door NSET CFORCE **and** CSTRESS. At the final frame the same ODB field had **98 CPRESS records for 49 nodes**, with two identical scalars per node, alongside 49 CNORMF records. |
+| `pressuretwostep` | `622afb3699a6` / `d15bf36971cc` | Door NSET CFORCE and CSTRESS only in both steps. 17 pressure/force samples on each final door frame. `Bodyseating` had zero positive samples. Closing had six; node 103 at 6.0 mm had **70.216551 kPa**, CNORMF (−0.0003574215, +0.10495484) N. |
+
+The 2024 solver reported DAT/MSG warnings in all three runs, including negative-eigenvalue warnings. These jobs establish output availability, units and duplicate behavior. They do not establish numerical sensitivity, production seal performance or physical correlation. The existing `test_abaqus.py`, `test_two_step.py` and `test_results_fields.py` modules returned **51 passed, 1 skipped**. The operator service was outside the test path. [Local source hashes and profile measurements](../.local/evidence/door-panel-pressure/reference-summary.json) · [Local reference plot](../.local/evidence/door-panel-pressure/GENKOU-door-pressure.png)
+
 ## CAE 2024 material-reference check · 2026-11-25 (CAE license used, no solver)
 
 One Abaqus/CAE 2024 noGUI session (`abaqus cae noGUI=…`) imported the app-emitted material keyword

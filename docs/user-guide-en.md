@@ -109,8 +109,13 @@ The header shows one language button labelled with the destination language (`En
    coefficient, including zero and explicit non-defaults. Motion edits preserve contact settings. Press
    **Save revision**; unsaved changes are flagged in the footer. The same Motion stage owns the small
    **Analysis settings** group: the represented reporting width **W** (default 100 mm), total/per-mm
-   force reporting, and the **solver thickness t** (1 mm for new setups) as a read-only fact. W is a
-   display basis only; it never enters the deck or changes the section.
+   force reporting, the **solver thickness t** (1 mm for new setups) as a read-only fact, and
+   **Door-panel contact pressure output**. W is a display basis only; it never enters the deck or
+   changes the section. The pressure output is on by default: every prepared step requests door-node
+   `CFORCE` (`CNORMF`) and `CPRESS` alongside the existing outputs and keeps door `U` for deformed
+   anchors. Clear it before **Prepare input deck** to omit the door set and contact request. A
+   prepared or submitted deck never changes; a changed output plan needs a new Prepare, which keeps
+   the compatible mesh and reviewed fixed nodes reusable.
 7. **Mesh → Generate mesh** meshes the section. A new model defaults to 0.5 mm. Rubber
    quadrilaterals always use reduced integration (CPS4R); the enforced setting and the CPS4R/CPS3/R2D2
    explanations are shown beside the controls. Mesh owns sizing, generation and regeneration only.
@@ -124,8 +129,13 @@ The header shows one language button labelled with the destination language (`En
    writes an `.inp` from the reviewed mesh, fixed nodes, materials, contact and motion. It never
    enqueues a mesh job and never submits. The button is enabled only when the engineering inputs of the
    current setup are complete; a missing or stale deck never blocks preparation. When ready,
-   **Input ready** appears with **Inspect input deck** and **Download INP**. If disabled, the reason
-   beside the button names the issue and its owning stage.
+   **Input ready** appears with **Inspect input deck** and **Download INP**. The deck card names the
+   actual state: missing, preparing, failed, cancelled, a newer deck, a superseded mesh or a proven
+   changed fixture. A failed preparation keeps the worker diagnostic and the failed stage, points to
+   **Open diagnostics**, and offers recovery. **The fixed nodes changed** appears only when the
+   recorded fixture hash really differs from the saved one. If disabled, the reason beside the button
+   names the issue and its owning stage; a branched, disconnected, self-intersecting or
+   contact-side-ambiguous rigid profile is reported there before the worker is asked to prepare it.
 10. **Submit Abaqus analysis** (second) runs that exact prepared deck and reviewed fixture; preparation
     and execution are separate. Set the run name and CPU count in the same group. If disabled, follow
     the displayed reason: correct invalid input, generate a compatible mesh, review fixed nodes,
@@ -138,8 +148,9 @@ The header shows one language button labelled with the destination language (`En
     **Material outlines** layer draws material perimeters and internal interfaces with a compact
     swatch legend; it is independent of mesh edges, node markers, the field and the deformation scale.
     The canvas is solid
-    white. Play frames (Loop is on by default), read the door panel response curve, export the displayed curve, and download the
-    raw history CSV (missing measurements stay empty, not zero).
+    white. Play frames (Loop is on by default), read the door panel response curve, export the load
+    CSV or door pressure CSV at an editable interval, and download the raw history CSV (missing
+    measurements stay empty, not zero).
 
 ### Automatic saving, branching and history
 
@@ -201,14 +212,19 @@ step highlighted. 100% appears only after both the solver and result extraction 
 extraction is running or failed the bar stays below 100% and says why. A stale worker heartbeat and a
 license wait are shown explicitly.
 
-**Run a two-step body panel seating analysis.** In Motion, choose **Body panel seating, then door panel closing** and
-assign exactly one body panel and one door panel in Components. Set the body panel offset, signed travel
-and seating duration, then the door panel travel and duration. Step 1 moves the body panel and holds the door panel;
-step 2 holds the body panel at its seated position and closes the door panel, carrying the seal and contact state
-forward. The mesh includes both rigid profiles as R2D2 elements. Results offer a curve-step selector
-so the body panel and door panel travel/force curves are read separately. This template is generated and
-integration-tested but has **not** been validated with a licensed solve yet; treat it as unqualified
-until that evidence exists.
+**Run a two-step body panel seating analysis.** Assign exactly one seal, one door panel and one body
+panel in Components; the step sequence is derived from those roles (Body seating, then Closing). In
+Motion set the body panel stroke and direction angle plus its seating duration, then the door panel
+stroke, direction angle and duration. Step 1 moves the body panel and holds the door panel; step 2
+holds the body panel at its seated position and closes the door panel, carrying the seal and contact
+state forward. The mesh includes both rigid profiles as R2D2 elements. A curved profile — including a
+local return in X, vertical portions or equal-X endpoints — is supported: the deck follows the open
+chain in CAD topology, keeps every original R2D2 element and node identity, and chooses the physical
+SPOS face from the locally measured first-contact neighborhood. A branched, disconnected,
+self-intersecting or contact-side-ambiguous profile is refused with a typed reason before Prepare.
+Results offer a curve-step selector so the body panel and door panel travel/force curves are read
+separately. This template is generated and integration-tested but has **not** been validated with a
+licensed solve yet; treat it as unqualified until that evidence exists.
 
 **Change travel or friction and rerun with the same mounting.** Open the model → Motion (or Contact) →
 change the value. The edit is saved automatically, the mesh stays compatible, Mounting stays visible
@@ -436,16 +452,61 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   global +X, and the force basis. Body seating and Closing therefore use different axes; the body's
   upward seating is never projected onto the door's closing direction. A legacy record without step
   metadata is labelled as such instead of borrowing another step's direction.
+- **Door contact pressure** appears below the force–displacement response when the submitted deck
+  requested it. The graph plots the displayed frame's door-side nodal `CPRESS` in **kPa** against
+  cumulative distance along the selected door profile in **mm**. Profile orientation and stations are
+  derived once from the ODB's own R2D2 connectivity (an open chain starts at the
+  lexicographically smallest endpoint `(x, y, nodeLabel)`), so translating or rotating the door,
+  reversing connectivity, changing frames or zooming does not move the axis. `p_kPa = 1000 ×
+  CPRESS_MPa` is the only conversion; reporting width, solver thickness, force normalization and
+  Reverse Y never scale it. The station readout also shows the native MPa value. A profile selector
+  appears when more than one connected door profile qualifies.
+- **Pressure arrows** are on by default with a visible toggle. The arrow direction is the same node's
+  measured `CNORMF` in the assembly frame, normalized; its length is proportional to the displayed
+  pressure with one run-wide scale, and a reference arrow states the run maximum in kPa. The glyph is
+  anchored at the rendered deformed node, so pan, zoom, the Deformed toggle and the deformation scale
+  move it with the geometry. Arrows are not pick targets and never change the field, probes or
+  artifacts. A measured pressure with no `CNORMF` direction stays on the graph without an arrow.
+  Hovering or selecting a graph station identifies the same node on the door and shows the profile,
+  station, pressure in kPa, native MPa and signed `CNORMF` components in N. Measured zeros remain a
+  zero line; missing samples break the line; conflicting duplicate observations are withheld and
+  counted.
+- **CNORMF (contact normal force)** is selectable in the field list when it was measured. The
+  contour is the nodal magnitude in N and the probe keeps the signed Fx/Fy components. The door-side
+  contact domain is labelled from the submitted definition (the app's door–seal pair, or a
+  general-contact aggregate for an external ODB); the same node label in the seal, body or a rigid
+  reference point is a different identity. A missing pressure or force field stays explicitly
+  unavailable and is never estimated. Results produced before this feature and DEMO results show
+  "Door-panel contact pressure is unavailable" while the force–displacement curve, exports and
+  original artifacts stay readable.
 - **Displayed signs** reverses the X and/or Y sign for reading. It changes the chart and the exported
   displayed curve only; the stored results are never rewritten. When Reverse Y is on, the panel states
   that the Y axis is inverted for display and that the raw solver force is unchanged.
-- **Export displayed curve** downloads a spreadsheet-ready CSV with exactly **two numeric rows** and
-  one column per aligned sample in the selected step: row 1 is the step-relative measured displacement
-  magnitude √((U1−U1₀)²+(U2−U2₀)²) in mm; row 2 is the signed projected force in the selected reporting
-  basis — (RF·d)·W/t in N for total, (RF·d)/t in N/mm for per-length. There is no preamble, header,
-  index or time column. Missing measurements are empty cells; a measured zero is `0`. The filename and
-  the text beside the button state panel, step, unit, width and sign. Flipping the display flips row 2
-  too. **Download history CSV** keeps the raw signed components and original artifacts unchanged.
+- **Export load CSV (2 rows)** downloads a spreadsheet-ready CSV with the engineering label in
+  column A and numeric samples from column B. Row 1 is `stroke(mm)`, the step-relative measured
+  displacement magnitude √((U1−U1₀)²+(U2−U2₀)²) from a valid common reference sample. Row 2 is
+  `F (…)`, the signed projection already normalized by the recorded basis — `F (N/100mm)` for the
+  default 100 mm represented width, `F (N/80mm)` for 80 mm, `F (N/mm)` for a per-length result and
+  `F (N)` for a legacy result whose represented width is unknown. The values are never rescaled a
+  second time. The **stroke interval** is editable (default **1.0 mm**); the grid is built from
+  integer indices and the exact last measured stroke is appended once when it is not already on the
+  grid. At a measured stroke its value is used; between two adjacent valid samples the value is
+  linearly interpolated. Missing measurements stay empty cells and are never bridged. If the step has
+  a dwell with different loads at one stroke or an unload/reload, uniform resampling is ambiguous:
+  the action explains why and **Original ordered samples** exports the acquisition-ordered rows
+  instead. Reverse X never negates the exported stroke; Reverse Y is applied exactly once to the
+  force. The filename names the panel, step, basis, interval and sign.
+- **Export door pressure CSV (2 rows)** downloads `door station(mm)` and `CPRESS (kPa)` for the
+  selected door profile at the **displayed** frame. The **station interval** is editable (default
+  **1.3 mm**); interpolation is against arc-length station, not time or global X. The measured end
+  station is appended once. Missing samples stay empty and a measured all-zero profile is valid.
+  **Original profile nodes** keeps every measured node, including a narrow peak that a coarse uniform
+  grid can miss. Switching profile, scrubbing, a delayed frame or a profile whose pressure array does
+  not match the frame changes the chart, the exported bytes and the filename together; an unavailable
+  or mismatched array disables the action with the reason. The filename names the profile, frame,
+  step and interval.
+- **Download history CSV** keeps the raw signed components and original artifacts unchanged; all
+  display sign controls and export spacings live only in the browser.
 - Results produced before the projected door panel response existed still open: the chart shows their
   original signed U2/RF2 and says so.
 

@@ -56,6 +56,42 @@ export interface ViewResults {
   /** Legacy largest |displacement| estimate; used only when bounds is absent. */
   extent?: number
 }
+/**
+ * One measured door-panel contact-pressure glyph. ``anchor`` is the rendered
+ * deformed position in model millimetres; ``direction`` is the measured unit
+ * CNORMF direction in the assembly frame; ``pressureKpa`` is signed.
+ */
+export interface PressureArrow {
+  anchor: [number, number]
+  direction: [number, number]
+  pressureKpa: number
+  station: number
+  node: number
+  /** Index in the station array, so a selection highlights the right glyph. */
+  row?: number
+}
+export interface PressureArrows {
+  profileId: string
+  name: string
+  arrows: PressureArrow[]
+  /**
+   * Screen-space calibration: the number of CSS pixels used for the run-wide
+   * reference pressure. The renderer recomputes this from its own viewport on
+   * resize; this value is the fallback and the value reported to tests.
+   */
+  pixelsPerKPa: number
+  /** Run-wide raw reference pressure (unmultiplied) shown beside the key. */
+  maximumKpa: number
+  /** ``auto`` = fixed screen size; ``manual`` = model millimetres per 10 kPa. */
+  mode: 'auto' | 'manual'
+  /** Manual calibration: model length for 10 kPa (default 5 mm). */
+  manualMmPer10Kpa: number
+  origin?: [number, number] | null
+  /** Unit direction of increasing station, drawn beside the origin marker. */
+  directionHint?: [number, number] | null
+  /** Station index under the pointer or selected on the graph. */
+  selected?: number | null
+}
 export interface ViewportProps {
   dimension: '2D' | '3D'
   display: Display | null
@@ -83,6 +119,14 @@ export interface ViewportProps {
    * flat-coloured with one value and keeps one parent element identity.
    */
   elementValues?: Record<string, Record<number, number>>
+  /**
+   * Per-instance nodal values for a nodal scalar field such as |CNORMF|. The
+   * geometry still follows the measured displacement; a node without a value
+   * keeps the surface visibly unavailable instead of inventing a zero.
+   */
+  nodalValues?: Record<string, Record<number, number>>
+  /** Door-panel pressure glyphs on the same displayed frame as the contour. */
+  pressureArrows?: PressureArrows | null
   /** Lower bound of the colour scale; defaults to 0. */
   resultMin?: number
   /** Deformation multiplier; 1 is true scale. */
@@ -285,6 +329,8 @@ function instanceSurfaces(
   const axis = component === 'U1' ? 0 : component === 'U2' ? 1 : component === 'U3' ? 2 : -1
   const scale = props.deformationScale ?? 1
   const cellValues = isResult ? props.elementValues : undefined
+  const nodalValues = isResult ? props.nodalValues : undefined
+  const nodal = nodalValues ? nodalValues[source.instance] : undefined
   const groups = new Map<
     string,
     { surface: Surface; indices: Map<number, number> }
@@ -304,9 +350,11 @@ function instanceSurfaces(
     const cellValue = cellValues
       ? cellValues[source.instance]?.[element.id]
       : undefined
-    const complete = cellValues
-      ? cellValue !== undefined
-      : isResult && element.connectivity.every((id) => displacement.has(id))
+    const complete = nodalValues
+      ? element.connectivity.every((id) => nodal?.[id] !== undefined)
+      : cellValues
+        ? cellValue !== undefined
+        : isResult && element.connectivity.every((id) => displacement.has(id))
     const color =
       isResult && !complete
         ? '#a3a9ae'
@@ -382,7 +430,18 @@ function instanceSurfaces(
         )
         surface.nodeIds!.push(label)
         const value = u ? (axis < 0 ? Math.hypot(...u) : u[axis]) : undefined
-        surface.magnitudes!.push(value === undefined ? undefined : Math.abs(value))
+        // A contact-force contour follows the nodal CNORMF magnitude while the
+        // geometry continues to use this frame's measured U.
+        const nodalValue = nodal?.[label]
+        surface.magnitudes!.push(
+          nodalValues
+            ? nodalValue === undefined
+              ? undefined
+              : Math.abs(nodalValue)
+            : value === undefined
+              ? undefined
+              : Math.abs(value)
+        )
       }
       return index
     })

@@ -6,11 +6,21 @@
  * is omitted rather than turned into a measured zero.
  */
 
-export type FieldId = 'mises' | 'S11' | 'S22' | 'S33' | 'S12' | 'Umag' | 'U1' | 'U2'
+export type FieldId =
+  | 'mises'
+  | 'S11'
+  | 'S22'
+  | 'S33'
+  | 'S12'
+  | 'Umag'
+  | 'U1'
+  | 'U2'
+  | 'CNormf'
 
 export interface FieldSample {
   instance?: string
   element?: number
+  node?: number
   integration_point?: number
   section_point?: number
   data?: number[]
@@ -111,6 +121,50 @@ export function elementDisplayValues(cells: Map<string, StressCell>, field: Fiel
         ? Math.max(...cell.samples.map((sample) => sample.value))
         : Math.max(...cell.samples.map((sample) => Math.abs(sample.value)))
     ;(values[cell.instance] ??= {})[cell.element] = value
+  }
+  return values
+}
+
+/** One signed CNORMF vector per instance-qualified node. */
+export interface ContactForceSample {
+  instance: string
+  node: number
+  components: number[]
+  magnitude: number
+}
+
+/**
+ * Read the stored CFORCE/CNORMF field as measured signed components. The
+ * display contours the magnitude, while a probe keeps the components and the
+ * unit; the two are never confused with a pressure.
+ */
+export function contactForceSamples(frame: FieldFrame | null) {
+  const samples = new Map<string, ContactForceSample>()
+  const fields = (frame?.fields ?? {}) as Record<
+    string,
+    { components?: string[]; values?: FieldSample[] }
+  >
+  const name = Object.keys(fields).find(
+    (key) => key.split(' ')[0].toUpperCase() === 'CNORMF',
+  )
+  if (!name) return samples
+  for (const value of fields[name].values ?? []) {
+    if (!value.instance || value.node === undefined || !value.data?.length) continue
+    const key = value.instance + ':' + value.node
+    samples.set(key, {
+      instance: value.instance,
+      node: value.node,
+      components: value.data.map(Number),
+      magnitude: Math.hypot(...value.data.map(Number)),
+    })
+  }
+  return samples
+}
+
+export function contactForceValues(samples: Map<string, ContactForceSample>) {
+  const values: Record<string, Record<number, number>> = {}
+  for (const sample of samples.values()) {
+    ;(values[sample.instance] ??= {})[sample.node] = sample.magnitude
   }
   return values
 }

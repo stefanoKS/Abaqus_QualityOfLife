@@ -96,14 +96,34 @@ export function JobActions({
       notify(err(e))
     }
   }
+  const result = (job.result ?? {}) as {
+    state?: string
+    available?: boolean
+    summary?: Record<string, unknown>
+  }
+  const extractionActive = ['Queued', 'Running'].includes(job.extraction)
+  const extractionRecoverable =
+    ['Failed', 'Cancelled'].includes(job.extraction) &&
+    ['Succeeded', 'Failed', 'Cancelled'].includes(job.solver)
+  const canExtract =
+    ['Failed', 'Cancelled'].includes(job.solver) &&
+    !result.available &&
+    !extractionActive &&
+    !extractionRecoverable
   return (
     <div className="run-actions">
-      {job.status === 'Completed' && job.mode !== 'BUILD' && (
-        <button onClick={() => go('results/' + job.id)}>
-          <ChartNoAxesCombined />
-          {t('dashboard.jobResults')}
-        </button>
-      )}
+      {(job.status === 'Completed' || result.available === true) &&
+        job.mode !== 'BUILD' && (
+          <button
+            onClick={() => go('results/' + job.id)}
+            data-testid={result.state === 'partial' ? 'open-partial-results' : undefined}
+          >
+            <ChartNoAxesCombined />
+            {result.state === 'partial'
+              ? t('dashboard.jobPartialResults')
+              : t('dashboard.jobResults')}
+          </button>
+        )}
       <button onClick={() => go('setup/' + job.id)}>
         <FileText />
         {t('dashboard.jobSetup')}
@@ -123,7 +143,8 @@ export function JobActions({
       >
         <Activity />
       </button>
-      {!['Completed', 'Failed', 'Cancelled', 'Cancel requested'].includes(job.status) && (
+      {(!['Completed', 'Failed', 'Cancelled', 'Cancel requested'].includes(job.status) ||
+        extractionActive) && (
         <button
           title={t('dashboard.cancelJob')}
           aria-label={t('dashboard.cancelJob')}
@@ -133,10 +154,20 @@ export function JobActions({
           <Square />
         </button>
       )}
-      {job.solver === 'Succeeded' && ['Failed', 'Cancelled'].includes(job.extraction) && (
+      {extractionRecoverable && (
         <button onClick={() => act('retry')} disabled={!compat.ok}>
           <RotateCcw />
           {t('dashboard.retryExtraction')}
+        </button>
+      )}
+      {canExtract && (
+        <button
+          onClick={() => act('extract')}
+          disabled={!compat.ok}
+          data-testid="extract-available"
+        >
+          <RotateCcw />
+          {t('run.extractAvailable')}
         </button>
       )}
     </div>

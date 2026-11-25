@@ -627,6 +627,28 @@ export default function Workspace({ initial, locked, notify }: Props) {
     deck.mesh === compatibleMesh?.id &&
     !!fixture &&
     deck.fixture_hash === fixture.hash
+  // The deck card must name the actual state, never every non-ready state as a
+  // changed fixture. A failed job keeps its worker diagnostic and recovery; a
+  // stale fixture is only claimed when the recorded hashes really differ.
+  const deckIssue: { code: string; detail?: string; phase?: string } | null = !deck
+    ? { code: 'mesh.deckMissing' }
+    : deck.status === 'Failed'
+      ? { code: 'mesh.deckFailed', detail: deck.diagnostic, phase: deck.phase }
+      : deck.status === 'Cancelled'
+        ? { code: 'mesh.deckCancelled', detail: deck.diagnostic, phase: deck.phase }
+        : ['Queued', 'Running', 'Cancel requested'].includes(deck.status)
+          ? { code: 'mesh.deckPreparing' }
+          : deckReady
+            ? null
+            : newestDeck && deck.id !== newestDeck.id
+              ? { code: 'mesh.deckSuperseded' }
+              : compatibleMesh && deck.mesh !== compatibleMesh.id
+                ? { code: 'mesh.deckSupersededMesh' }
+                : fixture && deck.fixture_hash && deck.fixture_hash !== fixture.hash
+                  ? { code: 'mesh.deckStaleFixture' }
+                  : fixture
+                    ? { code: 'mesh.deckStale' }
+                    : { code: 'mesh.deckNoFixture' }
   useEffect(() => {
     if (!pendingDeck) return
     const pending = deckJobs.find((job) => job.id === pendingDeck)
@@ -2787,6 +2809,22 @@ export default function Workspace({ initial, locked, notify }: Props) {
                         <option value="per_mm">{t('review.perMm')}</option>
                       </select>
                     </label>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        data-testid="door-pressure-output"
+                        checked={p.analysis.door_pressure}
+                        onChange={(e) =>
+                          edit((n) => {
+                            n.analysis.door_pressure = e.target.checked
+                          })
+                        }
+                      />
+                      {t('motion.doorPressureOutput')}
+                    </label>
+                    <small data-testid="door-pressure-output-help">
+                      {t('motion.doorPressureOutputHelp')}
+                    </small>
                     <Facts
                       rows={[
                         [
@@ -3126,6 +3164,7 @@ export default function Workspace({ initial, locked, notify }: Props) {
                   submitting={actionBusy === 'submit'}
                   deck={deck}
                   deckReady={deckReady}
+                  deckIssue={deckIssue}
                   prepareReason={prepareReason}
                   submitReason={submitReason}
                   runName={runName}
@@ -3169,12 +3208,20 @@ export default function Workspace({ initial, locked, notify }: Props) {
                       className="result-link"
                       key={r.id}
                       onClick={() =>
-                        go((r.status === 'Completed' ? 'results/' : 'diagnostics/') + r.id)
+                        go(
+                          (r.status === 'Completed' ||
+                          (r.result as { available?: boolean } | undefined)?.available
+                            ? 'results/'
+                            : 'diagnostics/') + r.id,
+                        )
                       }
                     >
                       {r.name}
                       <small>
-                        {r.mode} · {labelFrom(t, 'state', r.status)}
+                        {r.mode} ·{' '}
+                        {(r.result as { state?: string } | undefined)?.state === 'partial'
+                          ? t('dashboard.jobPartialResults')
+                          : labelFrom(t, 'state', r.status)}
                       </small>
                     </button>
                   ))

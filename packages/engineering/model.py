@@ -438,6 +438,10 @@ class Analysis(Model):
     outputs: list[Literal["U", "RF", "S", "LE", "CSTRESS"]] = Field(
         default_factory=lambda: ["U", "RF", "S", "LE", "CSTRESS"], max_length=5
     )
+    # Default-on door-panel contact pressure output. It adds a door-profile NSET
+    # request for CFORCE/CPRESS without changing the five-token public output
+    # list. An explicit opt-out keeps a deck free of door contact requests.
+    door_pressure: bool = True
 
 
 class Extrusion(Model):

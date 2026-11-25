@@ -15,18 +15,42 @@ ELEMENT_SIZES = {"CPS3": 3, "CPS4": 4, "CPS4R": 4, "R2D2": 2}
 CLEARANCE_TOLERANCE = 1e-7
 
 
-class ClearanceError(ValueError):
-    """A geometric clearance rejection with a stable code for diagnostics.
+class PreparationError(ValueError):
+    """A deck-preparation rejection with one shared, typed explanation.
 
-    ``details`` carries the measured quantities (panel label, penetration
-    depth, contact side) so the API can explain the same condition the deck
-    writer refuses, without the caller parsing prose.
+    ``code`` is stable and localized by the browser; ``stage`` names the
+    workflow stage that owns the repair and ``role`` the engineering role
+    (``door``/``body``/``seal``) when the condition belongs to one. ``details``
+    carries measured quantities only, never prose the caller has to parse.
+
+    Readiness and the deck worker both raise and catch this type, so the app
+    cannot say "Ready to prepare" for geometry the writer will refuse.
     """
 
-    def __init__(self, code, message, **details):
+    def __init__(self, code, message, *, stage="action", role=None, **details):
         super().__init__(message)
         self.code = code
+        self.stage = stage
+        self.role = role
+        # The browser localizes ``label`` (door/body) in the structured params.
+        # A typed rejection with a role always carries it so no raw ``{label}``
+        # placeholder can reach the interface.
+        if role is not None:
+            details.setdefault("label", role)
         self.details = details
+
+
+class ClearanceError(PreparationError):
+    """A geometric clearance/motion rejection, owned by the Motion stage."""
+
+    def __init__(self, code, message, **details):
+        super().__init__(
+            code,
+            message,
+            stage="motion",
+            role=details.get("label"),
+            **details,
+        )
 
 
 def scalar(value):
@@ -43,43 +67,179 @@ def set_lines(keyword, labels):
     return [keyword] + [", ".join(map(str, labels[i : i + 16])) for i in range(0, len(labels), 16)]
 
 
-def panel_order(panel, nodes):
-    """Follow one open chain from its right end.
+def panel_order(panel, nodes, role="moving_panel", label="moving panel"):
+    """Follow one open R2D2 chain and return its elements in walk order.
 
-    For an R2D2 segment whose nodes run from 1 to 2 the SPOS side is 90 degrees
-    counter-clockwise from the 1-to-2 direction, which is the lower side for a
-    horizontal panel read right-to-left. ``orient_for_contact`` reverses this
-    ordering for a profile mounted below the seal.
+    This function is deliberately *only* topological. A curved panel may turn
+    back in X, contain vertical portions, or have two endpoints with the same X;
+    none of those change which element comes next in a degree-two open chain.
+    Contact-side orientation is a separate decision made against the measured
+    seal geometry (``orient_toward``), never by rejecting a local X reversal.
+
+    The walk starts at the endpoint with the largest ``(x, y, label)`` to keep
+    the historical door/body element order for straight profiles. Because the
+    station axis used by Results is derived from the assembled ODB connectivity
+    (lexicographic-minimum endpoint), reversing these element pairs later never
+    moves a reported station.
     """
     neighbors = defaultdict(list)
-    for e in panel:
-        a, b = e["nodes"]
-        neighbors[a].append((b, e))
-        neighbors[b].append((a, e))
-    ends = [n for n, adjacent in neighbors.items() if len(adjacent) == 1]
-    if len(ends) != 2 or any(len(adjacent) > 2 for adjacent in neighbors.values()):
-        raise ValueError("Use one open, unbranched moving panel profile.")
-    if nodes[ends[0]][0] == nodes[ends[1]][0]:
-        raise ValueError(
-            "The vertical closing template needs panel endpoints at different X positions."
+    seen_elements = {}
+    for element in panel:
+        try:
+            a, b = element["nodes"]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PreparationError(
+                "panel.malformed_profile",
+                f"The {label} profile has an element without two nodes.",
+                stage="components",
+                role=role,
+                element=element.get("id"),
+            ) from exc
+        if a == b:
+            raise PreparationError(
+                "panel.degenerate_profile",
+                f"The {label} profile element {element['id']} has repeated nodes.",
+                stage="components",
+                role=role,
+                element=element["id"],
+            )
+        if element["id"] in seen_elements:
+            raise PreparationError(
+                "panel.repeated_element",
+                f"The {label} profile repeats element {element['id']}; every original "
+                "element must appear exactly once.",
+                stage="components",
+                role=role,
+                element=element["id"],
+            )
+        seen_elements[element["id"]] = element
+        first, second = nodes.get(a), nodes.get(b)
+        if first is None or second is None:
+            raise PreparationError(
+                "panel.missing_coordinates",
+                f"The {label} profile element {element['id']} refers to a node "
+                "without coordinates.",
+                stage="components",
+                role=role,
+                element=element["id"],
+            )
+        length = hypot(second[0] - first[0], second[1] - first[1])
+        if length <= CLEARANCE_TOLERANCE:
+            raise PreparationError(
+                "panel.degenerate_profile",
+                f"The {label} profile element {element['id']} has zero length.",
+                stage="components",
+                role=role,
+                element=element["id"],
+            )
+        neighbors[a].append((b, element))
+        neighbors[b].append((a, element))
+
+    if not neighbors:
+        raise PreparationError(
+            "panel.missing_profile",
+            f"The {label} profile has no elements.",
+            stage="components",
+            role=role,
         )
-    current = max(ends, key=lambda n: nodes[n][0])
+
+    # Disconnected islands and branches are actual topology defects with a
+    # different repair from a curved (but valid) chain.
+    reached = set()
+    components = 0
+    for start in sorted(neighbors):
+        if start in reached:
+            continue
+        components += 1
+        stack = [start]
+        reached.add(start)
+        while stack:
+            node = stack.pop()
+            for neighbour, _ in neighbors[node]:
+                if neighbour not in reached:
+                    reached.add(neighbour)
+                    stack.append(neighbour)
+    if components > 1:
+        raise PreparationError(
+            "panel.disconnected_profile",
+            f"The {label} profile contains {components} disconnected chains; the "
+            "template needs one connected open profile.",
+            stage="components",
+            role=role,
+            components=components,
+        )
+    branched = sorted(node for node, adjacent in neighbors.items() if len(adjacent) > 2)
+    if branched:
+        raise PreparationError(
+            "panel.branched_profile",
+            f"The {label} profile branches at node {branched[0]}; the template needs "
+            "one open chain without branches.",
+            stage="components",
+            role=role,
+            node=branched[0],
+            count=len(branched),
+        )
+    ends = sorted(
+        (node for node, adjacent in neighbors.items() if len(adjacent) == 1),
+        key=lambda node: (nodes[node][0], nodes[node][1], node),
+    )
+    if len(ends) != 2:
+        raise PreparationError(
+            "panel.closed_profile",
+            f"The {label} profile is closed; the template needs one open chain with "
+            "two endpoints.",
+            stage="components",
+            role=role,
+            endpoints=len(ends),
+        )
+
+    current = ends[-1]
     previous = None
     ordered = []
+    visited = set()
     while True:
         next_segment = [(n, e) for n, e in neighbors[current] if n != previous]
         if not next_segment:
             break
         n, element = next_segment[0]
-        if nodes[n][0] > nodes[current][0] + 1e-9:
-            raise ValueError(
-                "The vertical closing template requires a panel without a folded-back profile."
+        if element["id"] in visited:
+            raise PreparationError(
+                "panel.repeated_element",
+                f"The {label} profile revisits element {element['id']}; every original "
+                "element must appear exactly once.",
+                stage="components",
+                role=role,
+                element=element["id"],
             )
+        visited.add(element["id"])
         ordered.append(dict(element, nodes=[current, n]))
         previous, current = current, n
     if len(ordered) != len(panel):
-        raise ValueError("The moving panel has disconnected paths.")
+        raise PreparationError(
+            "panel.disconnected_profile",
+            f"The {label} profile has {len(panel) - len(ordered)} element(s) outside "
+            "its open chain.",
+            stage="components",
+            role=role,
+        )
+    _reject_self_intersection(ordered, nodes, role, label)
     return ordered
+
+
+def _reject_self_intersection(ordered, nodes, role, label):
+    """A self-intersecting moving profile has no single physical contact side."""
+    from shapely.geometry import LineString
+
+    points = [nodes[ordered[0]["nodes"][0]]] + [nodes[element["nodes"][1]] for element in ordered]
+    line = LineString([(float(point[0]), float(point[1])) for point in points])
+    if not line.is_simple:
+        raise PreparationError(
+            "panel.self_intersecting_profile",
+            f"The {label} profile intersects itself; the template cannot assign one "
+            "contact side along a self-crossing chain.",
+            stage="components",
+            role=role,
+        )
 
 
 def surface_normal(nodes, element):
@@ -123,22 +283,41 @@ def mesh_parts(project, mesh):
 
 def _mesh_parts(project, mesh):
     if project.dimension != "2D" or project.formulation != "plane_stress":
-        raise ValueError("Only the 2D plane-stress closing template can generate a solver input.")
+        raise PreparationError(
+            "template.unsupported",
+            "Only the 2D plane-stress closing template can generate a solver input.",
+            stage="import",
+        )
     if project.units != "N-mm-s-tonne":
-        raise ValueError("Confirm N-mm-s-tonne units before generating this input.")
+        raise PreparationError(
+            "template.units",
+            "Confirm N-mm-s-tonne units before generating this input.",
+            stage="import",
+        )
     # Travel 0 is a valid hold; a nonzero travel is checked against the measured
     # contact side below, so the template never substitutes an epsilon motion.
     nodes = {n["id"]: n["xyz"] for n in mesh["nodes"]}
     if len(nodes) != len(mesh["nodes"]):
-        raise ValueError("Duplicate mesh node label.")
+        raise PreparationError(
+            "mesh.duplicate_node",
+            "Duplicate mesh node label.",
+            stage="mesh",
+        )
     roles = {c.id: c.role for c in project.components}
     faces = {f.id: f for f in project.faces}
     materials = {m.id: m for m in project.materials}
     if sum(role == "moving_panel" for role in roles.values()) != 1:
-        raise ValueError("Select exactly one moving panel.")
+        raise PreparationError(
+            "components.one_moving_panel",
+            "Select exactly one moving panel.",
+            stage="components",
+        )
     if any(role not in ("seal", "moving_panel", "vehicle_body") for role in roles.values()):
-        raise ValueError(
-            "This solver template supports seal regions, one moving panel and an excluded body profile."
+        raise PreparationError(
+            "components.unsupported_role",
+            "This solver template supports seal regions, one moving panel and an "
+            "excluded body profile.",
+            stage="components",
         )
     ws, panel, body = [], [], []
     element_ids = set()
@@ -154,7 +333,12 @@ def _mesh_parts(project, mesh):
             or e["id"] <= 0
             or min(node_ids) <= 0
         ):
-            raise ValueError("Unsupported element type, duplicate label, or invalid connectivity.")
+            raise PreparationError(
+                "mesh.invalid_element",
+                "Unsupported element type, duplicate label, or invalid connectivity.",
+                stage="mesh",
+                element=e.get("id"),
+            )
         element_ids.add(e["id"])
         if kind == "R2D2":
             role = roles.get(e["component"])
@@ -163,7 +347,11 @@ def _mesh_parts(project, mesh):
             elif role == "vehicle_body" and project.analysis.mode == "body_then_door":
                 body.append(e)
             else:
-                raise ValueError("A rigid edge must belong to an analysed rigid profile.")
+                raise PreparationError(
+                    "components.rigid_role",
+                    "A rigid edge must belong to an analysed rigid profile.",
+                    stage="components",
+                )
         else:
             face = faces.get(e["entity"])
             if (
@@ -171,7 +359,12 @@ def _mesh_parts(project, mesh):
                 or roles.get(e["component"]) != "seal"
                 or face.component != e["component"]
             ):
-                raise ValueError("Every continuum element must refer to a CAD region of its seal.")
+                raise PreparationError(
+                    "mesh.invalid_region",
+                    "Every continuum element must refer to a CAD region of its seal.",
+                    stage="mesh",
+                    element=e["id"],
+                )
             # Rubber quadrilaterals are always reduced integration. A forged or
             # legacy mesh that reaches the writer as CPS4 is rejected rather
             # than silently relabelled.
@@ -181,18 +374,24 @@ def _mesh_parts(project, mesh):
                 and material is not None
                 and material.model in ("hyperfoam_test", "neo_hookean")
             ):
-                raise ValueError(
+                raise PreparationError(
+                    "mesh.integration_rule",
                     f"Rubber quadrilateral element {e['id']} is CPS4; rubber uses "
-                    "reduced integration (CPS4R). Regenerate the mesh."
+                    "reduced integration (CPS4R). Regenerate the mesh.",
+                    stage="mesh",
+                    element=e["id"],
                 )
             if (
                 kind == "CPS4R"
                 and material is not None
                 and getattr(material, "family", "polymer") == "metal"
             ):
-                raise ValueError(
+                raise PreparationError(
+                    "mesh.integration_rule",
                     f"Metal quadrilateral element {e['id']} is CPS4R; deformable metal uses "
-                    "full integration (CPS4). Regenerate the mesh."
+                    "full integration (CPS4). Regenerate the mesh.",
+                    stage="mesh",
+                    element=e["id"],
                 )
             points = [nodes[n] for n in node_ids]
             for i, point in enumerate(points):
@@ -201,17 +400,31 @@ def _mesh_parts(project, mesh):
                     nxt[0] - point[0]
                 )
                 if not isfinite(cross) or cross <= 0:
-                    raise ValueError("A seal element has inverted or degenerate connectivity.")
+                    raise PreparationError(
+                        "mesh.inverted_element",
+                        "A seal element has inverted or degenerate connectivity.",
+                        stage="mesh",
+                        element=e["id"],
+                    )
             ws.append(e)
     if not ws or not panel:
-        raise ValueError("Both a deformable seal mesh and a moving rigid profile are required.")
+        raise PreparationError(
+            "mesh.missing_part",
+            "Both a deformable seal mesh and a moving rigid profile are required.",
+            stage="mesh",
+        )
     if project.analysis.mode == "body_then_door" and not body:
-        raise ValueError("Body-then-door analysis needs a meshed moving body profile.")
+        raise PreparationError(
+            "components.no_moving_body",
+            "Body-then-door analysis needs a meshed moving body profile.",
+            stage="components",
+            role="body",
+        )
     return (
         nodes,
         ws,
-        panel_order(panel, nodes),
-        panel_order(body, nodes) if body else [],
+        panel_order(panel, nodes, role="door", label="door"),
+        panel_order(body, nodes, role="body", label="body") if body else [],
     )
 
 
@@ -512,6 +725,16 @@ def _side_from_direction(direction):
     return "left" if direction[0] > 0 else "right"
 
 
+def side_phrase(side):
+    """Readable placement phrase for headings and diagnostics."""
+    return {
+        "above": "above the seal",
+        "below": "below the seal",
+        "left": "to the left of the seal",
+        "right": "to the right of the seal",
+    }.get(side, str(side))
+
+
 def directional_motion_assessment(nodes, boundary, elements, motion, role, instance, label):
     """Geometric assessment along the swept segment for an arbitrary angle.
 
@@ -671,6 +894,32 @@ def assembly_assessment(project, mesh):
             nodes, boundary, body, project.motion.body, role="body", instance="BODY-1",
             label="body", schema_version=project.schema_version,
         )
+    if project.schema_version >= 4:
+        # The deck writer refuses an ambiguous first-contact neighborhood with a
+        # typed code. Readiness runs the same check, so it can never show
+        # "ready" for geometry the writer rejects.
+        seal_segments = _boundary_segments(nodes, boundary)
+        orient_toward(
+            panel,
+            nodes,
+            result["door"]["direction_to_seal"],
+            seal=seal_segments,
+            role="door",
+            label="door",
+            offset=project.motion.offset,
+            delta=result["door"]["delta_mm"],
+        )
+        if body:
+            orient_toward(
+                body,
+                nodes,
+                result["body"]["direction_to_seal"],
+                seal=seal_segments,
+                role="body",
+                label="body",
+                offset=project.motion.body.offset,
+                delta=result["body"]["delta_mm"],
+            )
     return result
 
 
@@ -855,26 +1104,150 @@ def fixed_nodes(project, mesh, fixture):
     return nodes
 
 
-def orient_toward(ordered, nodes, direction):
-    """Order R2D2 connectivity so SPOS faces an explicit model-space direction.
-
-    Used for an oblique setup, where "above/below" is not sufficient: the
-    assembly assessor supplies the unit vector from the assembled profile to its
-    nearest seal surface, and the connectivity is reversed only when the mean
-    SPOS normal points away from it.
-    """
-    if direction is None:
-        raise ValueError("An oblique rigid profile needs a measured contact direction.")
-    total = 0.0
-    for element in ordered:
-        normal = surface_normal(nodes, element)
-        total += normal[0] * direction[0] + normal[1] * direction[1]
-    if total >= 0:
-        return ordered
+def _reverse_chain(ordered):
+    """Turn a chain around without changing any node or element identity."""
     return [
         dict(element, nodes=[element["nodes"][1], element["nodes"][0]])
         for element in reversed(ordered)
     ]
+
+
+def _contact_alignment(ordered, nodes, seal, offset=0.0, delta=None):
+    """Signed local alignment of every SPOS normal with its nearest seal point.
+
+    A single global average is not enough evidence on a curved return: each
+    element is measured against the direction from its *assembled* midpoint to
+    the closest seal surface, and the predicted first-contact neighborhood is
+    selected by the actual swept distance rather than by the undeformed drawing.
+    The persisted placement offset and motion vector therefore decide the
+    orientation, not the drawing's original coordinates.
+    """
+    from shapely.geometry import LineString, Point
+    from shapely.ops import nearest_points
+
+    seal_geom = _polyline(seal)
+    swept = delta is not None and hypot(float(delta[0]), float(delta[1])) > CLEARANCE_TOLERANCE
+    rows = []
+    for element in ordered:
+        first = nodes[element["nodes"][0]]
+        second = nodes[element["nodes"][1]]
+        placed = Point(
+            (first[0] + second[0]) / 2.0, (first[1] + second[1]) / 2.0 + offset
+        )
+        distance = placed.distance(seal_geom)
+        sweep_distance = (
+            LineString(
+                [(placed.x, placed.y), (placed.x + delta[0], placed.y + delta[1])]
+            ).distance(seal_geom)
+            if swept
+            else distance
+        )
+        if distance <= CLEARANCE_TOLERANCE:
+            direction = None
+            dot = 0.0
+        else:
+            on_profile, on_seal = nearest_points(placed, seal_geom)
+            dx, dy = on_seal.x - on_profile.x, on_seal.y - on_profile.y
+            length = hypot(dx, dy)
+            direction = None if length <= CLEARANCE_TOLERANCE else [dx / length, dy / length]
+            normal = surface_normal(nodes, element)
+            dot = (
+                0.0
+                if direction is None
+                else normal[0] * direction[0] + normal[1] * direction[1]
+            )
+        rows.append(
+            {
+                "element": element,
+                "distance": distance,
+                "sweep_distance": sweep_distance,
+                "direction": direction,
+                "dot": dot,
+            }
+        )
+    return rows
+
+
+# mm. The predicted first-contact neighborhood: elements within this distance of
+# the closest element. Orientation and its independent verification both use it.
+CONTACT_NEIGHBORHOOD_MM = 0.5
+
+
+def _first_contact(rows):
+    if not rows:
+        return []
+    # The swept distance is the evidence that matters when the drawing is placed
+    # away from the seal: it names the elements the prescribed path reaches
+    # first, not the elements that merely look nearest in the undeformed drawing.
+    metric = "sweep_distance" if any("sweep_distance" in row for row in rows) else "distance"
+    closest = min(row[metric] for row in rows)
+    limit = closest + max(CONTACT_NEIGHBORHOOD_MM, closest * 0.02)
+    return [row for row in rows if row[metric] <= limit + CLEARANCE_TOLERANCE]
+
+
+def orient_toward(
+    ordered,
+    nodes,
+    direction,
+    seal=None,
+    role=None,
+    label="moving panel",
+    offset=0.0,
+    delta=None,
+):
+    """Order R2D2 connectivity so the measured contact side faces the seal.
+
+    With ``seal`` (the exterior seal segments) the decision is made at the
+    predicted first-contact neighborhood of the *assembled* profile including
+    its persisted offset and motion sweep, not from one global average or from
+    the drawing's original coordinates. The oriented normals are re-checked
+    there. Without it the historical global projection is kept for callers that
+    have no boundary at hand.
+    """
+    if direction is None:
+        raise PreparationError(
+            "panel.contact_side_ambiguous",
+            f"The {label} profile touches or crosses the nearest seal surface, so its "
+            "contact side cannot be measured.",
+            stage="components",
+            role=role,
+            label=label,
+        )
+    if seal is None:
+        total = 0.0
+        for element in ordered:
+            normal = surface_normal(nodes, element)
+            total += normal[0] * direction[0] + normal[1] * direction[1]
+        return _reverse_chain(ordered) if total < 0 else ordered
+
+    rows = _first_contact(_contact_alignment(ordered, nodes, seal, offset, delta))
+    score = sum(row["dot"] for row in rows)
+    oriented = _reverse_chain(ordered) if score < 0 else ordered
+    # Re-measure the oriented connectivity. This is the independent local check
+    # the brief requires: every element in the predicted first-contact
+    # neighborhood must now face the seal, not merely their average.
+    check = _first_contact(_contact_alignment(oriented, nodes, seal, offset, delta))
+    if not check or sum(row["dot"] for row in check) <= 1e-9:
+        raise PreparationError(
+            "panel.contact_side_ambiguous",
+            f"The {label} profile's first-contact neighborhood does not have one "
+            "unambiguous seal-facing side. Review the drawing or its placement.",
+            stage="components",
+            role=role,
+            label=label,
+        )
+    for row in check:
+        if row["direction"] is not None and row["dot"] < -1e-6:
+            raise PreparationError(
+                "panel.contact_side_ambiguous",
+                f"The {label} profile element {row['element']['id']} faces away from "
+                "the seal in the predicted first-contact neighborhood.",
+                stage="components",
+                role=role,
+                label=label,
+                element=row["element"]["id"],
+            )
+    return oriented
 
 
 def _contact_properties(project, has_body):
@@ -964,9 +1337,19 @@ def write_inp(project, mesh, fixture=None):
     clearance = door["clearance_mm"]
     resolved = motion_policy.resolve(project.motion, project.schema_version)
     # SPOS must face the seal; a door mounted above it keeps the legacy order and
-    # an oblique setup follows the measured direction to the nearest surface.
+    # an oblique/curved setup follows the locally measured direction to the
+    # nearest surface, verified at the predicted first-contact neighborhood.
     if project.schema_version >= 4:
-        panel = orient_toward(panel, nodes, door["direction_to_seal"])
+        panel = orient_toward(
+            panel,
+            nodes,
+            door["direction_to_seal"],
+            seal=_boundary_segments(nodes, boundary),
+            role="door",
+            label="door",
+            offset=project.motion.offset,
+            delta=door["delta_mm"],
+        )
     else:
         panel = orient_for_contact(panel, door["side"])
     seal_nodes = sorted({n for e in ws for n in e["nodes"]})
@@ -982,7 +1365,7 @@ def write_inp(project, mesh, fixture=None):
         "Abaqus QOL 2D plane stress / implicit dynamic closing",
         "** Units: N, mm, s, tonne. Panel RF2 is total reaction for the specified thickness.",
         f"** Initial clearance on the assembled mesh: {scalar(clearance)} mm.",
-        f"** Door is {door['side']} the seal; the contact normal and travel direction are "
+        f"** Door is {side_phrase(door['side'])}; the contact normal and travel direction are "
         f"[{', '.join(scalar(v) for v in door['direction'])}].",
         f"** Prescribed motion: {scalar(resolved['stroke'])} mm at "
         f"{scalar(resolved['angle'])} deg; delta "
@@ -1045,6 +1428,10 @@ def write_inp(project, mesh, fixture=None):
         "*Nset, nset=PANEL_RP, instance=PANEL-1",
         str(rp),
     ]
+    if getattr(project.analysis, "door_pressure", False):
+        lines += set_lines(
+            "*Nset, nset=DOOR_PROFILE_NODES, instance=PANEL-1", door_profile_labels(panel)
+        )
     lines += set_lines("*Nset, nset=WSFIX, instance=WS-1", fixed)
     lines += ["*Rigid Body, ref node=PANEL_RP, elset=PANEL-1.PROFILE", "*End Assembly"]
     assigned = {face.material for face in project.faces if face.id in by_face}
@@ -1106,10 +1493,30 @@ def write_two_step_inp(project, mesh, fixture=None):
     body_motion = motion_policy.resolve(project.motion.body, project.schema_version, body=True)
     # Each rigid part is oriented independently: the door above the seal keeps
     # the legacy right-to-left order, the body below it is turned around so its
-    # SPOS side faces up toward the seal.
+    # SPOS side faces up toward the seal. Curved returns are decided and checked
+    # at the predicted first-contact neighborhood.
     if project.schema_version >= 4:
-        panel = orient_toward(panel, nodes, door["direction_to_seal"])
-        body = orient_toward(body, nodes, seated["direction_to_seal"])
+        seal_segments = _boundary_segments(nodes, boundary)
+        panel = orient_toward(
+            panel,
+            nodes,
+            door["direction_to_seal"],
+            seal=seal_segments,
+            role="door",
+            label="door",
+            offset=project.motion.offset,
+            delta=door["delta_mm"],
+        )
+        body = orient_toward(
+            body,
+            nodes,
+            seated["direction_to_seal"],
+            seal=seal_segments,
+            role="body",
+            label="body",
+            offset=project.motion.body.offset,
+            delta=seated["delta_mm"],
+        )
     else:
         panel = orient_for_contact(panel, door["side"])
         body = orient_for_contact(body, seated["side"])
@@ -1135,9 +1542,9 @@ def write_two_step_inp(project, mesh, fixture=None):
         "Abaqus QOL 2D plane stress / implicit dynamic body seating then door closing",
         "** Units: N, mm, s, tonne. RF2 is total reaction for the specified thickness.",
         f"** Initial door clearance on the assembled mesh: {scalar(door['clearance_mm'])} mm; "
-        f"door is {door['side']} the seal.",
+        f"door is {side_phrase(door['side'])}.",
         f"** Initial body clearance on the assembled mesh: {scalar(seated['clearance_mm'])} mm; "
-        f"body is {seated['side']} the seal.",
+        f"body is {side_phrase(seated['side'])}.",
         f"** Step 1 body motion: {scalar(body_motion['stroke'])} mm at "
         f"{scalar(body_motion['angle'])} deg over {scalar(project.motion.body.duration)} s; "
         f"delta [{', '.join(scalar(v) for v in body_motion['delta'])}] mm. Door held.",
@@ -1193,7 +1600,7 @@ def write_two_step_inp(project, mesh, fixture=None):
         lines_local += [
             # Connectivity was ordered above so SPOS faces the seal; the test
             # suite recomputes each normal from this connectivity.
-            f"** {part} is {side} the seal; SPOS faces the seal.",
+            f"** {part} is {side_phrase(side)}; SPOS faces the seal.",
             f"*Surface, type=ELEMENT, name={surface}",
             "PROFILE, SPOS",
         ]
@@ -1223,6 +1630,10 @@ def write_two_step_inp(project, mesh, fixture=None):
         "*Nset, nset=BODY_RP, instance=BODY-1",
         str(body_rp),
     ]
+    if getattr(project.analysis, "door_pressure", False):
+        lines += set_lines(
+            "*Nset, nset=DOOR_PROFILE_NODES, instance=PANEL-1", door_profile_labels(panel)
+        )
     lines += set_lines("*Nset, nset=WSFIX, instance=WS-1", fixed)
     lines += [
         "*Rigid Body, ref node=PANEL_RP, elset=PANEL-1.PROFILE",
@@ -1289,18 +1700,41 @@ def write_two_step_inp(project, mesh, fixture=None):
     return "\n".join(lines + ["*End Step", ""])
 
 
+def door_profile_labels(panel):
+    """Every geometric door-profile node once. The rigid RP is not an element node."""
+    return sorted({node for element in panel for node in element["nodes"]})
+
+
 def output_cards(project, duration=None, references=("PANEL_RP",)):
+    """Field/history output for one step.
+
+    Door-panel contact pressure is requested once per step. When global
+    ``CSTRESS`` is selected the door NSET asks only for ``CFORCE`` so the same
+    pressure identity is never requested twice; otherwise the door NSET asks for
+    ``CFORCE, CSTRESS`` together. That is the pattern whose duplicate and
+    single-request behaviour was measured in the licensed pilots.
+    """
     duration = project.motion.duration if duration is None else duration
     interval = scalar(min(0.02, duration / 20))
     outputs = set(project.analysis.outputs)
-    lines = [f"*Output, field, time interval={interval}"] if outputs else []
-    node_outputs = sorted(outputs.intersection({"U", "RF"}))
+    door = bool(getattr(project.analysis, "door_pressure", False))
+    lines = [f"*Output, field, time interval={interval}"] if outputs or door else []
+    node_outputs = set(outputs.intersection({"U", "RF"}))
+    if door:
+        # The deformed arrow anchor needs door U even if the wider U field is off.
+        node_outputs.add("U")
     if node_outputs:
-        lines += ["*Node Output", ", ".join(node_outputs)]
+        lines += ["*Node Output", ", ".join(sorted(node_outputs))]
     element_outputs = sorted(outputs.intersection({"S", "LE"}))
     if element_outputs:
         lines += ["*Element Output", ", ".join(element_outputs)]
-    if "CSTRESS" in outputs:
+    if door:
+        if "CSTRESS" in outputs:
+            lines += ["*Contact Output", "CSTRESS"]
+            lines += ["*Contact Output, nset=DOOR_PROFILE_NODES", "CFORCE"]
+        else:
+            lines += ["*Contact Output, nset=DOOR_PROFILE_NODES", "CFORCE, CSTRESS"]
+    elif "CSTRESS" in outputs:
         lines += ["*Contact Output", "CSTRESS"]
     lines.append(f"*Output, history, time interval={interval}")
     for reference in references:

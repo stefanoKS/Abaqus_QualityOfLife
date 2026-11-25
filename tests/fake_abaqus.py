@@ -32,6 +32,24 @@ if arguments and arguments[0].lower() == "python":
         (job / "fail-extract-once").unlink()
         print("Manufactured extraction failure")
         raise SystemExit(1)
+    plans = [
+        name
+        for name in (
+            "partial-body-only",
+            "partial-closing",
+            "partial-initial-only",
+            "partial-history-only",
+            "partial-unreadable-last",
+        )
+        if (job / name).exists()
+    ]
+    if plans:
+        sys.path.insert(0, __ROOT__)
+        sys.path.insert(0, __TESTS__)
+        from manufactured_results import write
+
+        write(job, plans[0])
+        raise SystemExit(0)
     sys.path.insert(0, __ROOT__)
     from packages.engineering.model import Project
     from integrations.abaqus.results import write_playback
@@ -48,6 +66,17 @@ if arguments and arguments[0].lower() == "python":
         notice="MANUFACTURED TEST EVIDENCE - not an Abaqus analysis.",
     )
     raise SystemExit(0)
+
+if (job / "fail-solver-with-odb").exists():
+    (job / "analysis.sta").write_text("THE ANALYSIS HAS NOT BEEN COMPLETED\\n", encoding="ascii")
+    (job / "analysis.odb").write_bytes(b"manufactured partial ODB candidate\\n")
+    if not any((job / name).exists() for name in (
+        "partial-body-only", "partial-closing", "partial-initial-only",
+        "partial-history-only", "partial-unreadable-last",
+    )):
+        (job / "partial-closing").touch()
+    print("Manufactured solver failure with a saved ODB")
+    raise SystemExit(1)
 
 if (job / "fail-solver").exists():
     (job / "analysis.sta").write_text("THE ANALYSIS HAS NOT BEEN COMPLETED\\n", encoding="ascii")
@@ -71,7 +100,12 @@ def install(tmp_path):
     directory = Path(tmp_path) / "fake-abaqus"
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "fake_abaqus.py"
-    script.write_text(SCRIPT.replace("__ROOT__", repr(str(ROOT))), encoding="utf-8")
+    script.write_text(
+        SCRIPT.replace("__ROOT__", repr(str(ROOT))).replace(
+            "__TESTS__", repr(str(Path(__file__).resolve().parent))
+        ),
+        encoding="utf-8",
+    )
     python = Path(sys.executable)
     if os.name == "nt":
         launcher = directory / "abq2024.cmd"

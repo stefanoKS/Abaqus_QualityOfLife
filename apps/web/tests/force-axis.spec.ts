@@ -128,13 +128,16 @@ test('the trace, direction readout and export switch with the selected step', as
 
   const download = async () => {
     const pending = page.waitForEvent('download')
-    await page.getByRole('button', { name: 'Export displayed curve (2 rows)' }).click()
+    await page.getByRole('button', { name: 'Export load CSV (2 rows)' }).click()
     return readFileSync((await (await pending).path())!, 'utf8')
   }
   const bodyCsv = await download()
   const bodyRows = bodyCsv.trim().split(/\r?\n/)
   expect(bodyRows).toHaveLength(2)
-  expect(bodyRows[1]).toBe('4,-3')
+  // The body step uses its own history: stroke 0..2 mm at the default 1 mm
+  // interval, and its own signed projected force. Column A is the label.
+  expect(bodyRows[0]).toBe('stroke(mm),0,1,2')
+  expect(bodyRows[1]).toBe('F (N/100mm),4,0.5,-3')
 
   // Reverse Y is a visible display convention; the trace and export mirror but
   // the direction readout does not change.
@@ -142,7 +145,7 @@ test('the trace, direction readout and export switch with the selected step', as
   await expect.poll(trace).toEqual([-4, 3])
   await expect(page.getByTestId('reverse-y-indicator')).toContainText('inverted for display')
   const flippedCsv = await download()
-  expect(flippedCsv.trim().split(/\r?\n/)[1]).toBe('-4,3')
+  expect(flippedCsv.trim().split(/\r?\n/)[1]).toBe('F (N/100mm),-4,-0.5,3')
 
   await step.selectOption('closing')
   await expect.poll(trace).toEqual([-0.5, 7])

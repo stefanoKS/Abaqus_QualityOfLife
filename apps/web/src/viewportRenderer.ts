@@ -6,7 +6,7 @@ import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor'
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper'
 import vtkPolyData from '@kitware/vtk.js/Common/DataModel/PolyData'
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray'
-import { colorAt, type Picked, type Scene, type Surface, type ViewportCut } from './viewportModel'
+import { colorAt, type Picked, type PressureArrows, type Scene, type Surface, type ViewportCut } from './viewportModel'
 import {
   outline,
   pickAt,
@@ -189,6 +189,7 @@ export class ViewportRenderer {
   private box: { x0: number; y0: number; x1: number; y1: number } | null = null
   private guide: number[][] = []
   private cut: ViewportCut | null = null
+  private pressure: PressureArrows | null = null
   private originPoint: ScreenPoint = [0, 0, 0]
   private dimension: '2D' | '3D' = '2D'
   private ctx: CanvasRenderingContext2D
@@ -248,6 +249,44 @@ export class ViewportRenderer {
     // Observable actor count for regression tests: a leaked or collided actor
     // shows up here before it can be seen as a wrong pick.
     this.host.dataset.actors = String(next.length)
+    // The actual colour the renderer assigns to a sample near half the shared
+    // scale. A factor change must move this colour while the reference stays
+    // the unscaled run-wide maximum.
+    const contoured = scene.surfaces.filter(
+      (surface) => surface.contour && (surface.magnitudes?.length ?? 0) > 0
+    )
+    if (contoured.length) {
+      const values = contoured
+        .flatMap((surface) => surface.magnitudes ?? [])
+        .filter(
+          (value): value is number => typeof value === 'number' && Number.isFinite(value)
+        )
+      const maximum = scene.range ?? 0
+      const minimum = scene.min ?? 0
+      if (values.length && maximum > minimum) {
+        const middle = (maximum + minimum) / 2
+        const sample = values.reduce(
+          (best, value) =>
+            Math.abs(value - middle) < Math.abs(best - middle) ? value : best,
+          values[0]
+        )
+        const ratio = Math.min(1, Math.max(0, (sample - minimum) / (maximum - minimum)))
+        this.host.dataset.fieldMagnitudes = JSON.stringify(values)
+        this.host.dataset.fieldSample = JSON.stringify({
+          value: sample,
+          maximum,
+          minimum,
+          ratio,
+          color: colorAt(ratio),
+        })
+      } else {
+        this.host.dataset.fieldMagnitudes = ''
+        this.host.dataset.fieldSample = ''
+      }
+    } else {
+      this.host.dataset.fieldMagnitudes = ''
+      this.host.dataset.fieldSample = ''
+    }
     const recorded = scene.extent
     this.bounds =
       Array.isArray(recorded) &&
@@ -424,6 +463,21 @@ export class ViewportRenderer {
     this.cut = cut
     this.drawOverlay()
   }
+  /**
+   * Door-panel pressure glyphs. They are an overlay: never pick targets, never
+   * part of the scene or of a saved measurement.
+   */
+  setPressureArrows(arrows: PressureArrows | null) {
+    this.pressure = arrows
+    this.host.dataset.pressureProfile = arrows?.profileId ?? ''
+    this.host.dataset.pressureArrows = String(arrows?.arrows.length ?? 0)
+    this.host.dataset.pressureScale = arrows ? String(arrows.pixelsPerKPa) : ''
+    this.host.dataset.pressureSelected =
+      arrows && arrows.selected !== null && arrows.selected !== undefined
+        ? String(arrows.selected)
+        : ''
+    this.drawOverlay()
+  }
   /** Model XY under a CSS-pixel point using the affine orthographic projection. */
   modelAt(xCss: number, yCss: number): [number, number] {
     if (this.axes.length < 2) return [0, 0]
@@ -459,6 +513,19 @@ export class ViewportRenderer {
     const ctx = this.ctx
     ctx.setTransform(this.ratio, 0, 0, this.ratio, 0, 0)
     ctx.clearRect(0, 0, this.width, this.height)
+    // Expose the camera's affine basis so an independent check can project model
+    // points itself instead of trusting the arrow code.
+    if (this.axes.length >= 2) {
+      this.host.dataset.projection = JSON.stringify({
+        origin: this.originPoint,
+        ax: this.axes[0],
+        ay: this.axes[1],
+        dpr: this.ratio,
+        width: this.width,
+        height: this.height,
+        modelPerPixel: this.modelPerPixel(),
+      })
+    }
     if (this.selected) outline(ctx, this.projected, this.selected, false)
     if (
       this.hovered &&
@@ -470,6 +537,7 @@ export class ViewportRenderer {
     this.drawBox(ctx)
     this.drawGuide(ctx)
     this.drawCut(ctx)
+    this.drawPressure(ctx)
     if (!this.axes.length || !this.scene.surfaces.length) return
     const scale =
       this.height / (2 * this.renderer.getActiveCamera().getParallelScale())
@@ -673,6 +741,179 @@ export class ViewportRenderer {
     }
     ctx.restore()
   }
+  private drawPressure(ctx: CanvasRenderingContext2D) {
+    const state = this.pressure
+    if (!state || !this.axes.length) {
+      this.host.dataset.pressureAnchor = ''
+      this.host.dataset.pressureDirection = ''
+      this.host.dataset.pressureNode = ''
+      this.host.dataset.pressureKpa = ''
+      this.host.dataset.pressureGeometry = ''
+      this.host.dataset.pressureScale = ''
+      return
+    }
+    this.host.dataset.pressureAnchor = ''
+    this.host.dataset.pressureDirection = ''
+    this.host.dataset.pressureNode = ''
+    this.host.dataset.pressureKpa = ''
+    this.host.dataset.pressureGeometry = ''
+    ctx.save()
+    ctx.lineCap = 'round'
+    ctx.lineJoin = 'round'
+    const anchor = (x: number, y: number) => this.modelToScreen(x, y)
+    // Automatic calibration: a stable screen reference derived from the
+    // viewport itself. It is independent of zoom, pan, DPR and the multiplier
+    // denominator. Resize recomputes it from the current CSS viewport.
+    const autoPx = Math.min(80, Math.max(24, 0.1 * Math.min(this.width, this.height)))
+    const referenceKpa = state.maximumKpa > 0 ? state.maximumKpa : 0
+    const autoPerKpa = referenceKpa > 0 ? autoPx / referenceKpa : 0
+    this.host.dataset.pressureMode = state.mode
+    this.host.dataset.pressureAutoPx = String(autoPx)
+    this.host.dataset.pressureRefKpa = String(referenceKpa)
+    this.host.dataset.pressureScale = String(
+      state.mode === 'manual' ? state.manualMmPer10Kpa : autoPerKpa
+    )
+    const origin = state.origin ? anchor(state.origin[0], state.origin[1]) : null
+    if (origin) {
+      // Station zero and the increasing-distance cue. The axis is persisted by
+      // extraction; this only marks where it starts and which way it runs.
+      const hint = state.directionHint
+      ctx.strokeStyle = '#10233f'
+      ctx.fillStyle = '#ffffff'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(origin[0], origin[1], 3.6, 0, 2 * Math.PI)
+      ctx.fill()
+      ctx.stroke()
+      if (hint) {
+        const dsx = this.axes[0][0] * hint[0] + this.axes[1][0] * hint[1]
+        const dsy = this.axes[0][1] * hint[0] + this.axes[1][1] * hint[1]
+        const norm = Math.hypot(dsx, dsy)
+        if (norm > 1e-9) {
+          const ux = dsx / norm
+          const uy = dsy / norm
+          const hx = origin[0] + ux * 26
+          const hy = origin[1] + uy * 26
+          ctx.strokeStyle = '#10233f'
+          ctx.lineWidth = 1.6
+          ctx.beginPath()
+          ctx.moveTo(origin[0], origin[1])
+          ctx.lineTo(hx, hy)
+          ctx.stroke()
+          ctx.fillStyle = '#10233f'
+          ctx.beginPath()
+          ctx.moveTo(hx, hy)
+          ctx.lineTo(hx - ux * 7 + uy * 4, hy - uy * 7 - ux * 4)
+          ctx.lineTo(hx - ux * 7 - uy * 4, hy - uy * 7 + ux * 4)
+          ctx.closePath()
+          ctx.fill()
+        }
+      }
+      ctx.fillStyle = '#10233f'
+      ctx.font = '600 11px system-ui, sans-serif'
+      ctx.fillText('0', origin[0] + 6, origin[1] - 6)
+    }
+    let reported = false
+    let reportedSelected = false
+    for (let index = 0; index < state.arrows.length; index++) {
+      const arrow = state.arrows[index]
+      const pressure = Number(arrow.pressureKpa)
+      if (!Number.isFinite(pressure) || Math.abs(pressure) <= 0) continue
+      const direction = arrow.direction
+      if (!direction || !Number.isFinite(direction[0]) || !Number.isFinite(direction[1])) continue
+      const sx = this.axes[0][0] * direction[0] + this.axes[1][0] * direction[1]
+      const sy = this.axes[0][1] * direction[0] + this.axes[1][1] * direction[1]
+      const screenLength = Math.hypot(sx, sy)
+      if (!Number.isFinite(screenLength) || screenLength < 1e-9) continue
+      const start = anchor(arrow.anchor[0], arrow.anchor[1])
+      let tipX: number
+      let tipY: number
+      let lengthPx: number
+      let lengthMm: number
+      if (state.mode === 'manual') {
+        // Model-space calibration: the tip is the measured tail plus the
+        // normalized direction times the physical length, then both endpoints
+        // are projected with the current camera.
+        lengthMm = (Math.abs(pressure) * state.manualMmPer10Kpa) / 10
+        const tip = anchor(
+          arrow.anchor[0] + direction[0] * lengthMm,
+          arrow.anchor[1] + direction[1] * lengthMm,
+        )
+        tipX = tip[0]
+        tipY = tip[1]
+        lengthPx = Math.hypot(tipX - start[0], tipY - start[1])
+      } else {
+        lengthPx = autoPerKpa * Math.abs(pressure)
+        tipX = start[0] + (sx / screenLength) * lengthPx
+        tipY = start[1] + (sy / screenLength) * lengthPx
+        // Reported model length at the current zoom; the screen calibration is
+        // still what the glyph uses.
+        lengthMm = lengthPx * this.modelPerPixel()
+      }
+      if (!Number.isFinite(lengthPx) || lengthPx < 0.8) continue
+      const ux = (tipX - start[0]) / lengthPx
+      const uy = (tipY - start[1]) / lengthPx
+      const selected =
+        state.selected !== null &&
+        state.selected !== undefined &&
+        (arrow.row ?? index) === state.selected
+      const colour = pressure < 0 ? '#b42318' : '#0f6b57'
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = selected ? 5 : 3.6
+      ctx.beginPath()
+      ctx.moveTo(start[0], start[1])
+      ctx.lineTo(tipX, tipY)
+      ctx.stroke()
+      ctx.strokeStyle = colour
+      ctx.lineWidth = selected ? 2.6 : 1.8
+      ctx.beginPath()
+      ctx.moveTo(start[0], start[1])
+      ctx.lineTo(tipX, tipY)
+      ctx.stroke()
+      // A filled head that never extends past a short tail-to-tip span.
+      const head = Math.max(1.5, Math.min(11, 3 + lengthPx * 0.18, lengthPx * 0.6))
+      ctx.fillStyle = colour
+      ctx.beginPath()
+      ctx.moveTo(tipX, tipY)
+      ctx.lineTo(tipX - ux * head + uy * head * 0.45, tipY - uy * head - ux * head * 0.45)
+      ctx.lineTo(tipX - ux * head - uy * head * 0.45, tipY - uy * head + ux * head * 0.45)
+      ctx.closePath()
+      ctx.fill()
+      if ((selected && !reportedSelected) || (!reported && !selected)) {
+        reported = true
+        if (selected) reportedSelected = true
+        const geometry = {
+          node: arrow.node,
+          row: arrow.row ?? index,
+          tail: [start[0], start[1]],
+          tip: [tipX, tipY],
+          lengthPx,
+          lengthMm,
+          pressureKpa: pressure,
+          direction,
+          mode: state.mode,
+          autoReferencePx: autoPx,
+          referenceKpa,
+        }
+        this.host.dataset.pressureGeometry = JSON.stringify(geometry)
+        this.host.dataset.pressureAnchor = `${start[0].toFixed(3)},${start[1].toFixed(3)}`
+        this.host.dataset.pressureDirection = `${direction[0].toFixed(12)},${direction[1].toFixed(12)}`
+        this.host.dataset.pressureNode = String(arrow.node)
+        this.host.dataset.pressureKpa = String(pressure)
+        this.host.dataset.pressureLengthPx = String(lengthPx)
+        this.host.dataset.pressureLengthMm = String(lengthMm)
+      }
+      if (selected) {
+        ctx.strokeStyle = '#e07a12'
+        ctx.lineWidth = 2
+        ctx.beginPath()
+        ctx.arc(start[0], start[1], 5.5, 0, 2 * Math.PI)
+        ctx.stroke()
+      }
+    }
+    ctx.restore()
+  }
+
   private drawFixture(ctx: CanvasRenderingContext2D) {
     if (!this.fixture.size) return
     ctx.save()

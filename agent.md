@@ -1,5 +1,151 @@
 # Abaqus QOL implementation handoff
 
+## Next execution — partial results, pressure arrows and result multiplier · 2026-11-26
+
+Use [the execution command and acceptance gates](docs/partial-results-arrows-multiplier-handoff.txt) for the current request. It covers viewing the last saved frame of a failed one- or two-panel run, viewport arrow visibility and calibration, a right-side multiplier for engineering responses, and the previous audit fixes for contact orientation, readiness and incomplete CSV inputs. The command defines how partial results open, retry and travel in a portable result file.
+
+The [independent audit](.local/evidence/otr-claim-review-c4081e11df79/verification.json) qualifies the A–E claims below. Both OTR drawings prepared and six reference CSVs matched the native data. A positioned door wrote a reversed contact side, a second shape passed readiness then failed deck preparation, and missing stroke or pressure-station coordinates produced invented CSV values. Playback cadence also exceeded the 50 ms budget when tested alone.
+
+For this handoff, Abaqus 2024 Python opened an isolated copy of cancelled job `313893f2` in read-only mode. The last saved Closing frame is **0.840 s**, while the status file reaches **0.855 s**. The [validation record](docs/engineering-validation.md) identifies the frame and native pressure/force sample. The check exercised the ODB reader only. Application implementation, failed-solver verification for the two topologies, browser checks and the regression suite are assigned to the execution agent.
+
+## OTR deck preparation and resampled result exports — delivered · 2026-11-26
+
+Executed the [OTR and resampled export handoff](docs/otr-deck-and-resampled-exports-handoff.md),
+gates A–E. Both original OTR drawings now reach a completed two-step input deck through the normal
+workflow; the curved body profile is preserved and its SPOS side is verified locally at first contact.
+Readiness and the deck writer share typed preparation errors, and the Results deck card shows the
+actual failure/stage/diagnostic instead of calling every non-ready deck a changed fixture. Results
+adds two-row load (default 1.0 mm stroke interval) and door-pressure (default 1.3 mm station interval)
+CSVs, resampled from the immutable result data and portable `.aqresult`.
+
+**Build `c4081e11df79`** (entry `index-BPS29o-Z.js`, API 3). No new licensed solver run. The accepted
+`9efc065a` run and `GENKOU-reference.aqresult` were re-opened read-only for the numerical checks. All
+verification used disposable `SEAL_DATA` roots; the operator instance on 8765 was not contacted.
+
+### Gate status
+
+| Gate | Status | Measured outcome |
+|---|---|---|
+| A — OTR workflow | **PASS** | Both `acceptance_dwg.py` commands exit 0. Deck hashes `1521a89c…` (OTR) / `b57c0c0b…` (OTR_single); WSFIX 10/10 labels; 95 door + 71 body R2D2 identities preserved; both SPOS sides face the seal; one filled section, no cavity section; Body seating + Closing; contact pairs and pressure output present. Browser workflow passes for both drawings with 10 mm upward body / 10 mm downward door. |
+| B — Geometry and diagnosis | **PASS** | 8 topology tests (shuffled/reversed, curved return, vertical/equal-X, legacy straight/sloped, branch/disconnected/closed/repeated/degenerate/self-intersection, worker diagnostic code). Readiness reports the same typed code as the writer. 3 browser deck-status tests prove failed → actual diagnostic + stage + recovery, and “fixed nodes changed” only on a proven hash mismatch, in EN/JA. |
+| C — Load CSV | **PASS (numerical)** | 1 mm: `0,1,2,2.5` / `0,0,8.26096907258,51.3679385185` (N/100mm). 0.65 mm: **5.61357017395** at 1.95 mm. Invalid intervals, multivalued → ordered samples, repeated strokes and F (N/80mm)/F (N/mm)/F (N) labels covered. |
+| D — Pressure CSV | **PASS (numerical)** | 9efc 1.3 mm: **67.179839313 at 11.7**, **125.8664876223 at 13.0**, **52.4925112724 at 14.3**, **0 at 24.0**, endpoint once. GENKOU: **17.0842183789 at 35.1**, **0 at 45.5**, **14.0379243522 at 55.9**, last station once; original-node peak 45.5090888 kPa at 56.405592 mm. All-zero, missing/ambiguous, mismatch, switching and in-flight-frame cases pass. |
+| E — Portability and delivery | **PASS** | Live run and reopened `.aqresult` produce byte-identical CSVs; package, `results.json` and `history.csv` unchanged. Legacy load-only result exports F (N). Python **391 passed, 1 skipped**; 1045 translation keys; encoding 48 files; typecheck/build pass. Full isolated browser suite result is recorded below. |
+
+### Tests actually run
+
+- `.\.venv\Scripts\python.exe -m pytest -q`: **391 passed, 1 skipped** (opt-in Abaqus-Python
+  roundtrip), exit 0. New `tests/test_profile_topology.py` (8).
+- `npm --prefix apps/web run test:i18n`: 1045 keys both languages; `test:encoding`: 48 files;
+  `typecheck` and `build` pass; release `c4081e11df79`.
+- Browser specs: `otr-workflow` (2), `deck-status` (3), `resampled-exports` (7 with the two retained
+  packages and the capture test when configured), `resampled-exports-manufactured` (3), updated
+  `curve`, `gate-d`, `force-axis`; affected `fixture`/`prepare-readiness`/`review`/`run-layout` (19)
+  all pass.
+- Full isolated browser suite on build `c4081e11df79`, port 19964: **186 passed, 4 failed, 10
+  skipped** (200 tests, 22.8 min). The four failures are the known suite-load cases — `gate-f`
+  playback cadence, `motion-preview` body/door, `offset-picking` and the centred `partition` guide.
+  Rerunning the four files together gave 8 passed, 1 skipped and `offset-picking`; `offset-picking`
+  passed alone in 16.1 s. None touches the OTR deck or export work.
+- `scripts/acceptance_dwg.py` for both OTR drawings: exit 0, no solver tokens consumed.
+
+### Outstanding
+
+1. **Solver convergence, numerical sensitivity and physical correlation remain unestablished.** The
+   OTR decks were not submitted to Abaqus; the exported numbers come from retained licensed packages.
+2. **The two original OTR decks use a 10-node mounting foot.** A solver run should confirm that this
+   fixture is sufficient before any contact/force claim.
+3. **3D solving remains deferred** and 2D plane stress is unchanged.
+
+**Next executable slice.** Submit the generated OTR decks as small licensed verification runs (door
+down 10 mm after body up 10 mm), then compare the predicted first-contact strokes (4.8487 mm door /
+8.1912 mm body) with solver contact onset and extract the load/pressure curves through the new
+exports. Record convergence, force magnitude, and any sensitivity to mesh size and stroke before
+claiming physical correlation.
+
+## OTR deck preparation and CSV exports · execution brief · 2026-11-25
+
+Execute the [OTR and resampled export handoff](docs/otr-deck-and-resampled-exports-handoff.md), gates A–E. Both current example DWGs import and mesh. The DECK worker rejects the body's simple curved R2D2 chain because it turns back in X. The retained operator logs show the same exception. The reviewed fixture hash matched the deck job's recorded fixture hash in both isolated reproductions. Correct the geometry check and failed-deck feedback, then deliver labelled two-row load and pressure CSVs at independently adjustable spacings (defaults 1.0 and 1.3 mm). The brief includes the native reproduction commands and measured interpolation targets from the existing licensed run and GENKOU result.
+
+This handoff adds no application changes. Both native Prepare reproductions failed before submission, 55 existing readiness/two-step/pressure tests passed, and no solver was launched for this audit.
+
+## Door-panel contact pressure through Results and portable reopen — delivered · 2026-11-25
+
+Implemented the [door-panel pressure handoff](docs/door-panel-pressure-handoff.md) on the working tree
+after `001d2db`. Build **`24102ca8108b`** (entry `index-Duef0qdY.js`, API 3), release directory
+`apps/web/releases/24102ca8108b`. All verification used disposable `SEAL_DATA` roots, isolated
+servers and ignored local evidence; the operator instance on 8765 was not contacted.
+
+### Gate status
+
+| Gate | Status | Measured outcome |
+|---|---|---|
+| A — Deck and contact identity | **PASS** | 49-node profile → one `DOOR_PROFILE_NODES` NSET equal to unique geometric R2D2 nodes, excluding `PANEL_RP`/seal/body. Global stress on → one global `CSTRESS` + door `CFORCE`; off → door `CFORCE, CSTRESS`. `U` retained. Both two-step steps request door output. Output-only edit left `mesh_compat` unchanged; opt-out/re-opt-in decks changed then returned to the exact original INP SHA-256; original bytes immutable. |
+| B — Numerical reference | **PASS (exact)** | Production extractor vs the independent reader on GENKOU/HK01/HK02 at Step-1 final, Step-2 initial/middle/final: **7,296 station samples** (608 × 12), max difference **0 mm / 0 kPa / 0 N**, null masks and native frames identical. Positive counts 30/35/39. |
+| C — Licensed workflow | **PASS** | Accepted isolated door-only run **`9efc065a-805c-4215-b651-3349f6ebba24`** (2.5 mm / 0.5 s, 26 frames, solver + extraction exit 0/0). INP `58b467ad206c…`, ODB `b0eddc73e5f4…`, index `bf69102fb3b2…`. Node 230, station 13.5 mm, **165.369302 kPa** (native 0.165369302 MPa), CNORMF **(2.56481e-05, 0.08260141) N**, 11 positive nodes; ODB = live Results = reopened `.aqresult` exactly. Body-plus-door run **`25fa7055-7cbe-4b20-9257-f1f5841525b6`** (4.0/2.5 mm, 0.4 s each, 42 frames, exit 0/0): zero door pressure in Body seating, 9 positive stations in Closing, final peak 5.145417 kPa at node 250/station 11.5 mm. A 6.5 mm trial `313893f2-…` was cancelled without a result and is excluded. |
+| D — Arrow and graph | **PASS (browser)** | GENKOU `UPPER_ROOFBARA-1`: 124 stations, 6 positive in **two separated patches**, node 17 at 56.405592 mm / 45.509089 kPa / (0.021603798, 0.014067459) N; direction dot > 0.999; anchor ≤ 2 CSS px; zero frame has zero line/no arrows; delayed fetch and step transition stay aligned; axis titles readable at 1280×720 EN/JA. Licensed playback median 280.8 ms arrows on vs 266.3 ms off, one camera signature. |
+| E — Portability and history | **PASS** | App `.aqresult` `7b6e159754b5…` reopened in an empty root: 26 frames byte-identical, profile axis/units/frame order/history identical, source unchanged. Retained pre-pressure result also reopened unchanged without pressure metadata. |
+| F — Regression and reporting | **PASS** | Python **383 passed, 1 skipped**; translations **990 keys**; encoding 47 files; typecheck pass; release `24102ca8108b`; schema additive only. Browser specs: external GENKOU, existing licensed run, full licensed workflow (53.1 s) and arrows-on/off timing all passed. Full isolated suite result is recorded below. |
+
+### What is now available
+
+- Default-on **Door-panel contact pressure output** in Motion → Analysis settings; it adds door-node
+  `CFORCE` (`CNORMF`) and `CPRESS` once per step plus door `U`; opted out per revision.
+- ODB-derived open-chain station axis (assembled undeformed XY, lexicographic-minimum endpoint),
+  native MPa and display kPa, instance-qualified identities, duplicate/ambiguity handling, and
+  explicit unavailable states.
+- Results **CNORMF** nodal field with signed probe, a **Door contact pressure** graph, profile
+  selector, pressure-arrow toggle and reference scale, and a station readout shared with the
+  deformed glyph anchor.
+- Portable `.aqresult` carries the profile metadata in the index and aligned arrays per frame; older
+  readers still open it and older results/DEMO show unavailable.
+
+### Tests actually run
+
+- `.\.venv\Scripts\python.exe -m pytest -q`: **383 passed, 1 skipped** (opt-in Abaqus-Python
+  roundtrip), exit 0.
+- New `tests/test_door_pressure.py` (17 tests): profiles, orientation, unit conversion, duplicate and
+  ambiguity, identity, deck combinations, two-step, mesh identity and display metadata.
+- `test:i18n` 990 keys both languages; `test:encoding` 47 files; `typecheck` pass; release
+  **`24102ca8108b`**; `scripts/schema.py` regenerated `generated.ts` (only `door_pressure`).
+- Browser: `door-pressure.spec.ts` (external GENKOU) pass; `door-pressure-app.spec.ts` (existing
+  licensed run) pass; `door-pressure-run.spec.ts` (Dashboard → DXF → Prepare → licensed Submit →
+  Results) pass in 53.1 s; `door-pressure-timing.spec.ts` pass.
+- Gate A script `scripts/gate_a_door_deck.py`: one-step and two-step PASS; INP hashes
+  `c2c54ab272f5…` / `d9842ffd2cae…`.
+- Gate B script `scripts/compare_reference_door_pressure.py`: 12 frame reads, exact match.
+- Gate C/E scripts: `reference_extract.py`, `read_app_odb_node.py`, `compare_reopen.py`.
+- Full isolated browser suite on build `24102ca8108b`, port 19930: **171 passed, 4 failed, 8 skipped**
+  (183 tests, 12.5 min). The four failures are the known suite-load cases and all four passed when
+  rerun together on port 19931 in 17.1 s: `gate-a` camera Fit/reset comparison, `materials` library
+  validation, `offset-picking` and the centered `partition` guide. None touches door pressure; the
+  in-suite `gate-f` playback cadence passed this time.
+
+### Outstanding
+
+1. **Numerical sensitivity and physical correlation remain unestablished.** One 24 mm profile, one
+   mesh and one 2.5 mm closing stroke were solved; no refinement study or independent physical
+   measurement exists. Tensile-pressure sign handling is unit-tested only.
+2. **The cancelled 6.5 mm trial** (`313893f2-…`) stopped at step time 0.855 after 1461 increments with
+   no completed result; it must not be cited as solver evidence.
+3. **A general native ODB browser** is still outside the slice; external reference results are read
+   through the explicit instance mapping and packaged result path.
+4. **Suite-load browser failures are known and not feature regressions.** The four full-suite
+   failures above all pass in an isolated rerun on the same build; they remain separate from the
+   door-pressure acceptance.
+
+**Next executable slice.** Run a mesh/stroke refinement pair with the same door-pressure graph and
+compare peak location/pressure and normal-force direction; then obtain independent physical
+measurements and agreed tolerances before any correlation claim. Add a browser regression for the
+multi-profile external case to the default suite using a small licensed-free fixture, and retire the
+temporary opt-in gating once a portable reference fixture is available.
+
+## Next executable slice · door-panel contact pressure · 2026-11-25
+
+Implement the [door-panel pressure handoff](docs/door-panel-pressure-handoff.md), gates A–F. Start the release demonstration in the normal QoL UI with **New Model → Import DXF/DWG**. The engineer's new licensed run must automatically produce door-node CNORMF alongside the existing outputs. Select CNORMF next to von Mises and displacement, inspect its components in N, and plot CPRESS in kPa against distance along the door. Match one node in that run's ODB, live Results and reopened `.aqresult`. The [independent ODB reader](scripts/reference_door_pressure.py) and [validation record](docs/engineering-validation.md#door-panel-contact-pressure-reference-and-keyword-pilots--2026-11-25) give comparison values and tested output settings. Overlapping global and scoped CSTRESS requests produced duplicate pressure samples in the licensed pilot.
+
+The existing deck, two-step and result-field test modules returned **51 passed, 1 skipped**. Product extraction, Results UI, portable reopen and end-to-end API/worker release gates are the next work. The prior file and material findings remain separate.
+
 ## Gates A–C: file ownership, Dashboard/Close and faithful CAE materials · 2026-11-25
 
 Executed the [File ownership, material import and navigation handoff](docs/file-open-materials-navigation-handoff.md).

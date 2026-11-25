@@ -24,6 +24,16 @@ export function AssemblyDiagnostics({
   const roleName = (value: string | undefined) =>
     value === 'body' ? t('assembly.role.body') : t('assembly.role.door')
 
+  /** The measured contact side is not limited to above/below on a curved return. */
+  const sideName = (value: string | undefined) =>
+    value === 'below'
+      ? t('assembly.sideBelow')
+      : value === 'left'
+        ? t('assembly.sideLeft')
+        : value === 'right'
+          ? t('assembly.sideRight')
+          : t('assembly.sideAbove')
+
   function issueText(): string {
     if (!issue) return ''
     const details = assessment?.details ?? {}
@@ -32,17 +42,27 @@ export function AssemblyDiagnostics({
         typeof details.label === 'string' ? details.label : undefined
       ),
       depth: typeof details.depth === 'number' ? formatNumber(details.depth) : '',
-      side: details.side === 'below' ? t('assembly.sideBelow') : t('assembly.sideAbove'),
+      side: sideName(typeof details.side === 'string' ? details.side : undefined),
     })
   }
 
   function motionRows(motion: AssemblyMotion) {
     const hold = motion.hold === true || motion.travel_mm === 0
+    const dx = motion.direction[0] ?? 0
+    const dy = motion.direction[1] ?? 0
     const direction = hold
       ? t('assembly.hold')
-      : (motion.direction[1] ?? 0) < 0
-        ? t('assembly.directionDown')
-        : t('assembly.directionUp')
+      : Math.abs(dy) >= Math.abs(dx)
+        ? dy < 0
+          ? t('assembly.directionDown')
+          : t('assembly.directionUp')
+        : dx < 0
+          ? t('assembly.directionLeft')
+          : t('assembly.directionRight')
+    const angle =
+      !hold && motion.angle_deg !== undefined
+        ? ' · ' + formatNumber(motion.angle_deg) + '°'
+        : ''
     return (
       <dl data-testid={'assembly-' + motion.role}>
         <div>
@@ -51,9 +71,7 @@ export function AssemblyDiagnostics({
         </div>
         <div>
           <dt>{t('assembly.mountedSide')}</dt>
-          <dd>
-            {motion.side === 'below' ? t('assembly.sideBelow') : t('assembly.sideAbove')}
-          </dd>
+          <dd>{sideName(motion.side)}</dd>
         </div>
         <div>
           <dt>{t('assembly.offset')}</dt>
@@ -63,6 +81,7 @@ export function AssemblyDiagnostics({
           <dt>{t('assembly.travel')}</dt>
           <dd>
             {formatNumber(motion.travel_mm)} mm · {direction}
+            {angle}
           </dd>
         </div>
         <div>
