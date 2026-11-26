@@ -92,6 +92,21 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
         kind = entity.get("type", "")
         handle = entity.get("handle", "")
         layer = entity.get("layer", "") or "0"
+        if entity.get("transformError"):
+            # The helper reports a typed reason when an entity cannot be placed
+            # as planar WCS geometry (for example a tilted extrusion). Never
+            # project or silently drop such a curve.
+            skipped.append(
+                {
+                    "handle": handle,
+                    "reason": entity["transformError"],
+                    "detail": "the source extrusion is not parallel to the world Z axis",
+                }
+            )
+            warnings.append(
+                f"{kind} {handle}: {entity['transformError']}; the entity was not imported."
+            )
+            continue
         if kind == "LINE":
             builder.edge(
                 point(entity["start"], f"Line {handle}"),
@@ -102,14 +117,27 @@ def import_inventory(inventory, name, units="N-mm-s-tonne", digest=""):
                 layer=layer,
             )
         elif kind == "ARC":
-            sweep = (entity["endAngle"] - entity["startAngle"]) % math.tau
-            if sweep <= 1e-9:
+            center = point(entity["center"], f"Arc {handle} center")
+            radius = length(entity["radius"], f"Arc {handle} radius")
+            # The native helper emits the equivalent planar WCS arc: center and
+            # both endpoints already transformed with the arbitrary-axis basis,
+            # with a signed sweep that is negative when the extrusion reflects
+            # the source plane. Legacy inventories without ``sweep`` keep the
+            # OCS angle rule so saved/downloaded reports remain readable.
+            sweep = entity.get("sweep")
+            if sweep is None:
+                sweep = (entity["endAngle"] - entity["startAngle"]) % math.tau
+            sweep = float(sweep)
+            if abs(sweep) <= 1e-9:
                 skipped.append({"handle": handle, "reason": "zero-sweep arc"})
                 continue
-            center = point(entity["center"], f"Arc {handle} center")
-            parts, step = _arc_parts(
-                center, length(entity["radius"], f"Arc {handle} radius"), entity["startAngle"], sweep
-            )
+            if entity.get("start") and entity.get("center"):
+                start = math.atan2(
+                    entity["start"][1] - center[1], entity["start"][0] - center[0]
+                )
+            else:
+                start = entity["startAngle"]
+            parts, step = _arc_parts(center, radius, start, sweep)
             for a, b in zip(parts, parts[1:]):
                 builder.edge(
                     a,

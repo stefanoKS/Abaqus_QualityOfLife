@@ -1495,6 +1495,11 @@ export default function Workspace({ initial, locked, notify }: Props) {
   // One action-specific decision from the saved revision. Deck state belongs to
   // Submit; it never disables Prepare.
   const readinessMismatch = !readiness || readiness.revision !== rev.id
+  // The readiness response decides whether the next-action banner is mounted, so
+  // the canvas height is not final until it arrives for this revision. Viewport
+  // tests wait for this flag before recording a camera or projecting a pick.
+  const readinessSettled =
+    !readinessLoading && !readinessError && !!readiness && readiness.revision === rev.id
   const prepareIssue = readiness?.setup_issues?.[0] ?? null
   const submitIssue = readiness?.submit_issues?.[0] ?? null
   function issueText(issue: { code: string; stage: string; params: Record<string, string | number> }) {
@@ -1859,7 +1864,10 @@ export default function Workspace({ initial, locked, notify }: Props) {
               </button>
             )}
           </div>
-          <div className="viewport-wrap">
+          <div
+            className="viewport-wrap"
+            data-readiness-settled={readinessSettled ? 'true' : 'false'}
+          >
             <Viewport
               dimension={p.dimension}
               display={display}

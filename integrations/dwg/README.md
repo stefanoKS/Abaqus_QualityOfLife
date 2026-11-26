@@ -1,4 +1,4 @@
-﻿# Native DWG reader
+# Native DWG reader
 
 `bin/dwg-inventory.exe` is an application-owned helper linked against
 [ACadSharp](https://github.com/DomCR/ACadSharp) 3.8.35 (MIT, `bin/ACadSharp.dll`). It decodes DWG
@@ -13,4 +13,16 @@ bytes directly and prints a model-space inventory as JSON on stdout.
   Failures still print `{"error": {"code": ..., "message": ...}}`.
 - Provenance: the helper reports its own name/version and the SHA-256 of the bytes it read, so an
   import can be traced to an exact drawing revision.
+- Coordinates: **this helper emits world coordinates (WCS)** for `LINE`, `ARC`, `CIRCLE` and
+  `LWPOLYLINE`. It applies the entity's object coordinate system (OCS) exactly once, using the
+  ACadSharp/CSMath arbitrary-axis basis derived from the native extrusion normal, before block
+  insertion transforms. `LINE` endpoints are already WCS. `ARC` reports the WCS centre, radius,
+  endpoints, interior midpoint and a **signed** sweep (negative when the extrusion reflects the
+  source plane); `LWPOLYLINE` reports WCS vertices and a bulge sign corrected for reflection.
+  A non-planar extrusion (normal not parallel to WCS Z) is reported as
+  `transformError: "unsupported-nonplanar"` instead of being projected, and the Python importer
+  records that typed reason. Legacy inventories without `sweep` are still read with the OCS angle
+  rule.
+- Primitive `sweep` is serialized at full double precision so an exact 90-degree arc is not
+  rounded just above one quarter-turn and split twice.
 - Licence: ACadSharp is MIT; keep `ACadSharp.dll` unmodified and retain this notice when redistributing.

@@ -12,7 +12,7 @@ import {
   ScanLine,
   Terminal,
 } from 'lucide-react'
-import { artifact, elapsed, err, go, request, type Job, type Revision } from './api'
+import { artifact, displayMetadata, elapsed, err, go, request, type Job, type Revision } from './api'
 import { Badge, JobActions } from './Dashboard'
 import Viewport from './Viewport'
 import type { Picked, ResultFrame, ResultInstance } from './viewportModel'
@@ -173,6 +173,8 @@ interface DoorPressureIndex {
 interface DoorProfileFrame {
   supported?: boolean
   reason?: string | null
+  /** Instance that owns these node labels; absent on legacy frames. */
+  instance?: string | null
   labels?: number[]
   pressure_mpa?: (number | null)[]
   pressure_kpa?: (number | null)[]
@@ -366,7 +368,8 @@ export function RunView({
   const { t, formatDate } = useI18n()
   const [job, setJob] = useState<Job | null>(null),
     [tick, refresh] = useState(0),
-    [index, setIndex] = useState<Index | null>(null)
+    [index, setIndex] = useState<Index | null>(null),
+    [indexGeneration, setIndexGeneration] = useState(-1)
   const [n, setN] = useState(0),
     [frame, setFrame] = useState<Frame | null>(null),
     [play, playing] = useState(false)
@@ -440,6 +443,15 @@ export function RunView({
     summary?: Record<string, unknown>
     generation?: number
   }
+  const resultGeneration = Number(resultInfo.generation || 0)
+  const resultGenerationRef = useRef(resultGeneration)
+  resultGenerationRef.current = resultGeneration
+  const artifactUrl = (name: string) =>
+    artifact(
+      id,
+      name,
+      /^(results\.json|history\.csv|frame-\d+\.json)$/.test(name) ? resultGeneration : 0,
+    )
   const resultSummary = resultInfo.summary ?? {}
   const resultOpen = !!job && (job.status === 'Completed' || resultInfo.available === true)
   const resultPartial = resultOpen && resultInfo.state === 'partial'
@@ -480,8 +492,11 @@ export function RunView({
   useEffect(() => {
     if (!resultView || !resultOpen) return
     const ac = new AbortController()
-    request<Index>(artifact(id, 'results.json'), 'GET', undefined, ac.signal)
-      .then(setIndex)
+    request<Index>(artifact(id, 'results.json', resultGeneration), 'GET', undefined, ac.signal)
+      .then((payload) => {
+        setIndex(payload)
+        setIndexGeneration(resultGeneration)
+      })
       .catch((e) => {
         if (!ac.signal.aborted) notify(err(e))
       })
@@ -492,7 +507,7 @@ export function RunView({
   useEffect(() => {
     if (!resultView || !resultOpen) return
     const ac = new AbortController()
-    request<DisplayMeta>('/api/jobs/' + id + '/display-metadata', 'GET', undefined, ac.signal)
+    request<DisplayMeta>(displayMetadata(id, resultGeneration), 'GET', undefined, ac.signal)
       .then(setDisplayMeta)
       .catch((e) => {
         // A missing derived metadata must not hide the geometry; the viewport
@@ -535,41 +550,48 @@ export function RunView({
   const CADENCE_MS = 220
   const loadFrame = useCallback(
     (file: string): Promise<Frame> => {
-      const cached = frameCache.current.get(file)
+      // The cache key and URL carry the generation: a retry can never serve a
+      // frame from the previous generation under the same file name.
+      const gen = resultGenerationRef.current
+      const key = gen + ':' + file
+      const cached = frameCache.current.get(key)
       if (cached) {
         // Refresh LRU position: replaying a nearby frame stays cheap.
-        frameCache.current.delete(file)
-        frameCache.current.set(file, cached)
+        frameCache.current.delete(key)
+        frameCache.current.set(key, cached)
         return Promise.resolve(cached)
       }
-      const queued = inflight.current.get(file)
+      const queued = inflight.current.get(key)
       if (queued) return queued
-      const load = request<Frame>(artifact(id, file), 'GET')
+      const load = request<Frame>(artifact(id, file, gen), 'GET')
         .then((loaded) => {
-          frameCache.current.set(file, loaded)
-          while (frameCache.current.size > CACHE_LIMIT) {
-            const oldest = frameCache.current.keys().next().value
-            if (!oldest) break
-            frameCache.current.delete(oldest)
+          // Discard an out-of-order completion from a superseded generation.
+          if (gen === resultGenerationRef.current) {
+            frameCache.current.set(key, loaded)
+            while (frameCache.current.size > CACHE_LIMIT) {
+              const oldest = frameCache.current.keys().next().value
+              if (!oldest) break
+              frameCache.current.delete(oldest)
+            }
           }
-          inflight.current.delete(file)
+          inflight.current.delete(key)
           return loaded
         })
         .catch((error) => {
-          inflight.current.delete(file)
+          inflight.current.delete(key)
           throw error
         })
-      inflight.current.set(file, load)
+      inflight.current.set(key, load)
       return load
     },
     [id],
   )
   useEffect(() => {
-    if (!index) return
+    if (!index || indexGeneration !== resultGeneration) return
     const target = index.frames[n]
     if (!target) return
     const sequence = ++frameRequest.current
-    const cached = frameCache.current.get(target.file)
+    const cached = frameCache.current.get(resultGeneration + ':' + target.file)
     if (cached) {
       setFrame(cached)
       setDisplayedFrame(n)
@@ -595,12 +617,12 @@ export function RunView({
         deadline.current = 0
         notify(err(error))
       })
-  }, [index, n, loadFrame, notify])
+  }, [index, n, loadFrame, notify, resultGeneration, indexGeneration])
   // Bounded read-ahead: upcoming frames (including the loop boundary) are
   // fetched while the current one is displayed. Requests are deduplicated and
   // the cache never exceeds its limit, so scrubbing cannot runaway.
   useEffect(() => {
-    if (!play || !index || displayedFrame === null) return
+    if (!play || !index || indexGeneration !== resultGeneration || displayedFrame === null) return
     const total = index.frames.length
     if (total <= 1) return
     for (let step = 1; step <= READ_AHEAD; step++) {
@@ -610,7 +632,7 @@ export function RunView({
         // Prefetch failures are silent; the request on demand reports them.
       })
     }
-  }, [play, index, displayedFrame, loadFrame])
+  }, [play, index, displayedFrame, loadFrame, indexGeneration, resultGeneration])
   // A new run or a deliberate seek restarts the cadence cleanly.
   useEffect(() => {
     generation.current += 1
@@ -672,12 +694,33 @@ export function RunView({
   useEffect(() => {
     frameRestored.current = false
     curveRestored.current = false
-  }, [id])
+  }, [id, resultGeneration])
+  // A retry publishes a new generation: discard every cached frame and any
+  // selected point so nothing from the previous generation is shown under the
+  // new index. Display preferences (multiplier, arrows, ranges) stay as set.
+  const seenGeneration = useRef(resultGeneration)
+  useEffect(() => {
+    if (seenGeneration.current === resultGeneration) return
+    seenGeneration.current = resultGeneration
+    frameCache.current.clear()
+    inflight.current.clear()
+    frameRequest.current += 1
+    setFrame(null)
+    setDisplayedFrame(null)
+    setPendingFrame(null)
+    setFrameError(null)
+    setDisplayMeta(null)
+    setIndex(null)
+    setIndexGeneration(-1)
+    select(null)
+    setPressureSelected(null)
+    setPressureHover(null)
+  }, [resultGeneration])
   // A partial result lands paused on its last readable saved frame. A completed
   // result keeps its established door-closing opening. Either choice survives
   // Diagnostics, delayed requests and polling refreshes for this result.
   useEffect(() => {
-    if (!index || frameRestored.current) return
+    if (!index || indexGeneration !== resultGeneration || frameRestored.current) return
     frameRestored.current = true
     try {
       const saved = window.sessionStorage.getItem('aqol.frame.' + id)
@@ -703,7 +746,7 @@ export function RunView({
         (frame.step_id ? frame.step_id === closingStepId : frame.step === closingStepName),
     )
     setN(Math.max(0, first))
-  }, [index, closingStepId, closingStepName, id])
+  }, [index, closingStepId, closingStepName, id, indexGeneration, resultGeneration])
   useEffect(() => {
     if (!index) return
     try {
@@ -717,7 +760,7 @@ export function RunView({
     ? index.steps
     : (index?.closing?.steps ?? [])
   useEffect(() => {
-    if (!index || curveRestored.current) return
+    if (!index || indexGeneration !== resultGeneration || curveRestored.current) return
     curveRestored.current = true
     try {
       const saved = window.sessionStorage.getItem('aqol.step.' + id)
@@ -727,6 +770,21 @@ export function RunView({
       }
     } catch {
       // Ignore denied storage.
+    }
+    // A history-only result has no frame cursor. Open the latest step that
+    // actually carries measured history; never borrow the planned Closing step.
+    if (!index.frames.length) {
+      const rows = index.history ?? []
+      const last = rows[rows.length - 1]
+      const entry = last
+        ? stepOptions.find(
+            (step) => (step.id ?? step.name) === (last.step_id ?? last.step),
+          )
+        : undefined
+      if (entry) {
+        setCurveStep(entry.id ?? entry.name)
+        return
+      }
     }
     // A partial result opens on the step that owns the displayed last frame; a
     // planned step that never ran is not selected as if it had data.
@@ -742,7 +800,7 @@ export function RunView({
     }
     const preferred = stepOptions.find((step) => step.role === 'door') ?? stepOptions[stepOptions.length - 1]
     setCurveStep(preferred ? (preferred.id ?? preferred.name) : null)
-  }, [index, id, stepOptions])
+  }, [index, id, stepOptions, indexGeneration, resultGeneration])
   useEffect(() => {
     if (!curveStep) return
     try {
@@ -1077,6 +1135,49 @@ export function RunView({
   const pressureData = pressureEntry
     ? (pressureFrame?.profiles?.[pressureEntry.id] ?? null)
     : null
+  // Native sample order is not necessarily the profile station order. Map every
+  // consumer (chart, arrows, probe, CSV) through one identity join; a clean
+  // permutation is reversible, while duplicates, unknown labels or a wrong
+  // instance suppress the spatial values instead of shifting them.
+  const pressureMapping = useMemo(() => {
+    if (!pressureEntry || !pressureData) {
+      return { ok: false as const, reason: 'profile_missing', positions: [] as number[] }
+    }
+    if (pressureData.instance && pressureData.instance !== pressureEntry.instance) {
+      return { ok: false as const, reason: 'wrong_instance', positions: [] as number[] }
+    }
+    const profileLabels = pressureEntry.labels ?? []
+    const labels = pressureData.labels
+    if (!Array.isArray(labels)) {
+      return { ok: false as const, reason: 'labels_missing', positions: [] as number[] }
+    }
+    if (labels.length !== profileLabels.length) {
+      return { ok: false as const, reason: 'label_count_mismatch', positions: [] as number[] }
+    }
+    const positions = new Map<number, number>()
+    for (const [index, label] of labels.entries()) {
+      const key = Number(label)
+      if (!Number.isFinite(key) || positions.has(key)) {
+        return { ok: false as const, reason: 'duplicate_node', positions: [] as number[] }
+      }
+      positions.set(key, index)
+    }
+    const mapped = profileLabels.map((label) => positions.get(Number(label)))
+    if (mapped.some((position) => position === undefined)) {
+      return { ok: false as const, reason: 'unknown_node', positions: [] as number[] }
+    }
+    const arrays = [
+      pressureData.pressure_kpa,
+      pressureData.pressure_mpa,
+      pressureData.cnormf_n,
+    ]
+    if (arrays.some((values) => Array.isArray(values) && values.length !== labels.length)) {
+      return { ok: false as const, reason: 'array_length_mismatch', positions: [] as number[] }
+    }
+    return { ok: true as const, reason: '', positions: mapped as number[] }
+  }, [pressureEntry, pressureData])
+  const pressureAt = (position: number) =>
+    pressureMapping.ok ? pressureMapping.positions[position] : undefined
   const displacementByLabel = useMemo(() => {
     const rows = pressureEntry ? (frame?.displacements?.[pressureEntry.instance] ?? []) : []
     return new Map(rows.map((row) => [row[0], row.slice(1)]))
@@ -1087,15 +1188,24 @@ export function RunView({
     return (pressureEntry.labels ?? []).map((label, position) => {
       const xy = pressureEntry.points_mm?.[position] ?? null
       const u = displacementByLabel.get(label)
+      // A deformed arrow needs an identifiable measured displacement for THIS
+      // node. Falling back to zero would draw the undeformed anchor as if it
+      // were deformed, so the anchor is withheld instead.
       const anchor = xy
-        ? ([
-            xy[0] + (u?.[0] ?? 0) * scale,
-            xy[1] + (u?.[1] ?? 0) * scale,
-          ] as [number, number])
+        ? deformed && !u
+          ? null
+          : ([
+              xy[0] + (u?.[0] ?? 0) * scale,
+              xy[1] + (u?.[1] ?? 0) * scale,
+            ] as [number, number])
         : null
-      const rawPressure = pressureData?.pressure_kpa?.[position] ?? null
-      const native = pressureData?.pressure_mpa?.[position] ?? null
-      const rawForce = pressureData?.cnormf_n?.[position] ?? null
+      const source = pressureAt(position)
+      const rawPressure =
+        source === undefined ? null : (pressureData?.pressure_kpa?.[source] ?? null)
+      const native =
+        source === undefined ? null : (pressureData?.pressure_mpa?.[source] ?? null)
+      const rawForce =
+        source === undefined ? null : (pressureData?.cnormf_n?.[source] ?? null)
       // The display factor is applied exactly once to the engineering response;
       // the recorded native values stay available for the readout.
       const force =
@@ -1145,10 +1255,27 @@ export function RunView({
     Array.isArray(pressureEntry.stations_mm) &&
     pressureEntry.stations_mm.length === pressureEntry.labels.length &&
     pressureEntry.stations_mm.every(
-      (value) => typeof value === 'number' && Number.isFinite(value),
+      (value, index, values) =>
+        typeof value === 'number' &&
+        Number.isFinite(value) &&
+        (index === 0 || value >= values[index - 1]),
     )
+  const pressurePointsOk =
+    !!pressureEntry &&
+    (!pressureEntry.points_mm ||
+      (pressureEntry.points_mm.length === pressureEntry.labels.length &&
+        pressureEntry.points_mm.every(
+          (point) =>
+            Array.isArray(point) &&
+            point.length >= 2 &&
+            point.slice(0, 2).every((value) => Number.isFinite(value)),
+        )))
   const pressureArrows = useMemo(() => {
     if (!pressureEntry) return null
+    // Spatial arrows need a valid station axis and finite profile anchors; an
+    // invalid order or a short point list suppresses the glyphs rather than
+    // drawing a misleading direction.
+    if (!pressureStationsOk || !pressurePointsOk) return null
     const arrows = pressureRows.flatMap((row, rowIndex) =>
       row.anchor && row.direction && row.pressure !== null && Math.abs(row.pressure) > 0
         ? [
@@ -1194,6 +1321,8 @@ export function RunView({
     manualMmValue,
     pressureHover,
     pressureSelected,
+    pressureStationsOk,
+    pressurePointsOk,
   ])
   const pressureStation = pressureHover ?? pressureSelected
   const pressureFocus =
@@ -1209,7 +1338,9 @@ export function RunView({
           ? ('frame_missing' as const)
           : pressureData?.supported === false
             ? (pressureData.reason ?? 'no_profile')
-            : pressureData?.availability?.pressure === 'pressure_field_missing'
+            : !pressureMapping.ok
+              ? (null as string | null)
+              : pressureData?.availability?.pressure === 'pressure_field_missing'
               ? ('pressure_field_missing' as const)
               : pressureData?.availability?.pressure === 'pressure_not_reported_for_instance'
                 ? ('pressure_not_reported_for_instance' as const)
@@ -1222,12 +1353,9 @@ export function RunView({
   // missing array is an explanatory state, never a silent substitution.
   const pressureIdentityOk =
     pressureStationsOk &&
+    pressureMapping.ok &&
     !!pressureData &&
     !!pressureEntry &&
-    Array.isArray(pressureData.labels) &&
-    pressureData.labels.length === pressureEntry.labels.length &&
-    pressureData.labels.every((label, index) => label === pressureEntry.labels[index]) &&
-    (pressureData.pressure_kpa?.length ?? 0) === pressureEntry.labels.length &&
     pressureRows.length === pressureEntry.labels.length
   const pressureSamples = useMemo<Sample[]>(
     () =>
@@ -1429,6 +1557,10 @@ export function RunView({
     download(filename, twoRowCsv('door station(mm)', pressureExportLabel, pressureExportPoints))
   }
   if (!job) return <main className="page">{t('run.opening')}</main>
+  // A history-only or entirely empty generation has no playable frame. Playback,
+  // scrub, probe and field-only controls are not offered at all; the CLD curve
+  // and its exports remain available from the measured history.
+  const hasFrames = (index?.frames.length ?? 0) > 0
   const disabled = index?.unavailable ?? []
   const displacementAvailable = !!frame && !!index && !disabled.includes('U')
   const stressUnavailable = !stressAvailable
@@ -1578,7 +1710,15 @@ export function RunView({
       </div>
       {resultPartial && (
         <div className="partial-notice" data-testid="partial-notice" data-state="partial">
-          <strong>{t('run.partialTitle')}</strong>
+          <strong>
+            {t('run.partialTitle', {
+              outcome: labelFrom(
+                t,
+                'state',
+                String((resultSummary.solver_outcome as string | undefined) || 'Unknown'),
+              ),
+            })}
+          </strong>
           <span data-testid="partial-step">
             {t('run.partialStep', {
               step: String(resultSummary.last_step ?? '—'),
@@ -1646,7 +1786,7 @@ export function RunView({
                 aria-label={t('run.field')}
                 value={field}
                 onChange={(e) => setField(e.target.value as FieldId)}
-                disabled={!fieldOptions.length}
+                disabled={!hasFrames || !fieldOptions.length}
               >
                 {fieldOptions.map((option) => (
                   <option key={option} value={option}>
@@ -1657,6 +1797,7 @@ export function RunView({
               <select
                 aria-label={t('run.probeMode')}
                 value={mode}
+                disabled={!hasFrames}
                 onChange={(e) => {
                   setMode(e.target.value as 'node' | 'element')
                   select(null)
@@ -1708,63 +1849,72 @@ export function RunView({
                 plain
               />
             </div>
-            <div className="playback" data-testid="playback">
-              <button
-                className="play-toggle"
-                aria-label={play ? t('run.pausePlayback') : t('run.playFrames')}
-                onClick={() => {
-                  deadline.current = 0
-                  if (!play && n === index.frames.length - 1) setN(0)
-                  playing(!play)
-                }}
-              >
-                {play ? <Pause /> : <Play />}
-              </button>
-              <div className="playback-body">
-                <input
-                  className="playback-slider"
-                  aria-label={t('run.frame', { current: n + 1, total: index.frames.length })}
-                  type="range"
-                  min={0}
-                  max={index.frames.length - 1}
-                  value={n}
-                  onChange={(e) => {
-                    playing(false)
+            {hasFrames ? (
+              <div className="playback" data-testid="playback">
+                <button
+                  className="play-toggle"
+                  aria-label={play ? t('run.pausePlayback') : t('run.playFrames')}
+                  disabled={index.frames.length < 2}
+                  onClick={() => {
                     deadline.current = 0
-                    setN(+e.target.value)
+                    if (!play && n === index.frames.length - 1) setN(0)
+                    playing(!play)
                   }}
-                />
-                <div className="playback-status-row">
-                  <span className="frame-count" data-testid="frame-count">
-                    {n + 1} / {index.frames.length}
-                  </span>
-                  <span className="frame-time" data-testid="frame-time">
-                    {shownEntry ? shownEntry.time.toFixed(3) + ' s' : '—'}
-                  </span>
-                  <span
-                    className={pendingFrame !== null && pendingFrame !== displayedFrame ? 'loading-note' : 'playback-note'}
-                    role={frameError !== null ? 'alert' : 'status'}
-                    data-testid="playback-status"
-                    data-displayed={displayedFrame ?? ''}
-                  >
-                    {frameError !== null
-                      ? t('run.frameFailed', { frame: frameError + 1 })
-                      : pendingFrame !== null && pendingFrame !== displayedFrame
-                        ? t('run.loadingFrame')
-                        : t('run.frameReady')}
-                  </span>
-                  <label className="check loop-toggle">
-                    <input
-                      type="checkbox"
-                      checked={loop}
-                      aria-label={t('run.loop')}
-                      onChange={(e) => setLoop(e.target.checked)}
-                    />
-                    {t('run.loop')}
-                  </label>
+                >
+                  {play ? <Pause /> : <Play />}
+                </button>
+                <div className="playback-body">
+                  <input
+                    className="playback-slider"
+                    aria-label={t('run.frame', { current: Math.min(n + 1, index.frames.length), total: index.frames.length })}
+                    type="range"
+                    min={0}
+                    max={Math.max(0, index.frames.length - 1)}
+                    value={Math.min(n, Math.max(0, index.frames.length - 1))}
+                    disabled={index.frames.length < 2}
+                    onChange={(e) => {
+                      playing(false)
+                      deadline.current = 0
+                      setN(+e.target.value)
+                    }}
+                  />
+                  <div className="playback-status-row">
+                    <span className="frame-count" data-testid="frame-count">
+                      {Math.min(n + 1, index.frames.length)} / {index.frames.length}
+                    </span>
+                    <span className="frame-time" data-testid="frame-time">
+                      {shownEntry ? shownEntry.time.toFixed(3) + ' s' : '—'}
+                    </span>
+                    <span
+                      className={pendingFrame !== null && pendingFrame !== displayedFrame ? 'loading-note' : 'playback-note'}
+                      role={frameError !== null ? 'alert' : 'status'}
+                      data-testid="playback-status"
+                      data-displayed={displayedFrame ?? ''}
+                    >
+                      {frameError !== null
+                        ? t('run.frameFailed', { frame: frameError + 1 })
+                        : pendingFrame !== null && pendingFrame !== displayedFrame
+                          ? t('run.loadingFrame')
+                          : t('run.frameReady')}
+                    </span>
+                    <label className="check loop-toggle">
+                      <input
+                        type="checkbox"
+                        checked={loop}
+                        disabled={index.frames.length < 2}
+                        aria-label={t('run.loop')}
+                        onChange={(e) => setLoop(e.target.checked)}
+                      />
+                      {t('run.loop')}
+                    </label>
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <p className="notice" data-testid="no-field-frames">
+                {t('run.noFieldFrames')}
+              </p>
+            )}
             <div className="result-controls" data-testid="result-controls">
               <fieldset>
                 <legend>{t('run.range')}</legend>
@@ -2237,6 +2387,11 @@ export function RunView({
                     </p>
                   ) : (
                     <>
+                      {!pressureMapping.ok && (
+                        <p className="notice" data-testid="pressure-identity-unavailable">
+                          {t('run.pressureIdentityUnavailable')}
+                        </p>
+                      )}
                       <p
                         className="plot-caption"
                         id="pressure-plot-caption"
@@ -2245,7 +2400,7 @@ export function RunView({
                         <span>{pressureAxisLabel}</span>
                         <span className="plot-caption-x">{t('run.pressureDistanceAxis')}</span>
                       </p>
-                      {pressureStationsOk ? (
+                      {pressureStationsOk && pressureMapping.ok ? (
                         <div
                           data-testid="pressure-chart"
                           data-profile={pressureEntry?.id ?? ''}
@@ -2270,12 +2425,12 @@ export function RunView({
                             onHover={setPressureHover}
                           />
                         </div>
-                      ) : (
+                      ) : !pressureStationsOk ? (
                         <p className="notice" data-testid="pressure-stations-unavailable">
                           {t('run.pressureStationsUnavailable')}
                         </p>
-                      )}
-                      {showPressureArrows && pressureStationsOk && (
+                      ) : null}
+                      {showPressureArrows && pressureStationsOk && pressureMapping.ok && (
                         <div className="pressure-scale" data-testid="pressure-scale">
                           <svg width={70} height={12} aria-hidden="true">
                             <line
@@ -2294,9 +2449,7 @@ export function RunView({
                                   mm: formatNumber(manualMmValue),
                                 })
                               : t('run.pressureReferenceScale', {
-                                  value: Number(
-                                    displayedPressureMaximum.toPrecision(4),
-                                  ),
+                                  value: Number(pressureMaximum.toPrecision(4)),
                                   unit: doorIndex?.display_unit ?? 'kPa',
                                 })}
                           </small>
@@ -2481,7 +2634,7 @@ export function RunView({
                   </dd>
                 </div>
               </dl>
-              <a className="button" href={artifact(id, 'history.csv')} download>
+              <a className="button" href={artifactUrl('history.csv')} download>
                 <Download />
                 {t('run.downloadCsv')}
               </a>
@@ -2575,7 +2728,7 @@ export function RunView({
               {job.manifest
                 .filter((f) => !f.startsWith('frame-'))
                 .map((f) => (
-                  <a className="asset" key={f} href={artifact(id, f)} download>
+                  <a className="asset" key={f} href={artifactUrl(f)} download>
                     <FileText />
                     {f}
                     <Download />

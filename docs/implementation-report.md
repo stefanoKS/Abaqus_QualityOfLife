@@ -1,3 +1,101 @@
+## A18. APLR door geometry and final 2D results acceptance · 2026-11-26
+
+Execution handoff: [final-results-and-aplr-handoff.txt](final-results-and-aplr-handoff.txt).
+Implemented on the working tree inspected at `62a4e72`; all edits remain uncommitted. Every
+application check used disposable `SEAL_DATA` roots, isolated loopback servers and ignored local
+evidence. The operator instance on 8765 and its database, drawings and retained licensed jobs were
+not contacted or modified. **No solver was launched.** Historical simulator and extractor states stay
+separate; no submitted setup, deck, mesh, ODB or package was rewritten.
+
+Verified build: API 3, frontend release **`6f6493a65ed0`** (entry `index-DV0IT9q6.js`, CSS
+`index-mMFYzC5a.css`), native reader `dwg-inventory.exe` SHA-256
+`0eec58d65565bb62dcd392a7e4e701704a54e400c6956ff42518035eb63f3db2`. Release manifest
+`apps/web/releases/6f6493a65ed0/manifest.json`; the recorded release, API fingerprint and source
+hashes are in `.local/evidence/final-gates/release-evidence.json`.
+
+| Gate | Result | Principal evidence |
+|---|---|---|
+| 1 — APLR native geometry | **PASS** | Original `examples/APLR.dwg` (`18ef6c7a…`, AC1032, 18,946 bytes, mm). Baseline acceptance exited **1** at the two-panel precondition with **9 components**, two cavities and one filled region. After the OCS→WCS fix: **3 components** — one 8-edge upper door (`FA FB FC FD FE FF 100 101`), one lower body (`102`–`111`), one seal — **2 open chains**, **1 filled region**, **2 cavities**, filled area **121.0628326 mm²**. Free endpoints **11.517131474 / 62.337321442** and **30.741156721 / 62.326254097** (door), **36.317131474 / 31.326254097** and **12.805847070 / 28.486415157** (body), matching the reference at import precision. Mesh **58 PANEL / 122 BODY R2D2**, **14 WSFIX**, one solid section, Body seating → Closing, no connector element. `scripts/acceptance_dwg.py` exit **0**. Browser `aplr-workflow.spec.ts` passes the normal Import → Components → Materials → Mesh → Mounting → Motion → Results → Prepare path, component picking on both profiles, independent door/body previews, and a fresh `.aqmodel` reopen with equal geometry, roles, cavities, material and motion. |
+| 2 — contact side at the reached surface | **PASS** | C-section reproduction: before first contact **0.74999975**, all four R2D2 normals `(0,−1)`, acceptance min dot **−1.0**; after exact segment-sweep contact, first contact **0.75**, direction `(0,+1)`, all four normals `(0,+1)`, min dot **+1.0**. Slanted endpoint-only hit dot **+0.978550**, reversed CAD order **+1.0**, initial lower-lip touch reaches the upper lip at **t=1.0**, initial upper-lip touch is contact at **t=0**, near miss has no contact, offset regression **+1.0**. APLR/OTR/OTR_single acceptance exit **0** with PANEL/BODY dots **+0.999976/+1.000000**, **+0.998457/+0.402747** and **+0.998457/+0.997615**. Readiness and the writer share `panel.contact_side_ambiguous`. |
+| 3 — one readable result generation through retry | **PASS (software, manufactured)** | Extraction stages every member (frames, history, display, per-frame hashes, index and a hashed manifest) in `.extract-staging`, validates the closed set, finalizes to an immutable `results/gen-N-attempt` directory and only then commits the active pointer in one fenced transaction (`owner`, expected generation, `cancelled=0`). A slow retry leaves the previous generation readable; a crash before the commit leaves a safe unreferenced candidate; a cancelled/late attempt cannot replace a newer generation. Generation-qualified routes pin index, frames, history and display metadata; packaging reads the pinned generation. The browser frame cache is keyed by `generation:file`, discards out-of-order completions and clears probe/display selections when the generation changes. `tests/test_result_generations.py` **8 passed**. |
+| 4 — cancellation, recovery and portable provenance | **PASS** | A cancelled solver with a verified stopped process and a safe ODB candidate settles as solver **Cancelled**, extraction **Queued**, salvage **1**, cancelled **0**, so the next worker performs exactly one extraction-only recovery (no second solver launch). Idempotent repeated cancel, explicit later Retry and an actionable no-candidate diagnostic are preserved. Portable open keeps solver outcome, extraction outcome, availability, last step/time, origin identity and diagnostics independently; a legacy package lacking a fact reopens as explicit **Unknown**, never Failed. Auto-package runs after the terminal commit. `tests/test_cancellation_recovery.py` **5 passed**. |
+| 5 — last measured frame and history-only results | **PASS** | A header-only 0.90 s tail frame with no field values is no longer saved: the 0.60 s measured frame remains last, the dropped record keeps its native identity, a measured all-zero field is still usable, and U/S/CPRESS/CNORMF are independent (an unreadable CPRESS keeps readable U). History-only generations publish without inventing a Closing frame; the CLD curve and exports remain, playback/scrub/probe/field controls are removed (no `1 / 0`, no `max=−1`), and Body-only history opens on Body seating. `tests/test_last_field_frame.py` **5 passed**; `history-only.spec.ts` passes. |
+| 6 — pressure/arrow/probe/CSV node identity | **PASS (browser)** | Index profile labels `[1,2]`, stations `[0,3]` mm; frame labels `[2,1]`, pressure `[10,0]` kPa, CNORMF `[(3,4),(0,0)]` N. After one identity join: station 0 = node 1 = **0 kPa**; station 3 = node 2 = **10 kPa / 0.01 MPa / (3,4) N**; only node 2 gets the arrow (tail (2,3), model tip (5,7) at manual 10 kPa = 5 mm; ×2 tip (8,11)); CSV original sampling `door station(mm),0,3` / `CPRESS (kPa),0,10`, ×2 `0,20`. Duplicate/foreign/unknown identities suppress the chart, arrows and export with a localized reason. `pressure-identity.spec.ts` **2 passed**. |
+| 7 — full-browser failures and playback | **PASS** | Product readiness hooks publish host/fit size and `data-viewport-ready` atomically with the camera; `data-readiness-settled` removes banner-race timing. Gate-a settled camera **9.00000**, zoom-in **7.20000**, Fit **9.00000**, original = final. The Materials editor exposes `data-material-id`/`data-loading`, ignores stale detail responses and validates CAE density, so Density = 0 disables Save. Offset picking re-reads the current viewport rect before each click, keeping BODY-1/PANEL-1 through zoom/pan. The four affected files in the failing order (cae-materials → gate-a → materials → offset-picking): **18 passed**. |
+
+### What was implemented
+
+- **Native DWG coordinates.** `integrations/dwg/src/DwgInventory.cs` now applies each entity's native
+  OCS once, before connectivity: the ACadSharp/CSMath arbitrary-axis basis for `ARC`, `CIRCLE` and
+  `LWPOLYLINE` (including elevation and bulge reflection), native `LINE` endpoints remain WCS, and
+  block insertion transforms compose exactly once afterwards. `ARC` reports WCS centre, radius,
+  endpoints, interior midpoint, signed sweep and the source OCS values; `sweep` is serialized at full
+  double precision so an exact quarter turn is not rounded into two segments. A non-planar extrusion
+  becomes `transformError: "unsupported-nonplanar"` and is recorded as a typed skip. `packages/
+  engineering/dwg.py` consumes the WCS signed sweep (legacy angle-only inventories still import) and
+  preserves the true midpoint, radius, sweep, units, provenance, layer and handle. The shipped EXE was
+  rebuilt with the documented .NET Framework 4.8 compiler and tested directly on the original bytes;
+  no DXF conversion, ODA, network or CAD automation participates.
+- **Exact contact orientation.** `integrations/abaqus/deck.py` solves the earliest segment-sweep
+  intersection for every profile/seal pair (non-parallel, parallel, endpoint-only, short and glancing
+  hits), measures the approach on the surface actually reached at that time, handles initial touching
+  and moving away (seek the next new contact) and shares a typed ambiguity with readiness.
+  `scripts/acceptance_dwg.py` independently parses the instance translation and repeats the exact
+  sweep, so it now fails the old C-section deck and passes the offset/OTR/APLR cases.
+- **Result generations.** `integrations/abaqus/interchange.py` publishes a validated immutable attempt
+  directory; `services/worker/__main__.py` finalizes it, writes the generation summary and commits the
+  pointer through `store.publish_result_generation` with fencing; `services/store.py` adds the additive
+  `result_dir` column and the pinned-resolution helpers. `services/api/main.py` serves generation-qualified
+  index/frame/history/display members while legacy flat rows keep their old route. `services/portable_files.py`
+  packages the pinned generation. `apps/web/src/api.ts` and `RunView.tsx` key every frame/cache read by
+  generation and discard stale completions.
+- **Cancellation and provenance.** The worker retains its own queued-recovery settlement instead of
+  overwriting it, persists the no-candidate reason, and makes repeated cancel idempotent. Portable
+  import stores the actual solver/extraction/availability/last-step facts, origin and generation;
+  missing legacy facts stay Unknown. Auto-package runs after the commit, and the partial notice names
+  the localized solver outcome.
+- **Measured frames.** `integrations/abaqus/extract_odb.py` requires at least one supported finite
+  sample before a frame becomes playable, records dropped frames with their native identity, treats
+  each requested channel independently and publishes measured history with no field frame. `RunView`
+  hides invalid playback controls and opens the latest measured history step when no frame exists.
+- **Pressure identity.** One node-identity join now feeds pressure, native MPa, CNORMF, direction,
+  arrows, readout, chart and CSV; station order and point lists are validated, a deformed anchor
+  requires measured U, duplicate/foreign identities suppress spatial values, and the automatic arrow
+  reference stays unscaled.
+- **Viewport and material readiness.** `viewportRenderer.ts`/`Workspace.tsx` publish host/fit size,
+  viewport readiness and readiness settlement in one observable state; `MaterialsPage.tsx` guards
+  detail loads, disables fields until the clicked card is active and validates CAE density; the three
+  browser regressions use those states instead of fixed sleeps.
+
+### Tests actually run (this machine, isolated data)
+
+- `.\.venv\Scripts\python.exe -m pytest -q`: **433 passed, 1 skipped** (the opt-in Abaqus-Python
+  roundtrip), exit 0. New Python modules: `test_dwg_aplr.py` (4), `test_last_field_frame.py` (5),
+  `test_result_generations.py` (8), `test_cancellation_recovery.py` (5); `test_contact_orientation.py`
+  expanded to 12.
+- `scripts/acceptance_dwg.py` for `APLR`, `OTR` and `OTR_single`: all exit **0**; decks
+  `d5199d8a…`, `3cea68bc…`, `f4e98160…` on this machine.
+- `npm --prefix apps/web run test:i18n`: **1075 keys** both languages; `test:encoding`: 48 files;
+  `typecheck` and `build` pass. `scripts/schema.py` regenerated only the additive generation routes and
+  a second run was byte-identical.
+- Browser: `aplr-workflow` **1 passed**; `pressure-identity` **2 passed**; `history-only` **1 passed**;
+  cae-materials + gate-a + materials + offset-picking **18 passed** in the failing order. Full isolated
+  suite on build `6f6493a65ed0`, port 63734: **201 passed, 0 failed, 11 skipped (212 tests, 16.0 min,
+  exit 0)**. The skips are the documented opt-in native/licensed/retained fixtures; no ordinary test
+  was skipped for a failure.
+- No solver was executed. Native ODB evidence from the retained cancelled/failed jobs remains the
+  earlier record; this pass did not re-read it.
+
+### Outstanding
+
+1. **Solver convergence, numerical sensitivity and physical correlation remain unestablished.** No
+   deck from this pass was submitted to Abaqus; Gate 2's contact side is deck/INP geometry evidence.
+2. **Saved APLR imports keep their old canonical coordinates.** The corrected OCS conversion applies to
+   a fresh import; any existing model must be reimported (or its drawing re-uploaded) and geometry-bound
+   selections reviewed. Historical submissions and results are not rewritten.
+3. The operator instance on 8765 was not upgraded; it still serves its prior release.
+4. 3D solving remains deferred.
+
 ## A17. Partial results, pressure-arrow calibration and result multiplier · 2026-11-26
 
 Execution handoff: [partial-results-arrows-multiplier-handoff.txt](partial-results-arrows-multiplier-handoff.txt).

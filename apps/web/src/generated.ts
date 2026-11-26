@@ -1015,13 +1015,58 @@ export interface paths {
         };
         /**
          * Display Metadata
-         * @description Run-wide camera bounds and colour ranges for result playback.
+         * @description Run-wide camera bounds and colour ranges for the active generation.
          *
-         *     New extraction records this in ``results.json``. A retained result without it
-         *     is read once, server-side, into a derived cache keyed by the run and the
-         *     index digest. Original artifacts are never rewritten and no solver runs.
+         *     New extraction records this in the generation's ``results.json``. A retained
+         *     result without it is derived once, server-side, into a cache keyed by the run,
+         *     generation and index digest. Original artifacts are never rewritten and no
+         *     solver runs.
          */
         get: operations["display_metadata_api_jobs__jid__display_metadata_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{jid}/results/{generation}/display-metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Generation Display Metadata
+         * @description Display metadata pinned to one retained result generation.
+         */
+        get: operations["generation_display_metadata_api_jobs__jid__results__generation__display_metadata_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{jid}/results/{generation}/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Result Member
+         * @description Serve one immutable member of a pinned result generation.
+         *
+         *     The generation directory is never modified after publication, so a reader
+         *     that started on generation N keeps seeing generation N even while a retry
+         *     publishes N+1.
+         */
+        get: operations["result_member_api_jobs__jid__results__generation___name__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5074,6 +5119,71 @@ export interface operations {
             header?: never;
             path: {
                 jid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generation_display_metadata_api_jobs__jid__results__generation__display_metadata_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jid: string;
+                generation: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    result_member_api_jobs__jid__results__generation___name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jid: string;
+                generation: number;
+                name: string;
             };
             cookie?: never;
         };

@@ -68,6 +68,7 @@ if arguments and arguments[0].lower() == "python":
     )
     raise SystemExit(0)
 
+print("Manufactured solve started", flush=True)
 if (job / "fail-solver-with-odb").exists():
     (job / "analysis.sta").write_text("THE ANALYSIS HAS NOT BEEN COMPLETED\\n", encoding="ascii")
     (job / "analysis.odb").write_bytes(b"manufactured partial ODB candidate\\n")
@@ -83,6 +84,12 @@ if (job / "fail-solver").exists():
     (job / "analysis.sta").write_text("THE ANALYSIS HAS NOT BEEN COMPLETED\\n", encoding="ascii")
     print("Manufactured solver failure")
     raise SystemExit(1)
+
+# A slow solve that has already written a readable ODB candidate when the
+# engineer cancels it (Gate 4 recovery path).
+if (job / "odb-before-slow").exists():
+    (job / "analysis.sta").write_text("1 1 1 0 1 0 0.1 0.1 0.1\\n", encoding="ascii")
+    (job / "analysis.odb").write_bytes(b"manufactured readable ODB\\n")
 
 time.sleep(float(os.environ.get("ABAQUS_QOL_FAKE_SOLVE_SECONDS", "0.2")))
 (job / "analysis.sta").write_text(

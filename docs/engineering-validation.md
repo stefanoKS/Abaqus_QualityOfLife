@@ -1,3 +1,113 @@
+# Engineering validation
+
+## APLR native geometry, contact side and final 2D acceptance · 2026-11-26
+
+This section supports the [seven-gate handoff](final-results-and-aplr-handoff.txt). **No solver was
+launched for this pass.** The only native input is the original DWG bytes and their ACadSharp decode;
+contact results are generated-deck geometry, and result-generation/cancellation evidence is
+manufactured test evidence through the existing launcher double. Retained licensed ODB values from the
+preceding validation record were not re-read and are unchanged.
+
+### A. Original APLR DWG — native decode and canonical import
+
+| Item | Measured value |
+|---|---|
+| Drawing | `examples/APLR.dwg`, SHA-256 `18ef6c7a12f558dd882ddeba21f2e0e25a1ddea03465ce2ca50d43f1e97434fa` |
+| Size / version / units | 18,946 bytes, `AC1032`, declared mm |
+| Native inventory | 48 `ARC`, 31 `LINE`; layer 0 has 14 arcs + 10 lines, layer 16 carries the seal |
+| Negative-Z extrusion | exactly five arcs: handles `FA`, `FC`, `FE`, `FF`, `101` |
+| Native reader | `dwg-inventory.exe` SHA-256 `0eec58d65565bb62dcd392a7e4e701704a54e400c6956ff42518035eb63f3db2`, ACadSharp 3.8.35 |
+| Baseline acceptance | exit **1** at `expected a door and a body open profile`; canonical model **9 components**, 2 cavities, 1 filled region |
+| Fixed acceptance | exit **0**; **3 components**, **2 open chains**, **1 filled region**, **2 cavities** |
+| Door | 8 analytic edges: `FA FB FC FD FE FF 100 101`; free endpoints (11.517131474, 62.337321442) and (30.741156721, 62.326254097) mm |
+| Body | handles `102`–`111`; free endpoints (12.805847070, 28.486415157) and (36.317131474, 31.326254097) mm |
+| Seal | 67 analytic edges after exact-sweep segmentation |
+| Filled area | **121.0628326 mm²** (reference 121.062829155) |
+| Mesh / fixture / deck | **58 PANEL + 122 BODY R2D2**, **14 WSFIX**, one solid section, Body seating → Closing |
+| Deck SHA-256 | `d5199d8aad4c49ecd052af5d1fe786abdb054ecb3a78af7609aaf0745b1689d9` |
+| UI workflow | `apps/web/tests/aplr-workflow.spec.ts` **1 passed** (26.3 s) |
+
+The reference replay counted 19 body and 69 seal analytic edges because it used 9-decimal-rounded
+angles. The native helper now emits the exact double sweep, so an exact 180° arc segments into two
+quarter arcs instead of three and an exact 90° arc is not split by a 3e-10 round-off. Rigid element
+counts (58/122), 14 WSFIX and both cavities are unchanged; the difference is recorded rather than
+hidden.
+
+### B. Contact side at the surface actually reached — generated-deck geometry
+
+The C-section counterexample (`[(-5,-1),(5,-1),(5,0),(-4,0),(-4,4),(5,4),(5,5),(-5,5)]` seal, straight
+door `(-1,1)`→`(1,1)`, `(0,+4)` mm) was driven through API → worker → Prepare on a disposable data
+root.
+
+| Observation | Before | After |
+|---|---:|---:|
+| First-contact fraction | 0.7499997500000001 | **0.75** |
+| Hit surface | lower lip at y=0 | **upper lip underside at y=4** |
+| Emitted SPOS normals | all `(0,−1)` | all **`(0,+1)`** |
+| Independent acceptance min dot | **−1.0** | **+1.0** |
+| C-section INP SHA-256 | — | `521fe445ee676c49ba0d94dfe8619272ed5fc30c70ffb6d339bbf21166a1b169` |
+
+Variants measured with the same independent checker: slanted endpoint-only hit dot **+0.978550**;
+reversed CAD edge order **+1.0**; door initially touching the lower lip reaches the upper lip at
+**t=1.0**; door initially touching the upper lip is contact at **t=0**; a 2.99 mm stroke is a near miss
+with `approaching`; the offset regression is **+1.0** at 0.5. The buggy C-section deck reconstructed by
+reversing each node pair returns **−1.0**, so the updated acceptance checker detects the old defect.
+
+### C. APLR / OTR / OTR_single Prepare passes — generated decks, no solve
+
+| Drawing | Deck SHA-256 | PANEL R2D2 | BODY R2D2 | WSFIX | PANEL min dot | BODY min dot |
+|---|---|---:|---:|---:|---:|---:|
+| APLR | `d5199d8aad4c49…` | 58 | 122 | 14 | +0.999976 | +1.000000 |
+| OTR | `3cea68bcd55af7…` | 95 | 71 | 10 | +0.998457 | +0.402747 |
+| OTR_single | `f4e98160dc7b95…` | 95 | 71 | 10 | +0.998457 | +0.997615 |
+
+All three exit **0**, keep one filled section and both steps, and consume zero solver tokens. The OTR
+body dot is the exact first-contact normal at a glancing bulb corner; it is the only positive local
+orientation.
+
+### D. Result generation, cancellation and display evidence — manufactured
+
+`tests/test_result_generations.py` (8) proves a slow retry leaves the prior generation readable, a
+crash between finalize and commit leaves an unreferenced candidate, a fenced stale attempt cannot
+replace a newer generation, overlapping frame names with different payloads are read as one consistent
+old or new generation, and packaging reopens in a fresh root. `tests/test_cancellation_recovery.py`
+(5) proves one extraction-only recovery after a verified cancelled solver, idempotent repeated cancel,
+an actionable no-output reason, a failed+solved partial, legacy **Unknown** provenance and
+post-commit auto-package. `tests/test_last_field_frame.py` (5) proves an empty 0.90 s tail is dropped
+while 0.60 s remains last, measured zero is usable, missing channels are independent, an unreadable
+CPRESS keeps U, and a non-finite-only result raises instead of inventing a frame.
+`pressure-identity.spec.ts` (2) and `history-only.spec.ts` (1) are browser evidence on manufactured
+`.aqresult` fixtures. These are **software state-machine and display evidence**, not native ODB or
+solver evidence.
+
+### E. Commands actually run
+
+~~~powershell
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe scripts\acceptance_dwg.py --drawing examples\APLR.dwg --evidence .local\evidence\final-gates\acceptance\APLR
+.\.venv\Scripts\python.exe scripts\acceptance_dwg.py --drawing examples\OTR.dwg --evidence .local\evidence\final-gates\acceptance\OTR
+.\.venv\Scripts\python.exe scripts\acceptance_dwg.py --drawing examples\OTR_single.dwg --evidence .local\evidence\final-gates\acceptance\OTR_single
+npm --prefix apps/web run test:i18n
+npm --prefix apps/web run test:encoding
+.\.venv\Scripts\python.exe scripts\schema.py
+npm --prefix apps/web run typecheck
+npm --prefix apps/web run build
+npm --prefix apps/web run test:browser
+~~~
+
+Evidence roots are local and ignored:
+`.local/evidence/final-gates/acceptance/` (APLR, OTR, OTR_single),
+`.local/evidence/final-gates/browser-aplr/`, `.local/evidence/final-gates/browser-pressure/`,
+`.local/evidence/final-gates/browser-results/`, `.local/evidence/final-gates/browser-gate7/`,
+`.local/evidence/final-gates/browser-full-final/` (full suite),
+`.local/evidence/gate2-fix-9b537575117440938df4b561a84e5823/` (C-section and variants) and
+`.local/evidence/gate34-fix-718459b98b3a/` (generation/cancellation implementation metrics).
+
+Final measured counts on build `6f6493a65ed0`: Python **433 passed, 1 skipped**; browser **201
+passed, 0 failed, 11 skipped (212 tests, 16.0 min)**; translations 1075 keys; encoding 48 files;
+typecheck/build pass; schema additive and byte-stable. Eleven browser skips are the documented
+opt-in native/licensed/retained-fixture cases, not ordinary regressions.
+
 ## Native failure and partial-result recovery · 2026-11-26
 
 This section supports the [partial-results execution handoff](partial-results-arrows-multiplier-handoff.txt).

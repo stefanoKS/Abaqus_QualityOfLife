@@ -5,6 +5,7 @@
  * stylesheet expectations. Only synthetic/fictional data is created.
  */
 import { expect, test, type Page } from './fixtures'
+import { settleViewport } from './viewport-ready'
 import type { Revision } from '../src/api'
 
 const WIDTHS = [
@@ -148,6 +149,10 @@ test('the viewport exposes exactly three comfortably sized icon tools', async ({
   await expect(page.locator('.seal-vtk-assembly')).toHaveCount(0)
   // Real camera behaviour for all three controls.
   const camera = () => page.locator('.seal-vtk-host').getAttribute('data-camera')
+  // Fit/reset only compares equal when both cameras belong to the settled
+  // viewport. Readiness can mount the next-action banner and a queued
+  // ResizeObserver refit can still change the camera; wait for both first.
+  await settleViewport(page)
   const original = await camera()
   await page.getByRole('button', { name: 'Zoom in' }).click()
   const zoomed = await camera()

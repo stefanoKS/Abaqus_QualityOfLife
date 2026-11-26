@@ -340,10 +340,10 @@ def _export_name(revision: dict, job: dict, partial: bool = False) -> str:
     return f"{model}-{run}-{stamp}-{str(job['id'])[:8]}{suffix}{RESULT_SUFFIX}"
 
 
-def package_job(job_id: str, folder: str | None = None, allow_running: bool = False) -> dict:
+def package_job(job_id: str, folder: str | None = None, allow_running: bool = False, generation=None) -> dict:
     job = store.job(job_id)
-    # The worker calls this before it publishes the terminal row, so it asserts
-    # the extraction outcome itself through ``allow_running``.
+    # The worker calls this after its terminal commit, so no outcome assertion
+    # is needed; explicit callers keep the availability checks below.
     if job["mode"] not in {"ABAQUS"}:
         raise portable.PortableError(
             "not-completed", "A result file is written only for an Abaqus analysis."
@@ -361,7 +361,11 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
                 "not-completed", "No validated result generation is available to export."
             )
     directory = store.job_dir(job_id)
-    index_path = directory / "results.json"
+    # Pin packaging to one immutable generation; legacy flat rows resolve to the
+    # run directory with generation 0.
+    base, pinned = store.result_generation_dir(job_id, generation)
+    root = base if base is not None else directory
+    index_path = root / "results.json"
     if not index_path.is_file():
         raise portable.PortableError("missing-index", "The result index is missing.")
     index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -376,11 +380,11 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
     frames = {}
     for frame in index.get("frames", []):
         name = frame.get("file", "")
-        path = directory / name
+        path = root / name
         if not re.fullmatch(r"frame-\d+\.json", name) or not path.is_file():
             raise portable.PortableError("frame", f"Result frame {name!r} is missing.")
         frames[name] = path.read_bytes()
-    history = directory / "history.csv"
+    history = root / "history.csv"
     revision = store.revision(job["revision"])
     provenance = {
         "job": {
@@ -396,6 +400,7 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
         "result": {
             "availability": availability,
             "solver_outcome": index.get("solver_outcome") or job.get("solver"),
+            "extraction_outcome": index.get("extraction_outcome") or job.get("extraction"),
             "failure_reason": index.get("failure_reason") or job.get("diagnostic") or "",
             "last_step": index.get("last_step"),
             "last_step_id": index.get("last_step_id"),
@@ -404,6 +409,9 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
             "frame_ordinal": index.get("last_frame_ordinal"),
             "frames": len(index.get("frames") or []),
             "history_only": bool(index.get("history_only")),
+            "generation": pinned,
+            "result_dir": root.relative_to(directory).as_posix() if root != directory else "",
+            "index_sha256": _file_digest(index_path),
         },
         "revision": {
             "id": revision["id"],
@@ -432,10 +440,12 @@ def package_job(job_id: str, folder: str | None = None, allow_running: bool = Fa
             "job": job["id"],
             "revision": revision["id"],
             "availability": availability,
+            "generation": pinned,
         },
     )
     store.set_publication(job_id, result["path"], "Saved")
     result["availability"] = availability
+    result["generation"] = pinned
     return result
 
 
@@ -460,6 +470,7 @@ def open_result(path: str) -> dict:
         members,
         provenance,
         availability="partial" if availability == "partial" else "complete",
+        package_path=str(Path(path)),
     )
     return {
         "job": job,

@@ -69,9 +69,17 @@ test('the library validates, versions, archives and restores material cards', as
   await expect(row(page, 'Dense EPDM')).toBeVisible()
   await expect(row(page, 'Cellular EPDM')).toBeVisible()
 
-  await row(page, 'Dense EPDM').click()
   const materialId = await row(page, 'Dense EPDM').getAttribute('data-material-id')
   expect(materialId).toBeTruthy()
+  await row(page, 'Dense EPDM').click()
+  // The editor keeps the previous card mounted until its detail is replaced.
+  // Wait until it shows the clicked card (and is no longer loading) before
+  // typing, or the fill would land on the old card's density field.
+  await expect(page.locator('.library-editor')).toHaveAttribute(
+    'data-material-id',
+    materialId!,
+  )
+  await expect(page.locator('.library-editor')).toHaveAttribute('data-loading', 'false')
   const density = page.getByLabel('Density (tonne/mm³)')
   await density.fill('0')
   await expect(page.getByRole('button', { name: 'Save material' })).toBeDisabled()
@@ -88,7 +96,7 @@ test('the library validates, versions, archives and restores material cards', as
     .poll(async () => (await detail(request, materialId!)).archived)
     .toBe(true)
   await page.getByLabel('Include archived').check()
-  const archivedRow = page.locator(`[data-material-id="${materialId}"]`)
+  const archivedRow = page.locator(`.material-list [data-material-id="${materialId}"]`)
   await expect(archivedRow).toBeVisible()
   await archivedRow.click()
   await page.getByRole('button', { name: 'Restore' }).click()

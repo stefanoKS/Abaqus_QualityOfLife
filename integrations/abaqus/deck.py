@@ -531,9 +531,13 @@ def _inside_material(points, seal):
 
     The exterior set includes the cavity boundary, so a point inside a hole is
     outside the material. This is what separates a real intersection from a
-    profile that merely sits between the upper and lower exterior surfaces.
+    profile that merely sits between the upper and lower exterior surfaces. A
+    point lying exactly on the boundary is touching, not penetrating: the
+    half-open ray test alone would depend on which endpoint the ray crosses.
     """
     for x, y in points:
+        if _point_on_boundary(x, y, seal):
+            continue
         inside = False
         for x0, y0, x1, y1 in seal:
             if (y0 > y) != (y1 > y):
@@ -660,6 +664,478 @@ def _segment_distance(first, second):
     return best
 
 
+# Fraction of the prescribed stroke that counts as the same first-contact instant.
+# A flat face can produce many equal fractions; 1e-6 of a 4 mm stroke is 4e-6 mm,
+# far below the mesh tolerance but wide enough for floating-point ties.
+CONTACT_TIE_FRACTION = 1e-6
+# A hit at or below this fraction is present in the initial pose, not reached by
+# the prescribed motion.
+CONTACT_INITIAL_FRACTION = 1e-9
+# Pull the moving segment back by this fraction of the stroke before measuring
+# the approaching side, so a corner/endpoint hit is measured in open space.
+CONTACT_BACKOFF_FRACTION = 1e-6
+# Tied hits within this much of the dominant motion alignment are the same
+# contact face. A corner/side hit at a flat-face tie is far less aligned and is
+# not allowed to make the whole contact ambiguous.
+CONTACT_ALIGNMENT_TOLERANCE = 1e-3
+
+
+def _cross(ax, ay, bx, by):
+    return ax * by - ay * bx
+
+
+def _unit(dx, dy):
+    length = hypot(dx, dy)
+    if length <= CLEARANCE_TOLERANCE:
+        return None
+    return [dx / length, dy / length]
+
+
+def _segment_normal(segment):
+    x0, y0, x1, y1 = segment
+    return _unit(-(y1 - y0), x1 - x0)
+
+
+def _translate_segment(segment, delta, fraction):
+    dx, dy = delta
+    return (
+        segment[0] + dx * fraction,
+        segment[1] + dy * fraction,
+        segment[2] + dx * fraction,
+        segment[3] + dy * fraction,
+    )
+
+
+def _point_on_boundary(x, y, seal, tolerance=CLEARANCE_TOLERANCE):
+    """True when (x, y) lies on a seal boundary segment within tolerance."""
+    for segment in seal:
+        cx, cy = _closest_on_segment(x, y, segment)
+        if hypot(x - cx, y - cy) <= tolerance:
+            return True
+    return False
+
+
+def _segment_toi(segment, delta, seal_segment):
+    """Earliest ``t`` in [0, 1] where a translated segment meets a seal segment.
+
+    The prescribed translation is linear, so the earliest intersection is solved
+    exactly instead of sampled. Parallel and non-parallel pairs are separate
+    cases: a parallel segment can only touch when its supporting line becomes
+    collinear with the seal segment, and the projections must overlap.
+    """
+    ax, ay, bx, by = segment
+    cx, cy, ex, ey = seal_segment
+    e1x, e1y = bx - ax, by - ay
+    e2x, e2y = ex - cx, ey - cy
+    len1, len2 = hypot(e1x, e1y), hypot(e2x, e2y)
+    if len1 <= CLEARANCE_TOLERANCE or len2 <= CLEARANCE_TOLERANCE:
+        return None
+    wx, wy = cx - ax, cy - ay
+    den = _cross(e1x, e1y, e2x, e2y)
+    if abs(den) > 1e-12 * max(1.0, len1 * len2):
+        s0 = _cross(wx, wy, e2x, e2y)
+        s1 = -_cross(delta[0], delta[1], e2x, e2y)
+        u0 = _cross(wx, wy, e1x, e1y)
+        u1 = -_cross(delta[0], delta[1], e1x, e1y)
+        low, high = 0.0, 1.0
+        low_value, high_value = (0.0, den) if den > 0 else (den, 0.0)
+        for c0, c1 in ((s0, s1), (u0, u1)):
+            if abs(c1) <= 1e-12 * max(1.0, abs(c0), abs(low_value), abs(high_value)):
+                if not (low_value - 1e-9 <= c0 <= high_value + 1e-9):
+                    return None
+                continue
+            first_t = (low_value - c0) / c1
+            last_t = (high_value - c0) / c1
+            if c1 < 0:
+                first_t, last_t = last_t, first_t
+            low = max(low, min(first_t, last_t))
+            high = min(high, max(first_t, last_t))
+        if high < low - 1e-9:
+            return None
+        t = max(0.0, low)
+        if t > 1.0 + 1e-9:
+            return None
+        t = min(1.0, t)
+        mx, my = ax + t * delta[0], ay + t * delta[1]
+        scale = e2x * e2x + e2y * e2y
+        u = max(0.0, min(1.0, ((mx - cx) * e2x + (my - cy) * e2y) / scale))
+        return {
+            "fraction": t,
+            "moving": (mx, my),
+            "static": (cx + u * e2x, cy + u * e2y),
+            "method": "nonparallel",
+        }
+    # Parallel segments: only a collinearity crossing can produce a hit.
+    de = _cross(delta[0], delta[1], e2x, e2y)
+    if abs(de) <= 1e-12 * max(1.0, hypot(delta[0], delta[1]) * len2):
+        if abs(_cross(wx, wy, e2x, e2y)) > CLEARANCE_TOLERANCE * len2:
+            return None
+        t = 0.0
+    else:
+        t = _cross(wx, wy, e2x, e2y) / de
+        if t < -1e-9 or t > 1.0 + 1e-9:
+            return None
+        t = max(0.0, min(1.0, t))
+    ax_t = ax + t * delta[0] - cx
+    ay_t = ay + t * delta[1] - cy
+    bx_t = bx + t * delta[0] - cx
+    by_t = by + t * delta[1] - cy
+    scale = e2x * e2x + e2y * e2y
+    ua = (ax_t * e2x + ay_t * e2y) / scale
+    ub = (bx_t * e2x + by_t * e2y) / scale
+    low, high = min(ua, ub), max(ua, ub)
+    if high < -1e-9 or low > 1.0 + 1e-9:
+        return None
+    u = max(0.0, min(1.0, low))
+    span = ub - ua
+    s = 0.0 if abs(span) <= 1e-15 else max(0.0, min(1.0, (u - ua) / span))
+    mx = ax + s * e1x + t * delta[0]
+    my = ay + s * e1y + t * delta[1]
+    return {
+        "fraction": t,
+        "moving": (mx, my),
+        "static": (cx + u * e2x, cy + u * e2y),
+        "method": "parallel",
+    }
+
+
+def _surface_approach(element_segment, delta, seal_segment, seal, hit_point=None):
+    """Direction from the element to the hit seal surface.
+
+    The hit segment's tangent normal is the stable contact side at a face, a
+    corner or an endpoint-only hit. A material probe on either side of the hit
+    point decides which normal points out of the seal; the returned direction
+    points from the element toward the seal (the direction SPOS must face).
+    The witness vector is only a fallback for a degenerate probe.
+    """
+    normal = _segment_normal(seal_segment)
+    if normal is None:
+        return None
+    x0, y0, x1, y1 = element_segment
+    mx, my = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    if hit_point is None:
+        hit_point = _closest_on_segment(mx, my, seal_segment)
+    hx, hy = float(hit_point[0]), float(hit_point[1])
+    cx, cy, dx, dy = seal_segment
+    seal_length = hypot(dx - cx, dy - cy)
+    step = min(1e-3, max(1e-7, 1e-4 * max(seal_length, 1.0)))
+    # At a segment endpoint the normal probe can land on the adjacent boundary
+    # and be skipped as "on the boundary". Move the probe base a small distance
+    # along this *seal* segment so the material side is well defined. Using the
+    # moving element's tangent here would step the wrong way for a reversed
+    # element pair.
+    if seal_length > CLEARANCE_TOLERANCE:
+        ex, ey = dx - cx, dy - cy
+        parameter = ((hx - cx) * ex + (hy - cy) * ey) / (seal_length * seal_length)
+        margin = min(0.49, step / seal_length)
+        if parameter < margin:
+            parameter = margin
+        elif parameter > 1.0 - margin:
+            parameter = 1.0 - margin
+        hx, hy = cx + parameter * ex, cy + parameter * ey
+    plus = (hx + normal[0] * step, hy + normal[1] * step)
+    minus = (hx - normal[0] * step, hy - normal[1] * step)
+    inside_plus = _inside_material([plus], seal)
+    inside_minus = _inside_material([minus], seal)
+    if inside_plus and not inside_minus:
+        return normal
+    if inside_minus and not inside_plus:
+        return [-normal[0], -normal[1]]
+    # Degenerate or thin-seal probe: use the witness vector from the element.
+    direction = _unit(hx - mx, hy - my)
+    if direction is not None:
+        return direction
+    along = delta[0] * normal[0] + delta[1] * normal[1]
+    if abs(along) <= CLEARANCE_TOLERANCE:
+        return None
+    return normal if along > 0 else [-normal[0], -normal[1]]
+
+
+def _initial_touch_approach(element_segment, delta, seal_segment, seal):
+    """Approach direction for a segment already touching the seal at t = 0."""
+    x0, y0, x1, y1 = element_segment
+    cx, cy = _closest_on_segment((x0 + x1) / 2.0, (y0 + y1) / 2.0, seal_segment)
+    return _surface_approach(element_segment, delta, seal_segment, seal, (cx, cy))
+
+
+def _approach_at_contact(element_segment, delta, fraction, seal_segment, seal, hit_point=None):
+    """Direction from the element to the hit seal surface just before contact."""
+    backoff = min(CONTACT_BACKOFF_FRACTION, fraction / 2.0 if fraction > 0 else 0.0)
+    before = _translate_segment(element_segment, delta, max(0.0, fraction - backoff))
+    if hit_point is None:
+        x0, y0, x1, y1 = before
+        hit_point = _closest_on_segment(
+            (x0 + x1) / 2.0, (y0 + y1) / 2.0, seal_segment
+        )
+    return _surface_approach(before, delta, seal_segment, seal, hit_point)
+
+
+def _combine_directions(directions):
+    """One deterministic direction, or an ambiguity when the hits oppose."""
+    vectors = [direction for direction in directions if direction is not None]
+    if not vectors:
+        return None, True
+    for index, first in enumerate(vectors):
+        for second in vectors[index + 1 :]:
+            if first[0] * second[0] + first[1] * second[1] < -1e-6:
+                return None, True
+    total = [sum(direction[0] for direction in vectors), sum(direction[1] for direction in vectors)]
+    combined = _unit(total[0], total[1])
+    if combined is None:
+        return None, True
+    if any(first[0] * combined[0] + first[1] * combined[1] <= 1e-6 for first in vectors):
+        return None, True
+    return combined, False
+
+
+def _select_dominant_hits(hits, delta):
+    """Pick the tied hits that belong to the dominant contact face.
+
+    ``hits`` is ``[(seal_index, result, direction), ...]``. At a flat-face tie
+    the end/corner segments are also touched at the same instant; their tangent
+    normals are nearly perpendicular to the motion and must not make the whole
+    contact ambiguous. The face with the largest alignment to the prescribed
+    motion wins. Genuinely opposing faces at the same alignment stay ambiguous.
+    """
+    length = hypot(delta[0], delta[1])
+    if length <= CLEARANCE_TOLERANCE:
+        return [], True
+    ux, uy = delta[0] / length, delta[1] / length
+    scored = []
+    for seal_index, result, direction in hits:
+        if direction is None:
+            continue
+        alignment = abs(direction[0] * ux + direction[1] * uy)
+        scored.append((alignment, seal_index, result, direction))
+    if not scored:
+        return [], True
+    best = max(item[0] for item in scored)
+    if best <= 1e-9:
+        # No component along the motion, but a single (or consistently oriented)
+        # side contact is still a valid contact side. Only genuinely opposing
+        # tied faces remain ambiguous.
+        selected = [(seal_index, result, direction) for _alignment, seal_index, result, direction in scored]
+    else:
+        selected = [
+            (seal_index, result, direction)
+            for alignment, seal_index, result, direction in scored
+            if alignment >= best - CONTACT_ALIGNMENT_TOLERANCE
+        ]
+    _combined, ambiguous = _combine_directions([item[2] for item in selected])
+    if ambiguous:
+        return [], True
+    return selected, False
+
+
+def _segment_first_contact(profile_segments, seal_segments, delta):
+    """Exact first contact of a translating segment list with the seal.
+
+    Initial hits that move *into* the touched surface are a t = 0 contact.
+    Initial hits that move away are ignored; the first new hit at t > 0 is the
+    target (the lower-lip case). If there is no new hit, the path has no contact.
+    """
+    if hypot(delta[0], delta[1]) <= CLEARANCE_TOLERANCE:
+        return {"kind": "none", "fraction": None, "hits": [], "all": []}
+    all_hits = []
+    for profile_index, profile_segment in enumerate(profile_segments):
+        for seal_index, seal_segment in enumerate(seal_segments):
+            result = _segment_toi(profile_segment, delta, seal_segment)
+            if result is not None:
+                all_hits.append((profile_index, seal_index, result))
+    if not all_hits:
+        return {"kind": "none", "fraction": None, "hits": [], "all": []}
+    initial = [hit for hit in all_hits if hit[2]["fraction"] <= CONTACT_INITIAL_FRACTION]
+    later = [hit for hit in all_hits if hit[2]["fraction"] > CONTACT_INITIAL_FRACTION]
+    initial_into = []
+    for profile_index, seal_index, result in initial:
+        approach = _initial_touch_approach(
+            profile_segments[profile_index], delta, seal_segments[seal_index], seal_segments
+        )
+        if approach is not None and (
+            delta[0] * approach[0] + delta[1] * approach[1] > CLEARANCE_TOLERANCE
+        ):
+            initial_into.append((profile_index, seal_index, result))
+    if initial_into:
+        return {"kind": "touching", "fraction": 0.0, "hits": initial_into, "all": all_hits}
+    if later:
+        fraction = min(hit[2]["fraction"] for hit in later)
+        tied = [
+            hit for hit in later if hit[2]["fraction"] <= fraction + CONTACT_TIE_FRACTION
+        ]
+        return {"kind": "contact", "fraction": fraction, "hits": tied, "all": all_hits}
+    return {"kind": "none", "fraction": None, "hits": [], "all": all_hits}
+
+
+def _element_contact_target(nodes, elements, seal, offset=0.0, delta=(0.0, 0.0)):
+    """First-contact target keyed by element, with the approach at contact time.
+
+    ``element_approaches`` is per element's own first non-initial contact. For an
+    element that belongs to the global first-contact set the global hit is used
+    (so an initial touch that moves away does not win over the new contact).
+    """
+    segments = []
+    for element in elements:
+        first = nodes[element["nodes"][0]]
+        second = nodes[element["nodes"][1]]
+        segments.append(
+            (
+                float(first[0]),
+                float(first[1]) + offset,
+                float(second[0]),
+                float(second[1]) + offset,
+            )
+        )
+    first = _segment_first_contact(segments, seal, delta)
+    by_element = defaultdict(list)
+    for profile_index, seal_index, result in first["all"]:
+        by_element[profile_index].append((seal_index, result))
+    target_hits_by_element = defaultdict(list)
+    for profile_index, seal_index, result in first["hits"]:
+        target_hits_by_element[profile_index].append((seal_index, result))
+    target_ids = []
+    for profile_index, _seal_index, _result in first["hits"]:
+        element_id = elements[profile_index]["id"]
+        if element_id not in target_ids:
+            target_ids.append(element_id)
+    approaches = {}
+    for profile_index, hits in by_element.items():
+        element_id = elements[profile_index]["id"]
+        later = [(seal_index, result) for seal_index, result in hits if result["fraction"] > CONTACT_INITIAL_FRACTION]
+        if element_id in target_ids:
+            tied = target_hits_by_element[profile_index]
+            fraction = first["fraction"]
+            pairs = []
+            if first["kind"] == "touching":
+                for seal_index, _result in tied:
+                    pairs.append(
+                        (
+                            seal_index,
+                            _result,
+                            _initial_touch_approach(
+                                segments[profile_index], delta, seal[seal_index], seal
+                            ),
+                        )
+                    )
+                fraction = 0.0
+            else:
+                for seal_index, result in tied:
+                    pairs.append(
+                        (
+                            seal_index,
+                            result,
+                            _approach_at_contact(
+                                segments[profile_index],
+                                delta,
+                                fraction,
+                                seal[seal_index],
+                                seal,
+                                result["static"],
+                            ),
+                        )
+                    )
+            selected, selection_ambiguous = _select_dominant_hits(pairs, delta)
+            direction, combine_ambiguous = _combine_directions(
+                [item[2] for item in selected]
+            )
+            approaches[element_id] = {
+                "fraction": fraction,
+                "direction": direction,
+                "ambiguous": selection_ambiguous or combine_ambiguous,
+                "initial_only": False,
+                "target": True,
+                "seal_segments": [seal[item[0]] for item in selected],
+            }
+        elif later:
+            fraction = min(result["fraction"] for _seal_index, result in later)
+            tied = [
+                (seal_index, result)
+                for seal_index, result in later
+                if result["fraction"] <= fraction + CONTACT_TIE_FRACTION
+            ]
+            pairs = [
+                (
+                    seal_index,
+                    result,
+                    _approach_at_contact(
+                        segments[profile_index],
+                        delta,
+                        fraction,
+                        seal[seal_index],
+                        seal,
+                        result["static"],
+                    ),
+                )
+                for seal_index, result in tied
+            ]
+            selected, selection_ambiguous = _select_dominant_hits(pairs, delta)
+            direction, combine_ambiguous = _combine_directions(
+                [item[2] for item in selected]
+            )
+            approaches[element_id] = {
+                "fraction": fraction,
+                "direction": direction,
+                "ambiguous": selection_ambiguous or combine_ambiguous,
+                "initial_only": False,
+                "target": False,
+                "seal_segments": [seal[item[0]] for item in selected],
+            }
+        else:
+            pairs = [
+                (
+                    seal_index,
+                    _result,
+                    _initial_touch_approach(
+                        segments[profile_index], delta, seal[seal_index], seal
+                    ),
+                )
+                for seal_index, _result in hits
+            ]
+            selected, selection_ambiguous = _select_dominant_hits(pairs, delta)
+            direction, combine_ambiguous = _combine_directions(
+                [item[2] for item in selected]
+            )
+            approaches[element_id] = {
+                "fraction": 0.0,
+                "direction": direction,
+                "ambiguous": selection_ambiguous or combine_ambiguous,
+                "initial_only": True,
+                "target": False,
+                "seal_segments": [seal[item[0]] for item in selected],
+            }
+    target_directions = [
+        approaches[element_id]["direction"]
+        for element_id in target_ids
+        if element_id in approaches
+    ]
+    target_direction, target_ambiguous = _combine_directions(target_directions)
+    ambiguous = target_ambiguous or any(
+        approaches[element_id]["ambiguous"]
+        for element_id in target_ids
+        if element_id in approaches
+    )
+    return {
+        "kind": first["kind"],
+        "fraction": first["fraction"],
+        "hits": first["hits"],
+        "all_hits": first["all"],
+        "element_ids": target_ids,
+        "element_approaches": approaches,
+        "direction": target_direction,
+        "ambiguous": ambiguous,
+    }
+
+
+def _geometry_segments(geometry):
+    """LineString/MultiLineString -> (x0, y0, x1, y1) segments."""
+    lines = list(geometry.geoms) if hasattr(geometry, "geoms") else [geometry]
+    segments = []
+    for line in lines:
+        coordinates = list(line.coords)
+        for first, second in zip(coordinates, coordinates[1:]):
+            segments.append((first[0], first[1], second[0], second[1]))
+    return segments
+
+
 def _polyline(segments):
     """A multi-segment polyline for geometric distance and nearest-point work."""
     from shapely.geometry import MultiLineString
@@ -670,36 +1146,24 @@ def _polyline(segments):
 def _swept_contact(profile_geom, seal_geom, delta, samples=200):
     """First fraction of the prescribed path that touches the seal, if any.
 
-    The translated profile's Euclidean distance to the seal surface is sampled
-    along the swept segment and bracketed to a tight tolerance. A path that
-    passes through the seal between two samples is still caught because the
-    sample spacing is far below any engineering feature in this template.
+    First contact is solved exactly from the segment sweep. The sampled distance
+    remains only as the closest-approach value for a genuine miss; it never
+    decides orientation or the first-contact fraction.
     """
     dx, dy = delta
     if hypot(dx, dy) <= CLEARANCE_TOLERANCE:
         return None, 0.0
-    if profile_geom.distance(seal_geom) <= CLEARANCE_TOLERANCE:
-        return 0.0, 0.0
-    previous_t, previous_d = 0.0, profile_geom.distance(seal_geom)
-    closest = (previous_d, 0.0)
+    first = _segment_first_contact(
+        _geometry_segments(profile_geom), _geometry_segments(seal_geom), delta
+    )
+    if first["kind"] in ("contact", "touching"):
+        return first["fraction"], 0.0
+    closest = (profile_geom.distance(seal_geom), 0.0)
     for index in range(1, samples + 1):
         t = index / samples
         distance = translate(profile_geom, dx * t, dy * t).distance(seal_geom)
         if distance < closest[0]:
             closest = (distance, t)
-        if distance <= 1e-6:
-            low, high = previous_t, t
-            for _ in range(60):
-                middle = (low + high) / 2.0
-                if (
-                    translate(profile_geom, dx * middle, dy * middle).distance(seal_geom)
-                    <= 1e-6
-                ):
-                    high = middle
-                else:
-                    low = middle
-            return high, closest[0]
-        previous_t, previous_d = t, distance
     return None, closest[0]
 
 
@@ -767,17 +1231,54 @@ def directional_motion_assessment(nodes, boundary, elements, motion, role, insta
             label=label,
             depth=round(depth, 9),
         )
-    direction = _direction_to_seal(profile_geom, seal_geom)
-    side = _side_from_direction(direction)
+    initial_direction = _direction_to_seal(profile_geom, seal_geom)
+    initial_side = _side_from_direction(initial_direction)
+    initial = profile_geom.distance(seal_geom)
+    target = _element_contact_target(nodes, elements, seal, offset, delta)
+    contact = target["kind"] in ("contact", "touching")
+    first_t = target["fraction"] if contact else None
+    contact_direction = target["direction"] if contact else None
+    contact_side = _side_from_direction(contact_direction)
+    if contact and (target["ambiguous"] or contact_direction is None):
+        raise ClearanceError(
+            "panel.contact_side_ambiguous",
+            f"The {label} first-contact neighborhood does not have one unambiguous "
+            "seal-facing side. Review the drawing or its placement.",
+            label=label,
+            fraction=target["fraction"],
+            elements=target["element_ids"],
+            attempts=[
+                {
+                    "element": element_id,
+                    "fraction": info["fraction"],
+                    "direction": info["direction"],
+                }
+                for element_id, info in target["element_approaches"].items()
+                if element_id in target["element_ids"]
+            ],
+        )
+    if contact:
+        direction = contact_direction
+    else:
+        direction = initial_direction
+        if direction is None and target["all_hits"]:
+            direction, _ = _combine_directions(
+                [
+                    info["direction"]
+                    for info in target["element_approaches"].values()
+                    if info["direction"] is not None
+                ]
+            )
+    side = initial_side if initial_side is not None else contact_side
     if side is None:
+        side = _side_from_direction(direction)
+    if direction is None:
         raise ClearanceError(
             "side_ambiguous",
             f"The {label} profile touches or crosses the nearest seal surface, so its "
             "contact normal is ambiguous. Review its initial placement.",
             label=label,
         )
-    initial = profile_geom.distance(seal_geom)
-    first_t, closest = _swept_contact(profile_geom, seal_geom, delta)
     final = translate(profile_geom, delta[0], delta[1]).distance(seal_geom)
     approaching = final < initial - CLEARANCE_TOLERANCE
     left = max(min(s[0] for s in profile), min(s[0] for s in seal))
@@ -801,6 +1302,65 @@ def directional_motion_assessment(nodes, boundary, elements, motion, role, insta
             angle=resolved["angle"],
             stroke=resolved["stroke"],
         )
+    contact_target = None
+    nearest_surface_is_target = None
+    if contact:
+        element_segments = {}
+        for element in elements:
+            first = nodes[element["nodes"][0]]
+            second = nodes[element["nodes"][1]]
+            element_segments[element["id"]] = (
+                float(first[0]),
+                float(first[1]) + offset,
+                float(second[0]),
+                float(second[1]) + offset,
+            )
+        gaps = []
+        witness = None
+        hit_segments = []
+        for profile_index, seal_index, _result in target["hits"]:
+            element_id = elements[profile_index]["id"]
+            element_segment = element_segments[element_id]
+            gaps.append(_segment_distance(element_segment, seal[seal_index])[0])
+            if tuple(seal[seal_index]) not in hit_segments:
+                hit_segments.append(tuple(seal[seal_index]))
+            if witness is None:
+                if first_t > 0:
+                    before = _translate_segment(
+                        element_segment, delta, max(0.0, first_t - CONTACT_BACKOFF_FRACTION)
+                    )
+                    _distance, _on_element, on_seal = _segment_distance(
+                        before, seal[seal_index]
+                    )
+                    witness = [on_seal[0], on_seal[1]]
+                else:
+                    x0, y0, x1, y1 = element_segment
+                    cx, cy = _closest_on_segment(
+                        (x0 + x1) / 2.0, (y0 + y1) / 2.0, seal[seal_index]
+                    )
+                    witness = [cx, cy]
+        contact_target = {
+            "element_ids": target["element_ids"],
+            "seal_segments": [list(segment) for segment in hit_segments],
+            "approach": contact_direction,
+            "fraction": first_t,
+            "travel_mm": first_t * hypot(delta[0], delta[1]),
+            "initial_gap_mm": min(gaps) if gaps else None,
+            "witness_mm": witness,
+        }
+        same_distance = abs(initial - contact_target["initial_gap_mm"]) <= max(
+            1e-6, 1e-3 * max(initial, contact_target["initial_gap_mm"])
+        )
+        same_direction = (
+            initial_direction is None
+            or contact_direction is None
+            or (
+                initial_direction[0] * contact_direction[0]
+                + initial_direction[1] * contact_direction[1]
+                > 0.99
+            )
+        )
+        nearest_surface_is_target = bool(same_distance and same_direction)
     path = (
         "hold"
         if resolved["stroke"] == 0
@@ -810,6 +1370,10 @@ def directional_motion_assessment(nodes, boundary, elements, motion, role, insta
             else ("contact" if first_t is not None else ("approaching" if approaching else "missed"))
         )
     )
+    if first_t is not None:
+        closest = 0.0
+    else:
+        _first_t, closest = _swept_contact(profile_geom, seal_geom, delta)
     # A zero stroke is a hold: report the assembled role direction (the way the
     # panel faces the seal) rather than an arbitrary draft angle.
     if resolved["stroke"] == 0:
@@ -837,6 +1401,11 @@ def directional_motion_assessment(nodes, boundary, elements, motion, role, insta
         "reaches_initial_gap": first_t is not None,
         "path": path,
         "legacy": False,
+        "contact_side": contact_side,
+        "initial_side": initial_side,
+        "initial_direction_to_seal": initial_direction,
+        "contact_target": contact_target,
+        "nearest_surface_is_target": nearest_surface_is_target,
     }
 
 
@@ -1112,21 +1681,22 @@ def _reverse_chain(ordered):
     ]
 
 
-def _contact_alignment(ordered, nodes, seal, offset=0.0, delta=None):
-    """Signed local alignment of every SPOS normal with its nearest seal point.
+def _contact_alignment(ordered, nodes, seal, offset=0.0, delta=None, target=None):
+    """Signed local alignment of every SPOS normal with its contact-time surface.
 
-    A single global average is not enough evidence on a curved return: each
-    element is measured against the direction from its *assembled* midpoint to
-    the closest seal surface, and the predicted first-contact neighborhood is
-    selected by the actual swept distance rather than by the undeformed drawing.
-    The persisted placement offset and motion vector therefore decide the
-    orientation, not the drawing's original coordinates.
+    For a prescribed sweep each element is measured at its own exact first
+    contact: the direction comes from the witness on the seal segment actually
+    hit just before touch, not from the nearest surface in the undeformed pose.
+    The persisted placement offset is applied. A static call (``delta`` absent
+    or zero) keeps the historical nearest-point measurement.
     """
     from shapely.geometry import LineString, Point
     from shapely.ops import nearest_points
 
     seal_geom = _polyline(seal)
     swept = delta is not None and hypot(float(delta[0]), float(delta[1])) > CLEARANCE_TOLERANCE
+    if swept and target is None:
+        target = _element_contact_target(nodes, ordered, seal, offset, delta)
     rows = []
     for element in ordered:
         first = nodes[element["nodes"][0]]
@@ -1137,42 +1707,40 @@ def _contact_alignment(ordered, nodes, seal, offset=0.0, delta=None):
         distance = placed.distance(seal_geom)
         sweep_distance = distance
         contact_fraction = None
+        direction = None
+        ambiguous = False
+        hit_segments = []
         if swept:
-            from shapely.geometry import LineString
-            from shapely.ops import nearest_points as _nearest
-
             end = (placed.x + delta[0], placed.y + delta[1])
             path = LineString([(placed.x, placed.y), end])
             sweep_distance = path.distance(seal_geom)
-            on_path, _on_seal = _nearest(path, seal_geom)
-            dx, dy = end[0] - placed.x, end[1] - placed.y
-            denominator = dx * dx + dy * dy
-            contact_fraction = (
-                max(
-                    0.0,
-                    min(
-                        1.0,
-                        ((on_path.x - placed.x) * dx + (on_path.y - placed.y) * dy)
-                        / denominator,
-                    ),
-                )
-                if denominator > 0
-                else 0.0
+            info = (
+                target["element_approaches"].get(element["id"]) if target is not None else None
             )
-        if distance <= CLEARANCE_TOLERANCE:
-            direction = None
-            dot = 0.0
-        else:
+            if info is not None and target["kind"] in ("contact", "touching"):
+                if not info.get("initial_only"):
+                    contact_fraction = info["fraction"]
+                direction = info["direction"]
+                ambiguous = info["ambiguous"]
+                hit_segments = info.get("seal_segments", [])
+            elif info is not None:
+                direction = info["direction"]
+                ambiguous = info["ambiguous"]
+                hit_segments = info.get("seal_segments", [])
+            if direction is None and distance > CLEARANCE_TOLERANCE:
+                on_profile, on_seal = nearest_points(placed, seal_geom)
+                dx, dy = on_seal.x - on_profile.x, on_seal.y - on_profile.y
+                direction = _unit(dx, dy)
+        elif distance > CLEARANCE_TOLERANCE:
             on_profile, on_seal = nearest_points(placed, seal_geom)
             dx, dy = on_seal.x - on_profile.x, on_seal.y - on_profile.y
-            length = hypot(dx, dy)
-            direction = None if length <= CLEARANCE_TOLERANCE else [dx / length, dy / length]
-            normal = surface_normal(nodes, element)
-            dot = (
-                0.0
-                if direction is None
-                else normal[0] * direction[0] + normal[1] * direction[1]
-            )
+            direction = _unit(dx, dy)
+        normal = surface_normal(nodes, element)
+        dot = (
+            0.0
+            if direction is None
+            else normal[0] * direction[0] + normal[1] * direction[1]
+        )
         rows.append(
             {
                 "element": element,
@@ -1181,23 +1749,25 @@ def _contact_alignment(ordered, nodes, seal, offset=0.0, delta=None):
                 "contact_fraction": contact_fraction,
                 "direction": direction,
                 "dot": dot,
+                "ambiguous": ambiguous,
+                "seal_segments": hit_segments,
             }
         )
     return rows
 
 
 # mm. The predicted first-contact neighborhood: elements within this distance of
-# the closest element. Orientation and its independent verification both use it.
+# the closest element. Static/no-contact callers use it; a swept contact uses the
+# exact first-contact tie instead.
 CONTACT_NEIGHBORHOOD_MM = 0.5
 
 
 def _first_contact(rows):
     if not rows:
         return []
-    # The first-contact neighborhood is the earliest band along the prescribed
-    # sweep, not every element whose path eventually crosses the seal: a curved
-    # return can otherwise pull in segments that face away and never touch
-    # first. The 5% band is measured on the actual stroke.
+    # A swept contact selects the exact earliest tie. The 5 % band is retained
+    # only for a static/no-contact fallback, where a curved return can otherwise
+    # pull in segments that never touch first.
     fractions = [row["contact_fraction"] for row in rows if row.get("contact_fraction") is not None]
     if fractions:
         earliest = min(fractions)
@@ -1205,7 +1775,7 @@ def _first_contact(rows):
             row
             for row in rows
             if row.get("contact_fraction") is not None
-            and row["contact_fraction"] <= earliest + 0.05
+            and row["contact_fraction"] <= earliest + CONTACT_TIE_FRACTION
         ]
         if band:
             return band
@@ -1213,6 +1783,28 @@ def _first_contact(rows):
     closest = min(row[metric] for row in rows)
     limit = closest + max(CONTACT_NEIGHBORHOOD_MM, closest * 0.02)
     return [row for row in rows if row[metric] <= limit + CLEARANCE_TOLERANCE]
+
+
+def _ambiguous_error(target, role, label):
+    return PreparationError(
+        "panel.contact_side_ambiguous",
+        f"The {label} profile's first-contact neighborhood does not have one "
+        "unambiguous seal-facing side. Review the drawing or its placement.",
+        stage="components",
+        role=role,
+        label=label,
+        fraction=target.get("fraction") if target else None,
+        elements=target.get("element_ids") if target else [],
+        attempts=[
+            {
+                "element": element_id,
+                "fraction": info["fraction"],
+                "direction": info["direction"],
+            }
+            for element_id, info in (target or {}).get("element_approaches", {}).items()
+            if info.get("target")
+        ],
+    )
 
 
 def orient_toward(
@@ -1227,13 +1819,65 @@ def orient_toward(
 ):
     """Order R2D2 connectivity so the measured contact side faces the seal.
 
-    With ``seal`` (the exterior seal segments) the decision is made at the
-    predicted first-contact neighborhood of the *assembled* profile including
-    its persisted offset and motion sweep, not from one global average or from
-    the drawing's original coordinates. The oriented normals are re-checked
-    there. Without it the historical global projection is kept for callers that
-    have no boundary at hand.
+    With ``seal`` and a prescribed sweep the decision is made at each element's
+    exact first contact on the *assembled* profile: the hit seal segment, its
+    witness and the approaching side just before touch decide the orientation.
+    The persisted offset and motion vector are therefore part of the decision.
+    A static call keeps the historical nearest-point projection; without any
+    seal the historical global projection is kept.
     """
+    if seal is None:
+        if direction is None:
+            raise PreparationError(
+                "panel.contact_side_ambiguous",
+                f"The {label} profile touches or crosses the nearest seal surface, so its "
+                "contact side cannot be measured.",
+                stage="components",
+                role=role,
+                label=label,
+            )
+        total = 0.0
+        for element in ordered:
+            normal = surface_normal(nodes, element)
+            total += normal[0] * direction[0] + normal[1] * direction[1]
+        return _reverse_chain(ordered) if total < 0 else ordered
+
+    swept = delta is not None and hypot(float(delta[0]), float(delta[1])) > CLEARANCE_TOLERANCE
+    if swept:
+        target = _element_contact_target(nodes, ordered, seal, offset, delta)
+        if target["kind"] in ("contact", "touching") and (
+            target["ambiguous"] or target["direction"] is None
+        ):
+            raise _ambiguous_error(target, role, label)
+        rows = _first_contact(
+            _contact_alignment(ordered, nodes, seal, offset, delta, target=target)
+        )
+        score = sum(row["dot"] for row in rows)
+        oriented = _reverse_chain(ordered) if score < 0 else ordered
+        # Re-measure the oriented connectivity against the same contact-time
+        # directions. Every first-contact element must now face the seal.
+        check = _first_contact(
+            _contact_alignment(oriented, nodes, seal, offset, delta, target=target)
+        )
+        if not check or sum(row["dot"] for row in check) <= 1e-9:
+            raise _ambiguous_error(target, role, label)
+        for row in check:
+            if row.get("ambiguous"):
+                raise _ambiguous_error(target, role, label)
+            if row["direction"] is not None and row["dot"] < -1e-9:
+                raise PreparationError(
+                    "panel.contact_side_ambiguous",
+                    f"The {label} profile element {row['element']['id']} faces away from "
+                    "the seal in the predicted first-contact neighborhood.",
+                    stage="components",
+                    role=role,
+                    label=label,
+                    element=row["element"]["id"],
+                    fraction=row.get("contact_fraction"),
+                    direction=row["direction"],
+                )
+        return oriented
+
     if direction is None:
         raise PreparationError(
             "panel.contact_side_ambiguous",
@@ -1243,19 +1887,9 @@ def orient_toward(
             role=role,
             label=label,
         )
-    if seal is None:
-        total = 0.0
-        for element in ordered:
-            normal = surface_normal(nodes, element)
-            total += normal[0] * direction[0] + normal[1] * direction[1]
-        return _reverse_chain(ordered) if total < 0 else ordered
-
     rows = _first_contact(_contact_alignment(ordered, nodes, seal, offset, delta))
     score = sum(row["dot"] for row in rows)
     oriented = _reverse_chain(ordered) if score < 0 else ordered
-    # Re-measure the oriented connectivity. This is the independent local check
-    # the brief requires: every element in the predicted first-contact
-    # neighborhood must now face the seal, not merely their average.
     check = _first_contact(_contact_alignment(oriented, nodes, seal, offset, delta))
     if not check or sum(row["dot"] for row in check) <= 1e-9:
         raise PreparationError(
@@ -1394,9 +2028,18 @@ def write_inp(project, mesh, fixture=None):
         "*Heading",
         "Abaqus QOL 2D plane stress / implicit dynamic closing",
         "** Units: N, mm, s, tonne. Panel RF2 is total reaction for the specified thickness.",
-        f"** Initial clearance on the assembled mesh: {scalar(clearance)} mm.",
-        f"** Door is {side_phrase(door['side'])}; the contact normal and travel direction are "
-        f"[{', '.join(scalar(v) for v in door['direction'])}].",
+        f"** Initial nearest clearance on the assembled mesh: {scalar(clearance)} mm"
+        f" ({side_phrase(door.get('initial_side') or door['side'])}).",
+        (
+            f"** First contact at {scalar(door['first_contact_fraction'])} of travel "
+            f"({scalar(door['contact_target']['travel_mm'])} mm) on seal segment "
+            f"[{', '.join(scalar(value) for value in door['contact_target']['seal_segments'][0])}] mm; "
+            f"approach [{', '.join(scalar(value) for value in door['contact_target']['approach'])}]."
+            if door.get("contact_target")
+            else "** No first contact on the prescribed path."
+        ),
+        f"** Door travel direction: [{', '.join(scalar(v) for v in door['direction'])}]; "
+        f"contact side: {side_phrase(door.get('contact_side') or 'not reached')}.",
         f"** Prescribed motion: {scalar(resolved['stroke'])} mm at "
         f"{scalar(resolved['angle'])} deg; delta "
         f"[{', '.join(scalar(v) for v in resolved['delta'])}] mm from initial placement.",

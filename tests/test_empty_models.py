@@ -248,7 +248,12 @@ def test_display_metadata_is_recorded_and_derived_without_rewriting_artifacts(cl
     recorded = client.get("/api/jobs/" + run["id"] + "/display-metadata").json()
     assert recorded["source"] == "recorded"
 
-    # Emulate a retained result produced before display metadata was recorded.
+    # Emulate a retained flat-file result produced before generations and before
+    # display metadata was recorded.
+    with store.connection(True) as db:
+        db.execute(
+            "UPDATE jobs SET result_generation=0,result_dir=NULL WHERE id=?", (run["id"],)
+        )
     path = store.job_dir(run["id"]) / "results.json"
     older = json.loads(path.read_text(encoding="utf-8"))
     older.pop("display")

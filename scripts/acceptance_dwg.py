@@ -132,52 +132,412 @@ def parse_nset(text, name):
     return sorted(int(value) for value in re.findall(r"\d+", block.group(1)))
 
 
-def rigid_spos_checks(parts, seal_segments, tolerance=1e-6):
+def _cross(ax, ay, bx, by):
+    return ax * by - ay * bx
+
+
+def _unit(dx, dy):
+    length = (dx * dx + dy * dy) ** 0.5
+    if length <= 1e-12:
+        return None
+    return [dx / length, dy / length]
+
+
+def _closest_on_segment(px, py, first, second):
+    ex, ey = second[0] - first[0], second[1] - first[1]
+    scale = ex * ex + ey * ey
+    if scale <= 1e-24:
+        return first[0], first[1]
+    t = max(0.0, min(1.0, ((px - first[0]) * ex + (py - first[1]) * ey) / scale))
+    return first[0] + t * ex, first[1] + t * ey
+
+
+def _closest_between(a, b, c, d):
+    best = None
+    for px, py, other in ((a[0], a[1], (c, d)), (b[0], b[1], (c, d)), (c[0], c[1], (a, b)), (d[0], d[1], (a, b))):
+        qx, qy = _closest_on_segment(px, py, other[0], other[1])
+        distance = ((px - qx) ** 2 + (py - qy) ** 2) ** 0.5
+        if best is None or distance < best[0]:
+            best = (distance, [px, py], [qx, qy])
+    return best
+
+
+def _segment_toi(a, b, delta, c, d):
+    """Earliest t in [0, 1] where (a,b)+t*delta meets (c,d). Independent math."""
+    e1x, e1y = b[0] - a[0], b[1] - a[1]
+    e2x, e2y = d[0] - c[0], d[1] - c[1]
+    len1, len2 = (e1x * e1x + e1y * e1y) ** 0.5, (e2x * e2x + e2y * e2y) ** 0.5
+    if len1 <= 1e-12 or len2 <= 1e-12:
+        return None
+    wx, wy = c[0] - a[0], c[1] - a[1]
+    den = _cross(e1x, e1y, e2x, e2y)
+    if abs(den) > 1e-12 * max(1.0, len1 * len2):
+        s0 = _cross(wx, wy, e2x, e2y)
+        s1 = -_cross(delta[0], delta[1], e2x, e2y)
+        u0 = _cross(wx, wy, e1x, e1y)
+        u1 = -_cross(delta[0], delta[1], e1x, e1y)
+        low, high = 0.0, 1.0
+        low_value, high_value = (0.0, den) if den > 0 else (den, 0.0)
+        for c0, c1 in ((s0, s1), (u0, u1)):
+            if abs(c1) <= 1e-12 * max(1.0, abs(c0), abs(low_value), abs(high_value)):
+                if not (low_value - 1e-9 <= c0 <= high_value + 1e-9):
+                    return None
+                continue
+            first_t = (low_value - c0) / c1
+            last_t = (high_value - c0) / c1
+            if c1 < 0:
+                first_t, last_t = last_t, first_t
+            low = max(low, min(first_t, last_t))
+            high = min(high, max(first_t, last_t))
+        if high < low - 1e-9:
+            return None
+        t = max(0.0, low)
+        if t > 1.0 + 1e-9:
+            return None
+        t = min(1.0, t)
+        scale = e2x * e2x + e2y * e2y
+        mx, my = a[0] + t * delta[0], a[1] + t * delta[1]
+        u = max(0.0, min(1.0, ((mx - c[0]) * e2x + (my - c[1]) * e2y) / scale))
+        return t, (mx, my), (c[0] + u * e2x, c[1] + u * e2y)
+    de = _cross(delta[0], delta[1], e2x, e2y)
+    if abs(de) <= 1e-12 * max(1.0, (delta[0] ** 2 + delta[1] ** 2) ** 0.5 * len2):
+        if abs(_cross(wx, wy, e2x, e2y)) > 1e-7 * len2:
+            return None
+        t = 0.0
+    else:
+        t = _cross(wx, wy, e2x, e2y) / de
+        if t < -1e-9 or t > 1.0 + 1e-9:
+            return None
+        t = max(0.0, min(1.0, t))
+    ax_t = a[0] + t * delta[0] - c[0]
+    ay_t = a[1] + t * delta[1] - c[1]
+    bx_t = b[0] + t * delta[0] - c[0]
+    by_t = b[1] + t * delta[1] - c[1]
+    scale = e2x * e2x + e2y * e2y
+    ua = (ax_t * e2x + ay_t * e2y) / scale
+    ub = (bx_t * e2x + by_t * e2y) / scale
+    low, high = min(ua, ub), max(ua, ub)
+    if high < -1e-9 or low > 1.0 + 1e-9:
+        return None
+    u = max(0.0, min(1.0, low))
+    span = ub - ua
+    s = 0.0 if abs(span) <= 1e-15 else max(0.0, min(1.0, (u - ua) / span))
+    mx = a[0] + s * e1x + t * delta[0]
+    my = a[1] + s * e1y + t * delta[1]
+    return t, (mx, my), (c[0] + u * e2x, c[1] + u * e2y)
+
+
+def _instance_translation(text, name):
+    """Read the PANEL-1/BODY-1 instance translation emitted in the INP."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith(f"*Instance, name={name},"):
+            for candidate in lines[index + 1 : index + 4]:
+                values = candidate.split(",")
+                if len(values) >= 3:
+                    try:
+                        return [float(values[0]), float(values[1]), float(values[2])]
+                    except ValueError:
+                        continue
+            return [0.0, 0.0, 0.0]
+    return [0.0, 0.0, 0.0]
+
+
+def _motion_delta(motion, schema_version):
+    """Prescribed translation for the acceptance sweep (same convention as the deck)."""
+    import math
+
+    if schema_version >= 4:
+        stroke = float(motion.get("stroke", 0.0))
+        angle = float(motion.get("angle", -90.0))
+        dx = stroke * math.cos(math.radians(angle))
+        dy = stroke * math.sin(math.radians(angle))
+        if abs(dx) < 1e-12:
+            dx = 0.0
+        if abs(dy) < 1e-12:
+            dy = 0.0
+        return [dx, dy]
+    return [0.0, float(motion.get("travel", 0.0))]
+
+
+def _segment_normal(c, d):
+    return _unit(-(d[1] - c[1]), d[0] - c[0])
+
+
+def _point_on_boundary(x, y, seal_pairs):
+    for first, second in seal_pairs:
+        qx, qy = _closest_on_segment(x, y, first, second)
+        if ((x - qx) ** 2 + (y - qy) ** 2) ** 0.5 <= 1e-7:
+            return True
+    return False
+
+
+def _inside_material(points, seal_pairs):
+    for x, y in points:
+        if _point_on_boundary(x, y, seal_pairs):
+            continue
+        inside = False
+        for first, second in seal_pairs:
+            if (first[1] > y) != (second[1] > y):
+                crossing = first[0] + (y - first[1]) * (second[0] - first[0]) / (second[1] - first[1])
+                if crossing > x:
+                    inside = not inside
+        if inside:
+            return True
+    return False
+
+
+def _surface_approach(a, b, delta, c, d, seal_pairs, hit_point=None):
+    """Direction from the element to the hit seal segment, using its tangent normal.
+
+    A material probe on either side of the hit point selects the outward side.
+    This stays stable for a corner or endpoint-only hit where the nearest-point
+    vector is tangential.
+    """
+    normal = _segment_normal(c, d)
+    if normal is None:
+        return None
+    mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+    if hit_point is None:
+        hit_point = _closest_on_segment(mid[0], mid[1], c, d)
+    hx, hy = hit_point
+    ex, ey = d[0] - c[0], d[1] - c[1]
+    seal_length = (ex * ex + ey * ey) ** 0.5
+    step = min(1e-3, max(1e-7, 1e-4 * max(seal_length, 1.0)))
+    if seal_length > 1e-12:
+        parameter = ((hx - c[0]) * ex + (hy - c[1]) * ey) / (seal_length * seal_length)
+        margin = min(0.49, step / seal_length)
+        parameter = min(1.0 - margin, max(margin, parameter))
+        hx, hy = c[0] + parameter * ex, c[1] + parameter * ey
+    inside_plus = _inside_material([(hx + normal[0] * step, hy + normal[1] * step)], seal_pairs)
+    inside_minus = _inside_material([(hx - normal[0] * step, hy - normal[1] * step)], seal_pairs)
+    if inside_plus and not inside_minus:
+        return normal
+    if inside_minus and not inside_plus:
+        return [-normal[0], -normal[1]]
+    direction = _unit(hx - mid[0], hy - mid[1])
+    if direction is not None:
+        return direction
+    along = delta[0] * normal[0] + delta[1] * normal[1]
+    if abs(along) <= 1e-12:
+        return None
+    return normal if along > 0 else [-normal[0], -normal[1]]
+
+
+def _initial_approach(a, b, delta, c, d, seal_pairs):
+    """Approach from an element already touching the hit seal segment at t = 0."""
+    mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
+    qx, qy = _closest_on_segment(mid[0], mid[1], c, d)
+    return _surface_approach(a, b, delta, c, d, seal_pairs, (qx, qy))
+
+
+def _select_dominant_hits(pairs, delta):
+    """Keep the tied hits on the contact face most aligned with the motion.
+
+    ``pairs`` is ``[(seal_index, direction), ...]``. At a flat-face tie the
+    end/corner segments are also touched at the same instant; their tangent
+    normals are nearly perpendicular and must not average into the face normal.
+    """
+    length = (delta[0] * delta[0] + delta[1] * delta[1]) ** 0.5
+    if length <= 1e-12:
+        return []
+    ux, uy = delta[0] / length, delta[1] / length
+    scored = []
+    for seal_index, direction in pairs:
+        if direction is None:
+            continue
+        alignment = abs(direction[0] * ux + direction[1] * uy)
+        scored.append((alignment, seal_index, direction))
+    if not scored:
+        return []
+    best = max(item[0] for item in scored)
+    if best <= 1e-9:
+        selected = [(seal_index, direction) for _alignment, seal_index, direction in scored]
+    else:
+        selected = [
+            (seal_index, direction)
+            for alignment, seal_index, direction in scored
+            if alignment >= best - 1e-3
+        ]
+    for index, (_seal_index, first) in enumerate(selected):
+        for _other_index, second in selected[index + 1 :]:
+            if first[0] * second[0] + first[1] * second[1] < -1e-6:
+                return []
+    return selected
+
+
+def _first_contact_hits(profile, delta, seal_pairs):
+    """Earliest exact hit set, with initial-into preferred over a later surface."""
+    hits = []
+    for index, (a, b) in enumerate(profile):
+        for seal_index, (c, d) in enumerate(seal_pairs):
+            contact = _segment_toi(a, b, delta, c, d)
+            if contact is not None:
+                hits.append((index, seal_index, contact[0], contact[2]))
+    if not hits:
+        return None, []
+    initial = [hit for hit in hits if hit[2] <= 1e-9]
+    later = [hit for hit in hits if hit[2] > 1e-9]
+    initial_into = []
+    for index, seal_index, fraction, _hit_point in initial:
+        c, d = seal_pairs[seal_index]
+        approach = _initial_approach(*profile[index], delta, c, d, seal_pairs)
+        if approach is not None and (
+            delta[0] * approach[0] + delta[1] * approach[1] > 1e-12
+        ):
+            initial_into.append((index, seal_index, fraction, _hit_point))
+    candidates = initial_into or later
+    if not candidates:
+        return None, []
+    fraction = min(hit[2] for hit in candidates)
+    return fraction, [
+        hit for hit in candidates if hit[2] <= fraction + 1e-6
+    ]
+
+
+def rigid_spos_checks(parts, seal_segments, tolerance=1e-6, instance_translations=None, deltas=None):
     """Local first-contact SPOS orientation for every rigid part.
 
-    The check is independent of the writer's decision: it walks the generated
-    R2D2 connectivity, recomputes each normal and compares it with the
-    direction to the nearest seal segment at the closest elements.
+    The check is independent of the writer's decision: it applies the emitted
+    PANEL-1/BODY-1 instance translation, solves the earliest translating-segment
+    intersection with the seal (parallel, non-parallel and endpoint hits), and
+    compares each emitted normal with the direction to the hit witness at contact
+    time. It does not reuse the writer's nearest-point scoring.
     """
     from math import hypot
 
-    from shapely.geometry import Point
-    from shapely.ops import nearest_points
-    from shapely.geometry import MultiLineString
-
-    seal = MultiLineString(
-        [[(segment[0], segment[1]), (segment[2], segment[3])] for segment in seal_segments]
-    )
+    instance_translations = instance_translations or {}
+    deltas = deltas or {}
+    seal_pairs = [((s[0], s[1]), (s[2], s[3])) for s in seal_segments]
     rows = []
     for name, part in parts.items():
-        distances = []
+        translation = instance_translations.get(name, [0.0, 0.0, 0.0])
+        delta = deltas.get(name)
+        profile = []
+        normals = []
+        midpoints = []
         for element, first, second in part["elements"]:
-            a, b = part["nodes"][first], part["nodes"][second]
-            midpoint = Point((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
-            distance = midpoint.distance(seal)
+            a = part["nodes"][first]
+            b = part["nodes"][second]
+            a = (a[0] + translation[0], a[1] + translation[1])
+            b = (b[0] + translation[0], b[1] + translation[1])
+            profile.append((a, b))
             dx, dy = b[0] - a[0], b[1] - a[1]
             length = hypot(dx, dy)
-            normal = (-dy / length, dx / length)
-            _, on_seal = nearest_points(midpoint, seal)
-            vx, vy = on_seal.x - midpoint.x, on_seal.y - midpoint.y
-            vlength = hypot(vx, vy)
-            dot = 0.0 if vlength <= 0 else (normal[0] * vx + normal[1] * vy) / vlength
-            distances.append((distance, dot, element, midpoint))
-        if not distances:
+            normals.append((-dy / length, dx / length))
+            midpoints.append(((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0))
+        if not profile:
             continue
-        closest = min(item[0] for item in distances)
-        near = [item for item in distances if item[0] <= closest + max(0.5, closest * 0.02)]
+
+        def distance_to_seal(mid):
+            best = None
+            for pair in seal_pairs:
+                qx, qy = _closest_on_segment(mid[0], mid[1], pair[0], pair[1])
+                distance = hypot(mid[0] - qx, mid[1] - qy)
+                if best is None or distance < best:
+                    best = distance
+            return best if best is not None else float("inf")
+
+        distances = [distance_to_seal(mid) for mid in midpoints]
+        closest = min(distances)
+        if delta is None or hypot(delta[0], delta[1]) <= 1e-12:
+            # Historical nearest-surface diagnostic for a static call.
+            near = [index for index, distance in enumerate(distances) if distance <= closest + max(0.5, closest * 0.02)]
+            dots = []
+            for index in near:
+                mid = midpoints[index]
+                on_seal = min(
+                    (
+                        _closest_on_segment(mid[0], mid[1], pair[0], pair[1])
+                        for pair in seal_pairs
+                    ),
+                    key=lambda point: (point[0] - mid[0]) ** 2 + (point[1] - mid[1]) ** 2,
+                )
+                direction = _unit(on_seal[0] - mid[0], on_seal[1] - mid[1])
+                dots.append(0.0 if direction is None else normals[index][0] * direction[0] + normals[index][1] * direction[1])
+            rows.append(
+                {
+                    "part": name,
+                    "elements": len(profile),
+                    "closest_mm": closest,
+                    "near": len(near),
+                    "min_dot": min(dots) if dots else 0.0,
+                    "sum_dot": sum(dots),
+                    "first_contact_fraction": None,
+                    "target_segments": [],
+                }
+            )
+            continue
+        fraction, first = _first_contact_hits(profile, delta, seal_pairs)
+        if fraction is None:
+            rows.append(
+                {
+                    "part": name,
+                    "elements": len(profile),
+                    "closest_mm": closest,
+                    "near": 0,
+                    "min_dot": 0.0,
+                    "sum_dot": 0.0,
+                    "first_contact_fraction": None,
+                    "target_segments": [],
+                }
+            )
+            continue
+        first_elements = []
+        for index, _seal_index, _fraction, _hit_point in first:
+            if index not in first_elements:
+                first_elements.append(index)
+        dots = []
+        target_segments = []
+        for index in first_elements:
+            a, b = profile[index]
+            candidates = [hit for hit in first if hit[0] == index]
+            candidate_directions = []
+            for _index, seal_index, hit_fraction, hit_point in candidates:
+                c, d = seal_pairs[seal_index]
+                if hit_fraction > 1e-9:
+                    backoff = min(1e-6, hit_fraction / 2.0)
+                    t_before = hit_fraction - backoff
+                    moved = (
+                        (a[0] + delta[0] * t_before, a[1] + delta[1] * t_before),
+                        (b[0] + delta[0] * t_before, b[1] + delta[1] * t_before),
+                    )
+                    direction = _surface_approach(
+                        moved[0], moved[1], delta, c, d, seal_pairs, hit_point
+                    )
+                else:
+                    direction = _initial_approach(a, b, delta, c, d, seal_pairs)
+                if direction is not None:
+                    candidate_directions.append((seal_index, direction))
+            selected = _select_dominant_hits(candidate_directions, delta)
+            directions = [direction for _seal_index, direction in selected]
+            for seal_index, _direction in selected:
+                if tuple(seal_segments[seal_index]) not in target_segments:
+                    target_segments.append(tuple(seal_segments[seal_index]))
+            combined = (
+                _unit(
+                    sum(direction[0] for direction in directions),
+                    sum(direction[1] for direction in directions),
+                )
+                if directions
+                else None
+            )
+            if combined is not None:
+                dots.append(normals[index][0] * combined[0] + normals[index][1] * combined[1])
         rows.append(
             {
                 "part": name,
-                "elements": len(distances),
+                "elements": len(profile),
                 "closest_mm": closest,
-                "near": len(near),
-                "min_dot": min(item[1] for item in near),
-                "sum_dot": sum(item[1] for item in near),
+                "near": len(first_elements),
+                "min_dot": min(dots) if dots else 0.0,
+                "sum_dot": sum(dots),
+                "first_contact_fraction": fraction,
+                "target_segments": target_segments,
             }
         )
     return rows
+
 
 
 def seal_boundary_segments(nodes, continuum):
@@ -452,12 +812,31 @@ def main():
 
         continuum = [e for e in mesh_json["elements"] if e["type"] != "R2D2"]
         nodes = {n["id"]: n["xyz"] for n in mesh_json["nodes"]}
-        checks = rigid_spos_checks(parts, seal_boundary_segments(nodes, continuum))
+        setup = saved["setup"]
+        schema_version = int(setup.get("schema_version", 1))
+        deltas = {"PANEL": _motion_delta(setup.get("motion", {}), schema_version)}
+        if "BODY" in parts:
+            deltas["BODY"] = _motion_delta(
+                setup.get("motion", {}).get("body", {}), schema_version
+            )
+        instance_translations = {
+            part: _instance_translation(text, f"{part}-1") for part in parts
+        }
+        checks = rigid_spos_checks(
+            parts,
+            seal_boundary_segments(nodes, continuum),
+            instance_translations=instance_translations,
+            deltas=deltas,
+        )
         for row in checks:
             print(
                 f"SPOS {row['part']:5} : closest {row['closest_mm']:.4f} mm, "
-                f"{row['near']} first-contact elements, min dot {row['min_dot']:+.6f}"
+                f"first contact {row['first_contact_fraction']}, "
+                f"{row['near']} elements, min dot {row['min_dot']:+.6f}"
             )
+            if row["first_contact_fraction"] is None:
+                print(f"SPOS {row['part']:5} : no first contact; orientation not asserted")
+                continue
             if row["min_dot"] <= 0:
                 fail(f"{row['part']} SPOS faces away from the seal at first contact")
 

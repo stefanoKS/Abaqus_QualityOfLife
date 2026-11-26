@@ -903,7 +903,7 @@ export const ja = {
   'run.multiplierReset': '×1 に戻す',
   'run.multiplierInvalid': '有限の非負の倍率を入力してください。',
   'run.multiplierActive': '×{factor} を表示応答に適用中',
-  'run.partialTitle': '失敗・部分結果',
+  'run.partialTitle': '{outcome}・部分結果',
   'run.partialStep': '最後に保存されたステップ: {step}',
   'run.partialFrame': '保存フレーム {ordinal} · 全 {total} フレーム',
   'run.partialTime': '最後の保存時刻 局所 {local} s · 累積 {total} s',
@@ -911,6 +911,8 @@ export const ja = {
     '最後に報告されたソルバ増分 {increment}（{time} s、失敗時刻ではありません）',
   'run.partialHistoryOnly':
     'ネイティブ履歴のみ復元可能です。フィールド表示は利用できません。',
+  'run.noFieldFrames':
+    '利用可能なフィールドフレームがありません。下の構造履歴は表示できますが、再生とフィールドプローブは無効です。',
   'run.partialInitialOnly': '初期状態のみ保存されています。',
   'run.extractAvailable': '保存済み結果を抽出',
   'run.extractAvailableHelp':
@@ -1085,6 +1087,7 @@ export const ja = {
   'state.Processing results': '結果処理中',
   'state.Completed': '完了',
   'state.Pending': '待機中',
+  'state.Unknown': '不明',
   'state.Unknown / worker disconnected': 'ワーカーとの接続断・実行状態不明',
 
   'phase.Awaiting worker': 'ワーカーの割当待ち',
@@ -1209,6 +1212,8 @@ export const ja = {
   'run.pressureExportUnavailable': '表示中のフレームにはドア面圧がありません。',
   'run.pressureArrayMismatch':
     '表示中フレームの面圧配列が選択したドアプロファイルと一致しません。このプロファイルを含むフレームへ移動してください。',
+  'run.pressureIdentityUnavailable':
+    '表示中フレームの面圧サンプルをノード同一性で選択中のドアプロファイルへ対応付けできません（重複・欠落・別インスタンス）。空間面圧と矢印を表示しません。',
   'run.pressureExportBasis':
     '{profile} ・ステップ {step} ・表示フレーム {frame} ・{unit} ・組立後プロファイルの位置',
   'run.exportBasis': '{panel} ・ {step} ・ {unit} ・ {sign}',

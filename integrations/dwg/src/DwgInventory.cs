@@ -208,20 +208,67 @@ internal static class DwgInventory
         Insert insert = entity as Insert;
         if (line != null)
         {
+            // LINE endpoints are already world coordinates (WCS); no OCS applies.
             item.Start = line.StartPoint;
             item.End = line.EndPoint;
         }
         else if (arc != null)
         {
-            item.Center = arc.Center;
-            item.Radius = arc.Radius;
-            item.StartAngle = arc.StartAngle;
-            item.EndAngle = arc.EndAngle;
+            item.Normal = arc.Normal;
+            if (!IsPlanar(arc.Normal))
+            {
+                // The product is 2D. Report the typed reason instead of projecting
+                // a tilted circle onto XY, which would invent a different curve.
+                item.TransformError = "unsupported-nonplanar";
+                item.Radius = arc.Radius;
+                Warnings.Add("arc " + item.Handle + ": extrusion (" + arc.Normal + ") is not parallel to the world Z axis; the planar 2D model cannot represent it.");
+            }
+            else
+            {
+                Matrix4 basis = Matrix4.GetArbitraryAxis(arc.Normal);
+                double ocsSweep = NormalizeSweep(arc.EndAngle - arc.StartAngle);
+                XYZ center = basis * arc.Center;
+                XYZ ocsStart = new XYZ(
+                    arc.Center.X + arc.Radius * Math.Cos(arc.StartAngle),
+                    arc.Center.Y + arc.Radius * Math.Sin(arc.StartAngle),
+                    arc.Center.Z);
+                XYZ ocsEnd = new XYZ(
+                    arc.Center.X + arc.Radius * Math.Cos(arc.EndAngle),
+                    arc.Center.Y + arc.Radius * Math.Sin(arc.EndAngle),
+                    arc.Center.Z);
+                XYZ ocsMid = new XYZ(
+                    arc.Center.X + arc.Radius * Math.Cos(arc.StartAngle + ocsSweep / 2.0),
+                    arc.Center.Y + arc.Radius * Math.Sin(arc.StartAngle + ocsSweep / 2.0),
+                    arc.Center.Z);
+                item.Center = center;
+                item.Radius = arc.Radius;
+                item.Start = basis * ocsStart;
+                item.End = basis * ocsEnd;
+                item.Mid = basis * ocsMid;
+                item.OcsCenter = arc.Center;
+                item.OcsStartAngle = arc.StartAngle;
+                item.OcsEndAngle = arc.EndAngle;
+                // OCS arcs are counter-clockwise by definition. A -Z extrusion
+                // reflects the plane, so the equivalent WCS traversal is clockwise.
+                item.Sweep = (arc.Normal.Z < 0 ? -1.0 : 1.0) * ocsSweep;
+                item.StartAngle = Math.Atan2(item.Start.Value.Y - center.Y, item.Start.Value.X - center.X);
+                item.EndAngle = Math.Atan2(item.End.Value.Y - center.Y, item.End.Value.X - center.X);
+            }
         }
         else if (circle != null)
         {
-            item.Center = circle.Center;
-            item.Radius = circle.Radius;
+            item.Normal = circle.Normal;
+            if (!IsPlanar(circle.Normal))
+            {
+                item.TransformError = "unsupported-nonplanar";
+                item.Radius = circle.Radius;
+                Warnings.Add("circle " + item.Handle + ": extrusion (" + circle.Normal + ") is not parallel to the world Z axis; the planar 2D model cannot represent it.");
+            }
+            else
+            {
+                item.Center = Matrix4.GetArbitraryAxis(circle.Normal) * circle.Center;
+                item.Radius = circle.Radius;
+            }
         }
         else if (ellipse != null)
         {
@@ -233,8 +280,24 @@ internal static class DwgInventory
         }
         else if (polyline != null)
         {
-            item.Vertices = polyline.Vertices.Select(v => new VertexReport { Point = new XYZ(v.Location.X, v.Location.Y, polyline.Elevation), Bulge = v.Bulge }).ToList();
-            item.Closed = polyline.IsClosed;
+            item.Normal = polyline.Normal;
+            if (!IsPlanar(polyline.Normal))
+            {
+                item.TransformError = "unsupported-nonplanar";
+                Warnings.Add("polyline " + item.Handle + ": extrusion (" + polyline.Normal + ") is not parallel to the world Z axis; the planar 2D model cannot represent it.");
+            }
+            else
+            {
+                Matrix4 basis = Matrix4.GetArbitraryAxis(polyline.Normal);
+                double bulgeSign = polyline.Normal.Z < 0 ? -1.0 : 1.0;
+                item.Vertices = polyline.Vertices.Select(v => new VertexReport
+                {
+                    Point = basis * new XYZ(v.Location.X, v.Location.Y, polyline.Elevation),
+                    Bulge = bulgeSign * v.Bulge
+                }).ToList();
+                item.Elevation = polyline.Elevation;
+                item.Closed = polyline.IsClosed;
+            }
         }
         else if (spline != null)
         {
@@ -317,6 +380,31 @@ internal static class DwgInventory
         return cadObject.Handle.ToString("X", CultureInfo.InvariantCulture);
     }
 
+    // Within the 1e-9 rounding used by the inventory serializer, only a normal
+    // parallel to the world Z axis keeps a planar circular curve circular in XY.
+    private static bool IsPlanar(XYZ normal)
+    {
+        double length = Math.Sqrt(normal.X * normal.X + normal.Y * normal.Y + normal.Z * normal.Z);
+        if (length < 1e-12)
+        {
+            return false;
+        }
+        return Math.Abs(normal.X / length) < 1e-9
+            && Math.Abs(normal.Y / length) < 1e-9
+            && Math.Abs(normal.Z / length) > 1.0 - 1e-9;
+    }
+
+    private static double NormalizeSweep(double sweep)
+    {
+        const double tau = Math.PI * 2.0;
+        double value = sweep % tau;
+        if (value < 0)
+        {
+            value += tau;
+        }
+        return value;
+    }
+
     private static string Sha256(byte[] bytes)
     {
         using (System.Security.Cryptography.SHA256 algorithm = System.Security.Cryptography.SHA256.Create())
@@ -369,6 +457,14 @@ internal static class DwgInventory
         public XYZ? Start;
         public XYZ? End;
         public XYZ? Center;
+        public XYZ? Normal;
+        public XYZ? Mid;
+        public XYZ? OcsCenter;
+        public double? OcsStartAngle;
+        public double? OcsEndAngle;
+        public double? Sweep;
+        public double? Elevation;
+        public string TransformError;
         public double? Radius;
         public double? StartAngle;
         public double? EndAngle;
@@ -405,16 +501,16 @@ internal static class DwgInventory
                 return false;
             }
             double radians = insert.Rotation;
-            if (sx < 0 || sy < 0)
+            bool mirrored = sx * sy < 0;
+            if (mirrored)
             {
-                warnings.Add("insert " + insert.Handle.ToString("X", CultureInfo.InvariantCulture) + ": mirrored block instance expanded with absolute scale.");
-                sx = Math.Abs(sx);
-                sy = Math.Abs(sy);
+                warnings.Add("insert " + insert.Handle.ToString("X", CultureInfo.InvariantCulture) + ": mirrored block instance expanded with its signed scale; arc sweep direction is reversed.");
             }
             XYZ origin = insert.InsertPoint;
             Start = Apply(Start, origin, radians, sx, sy, sz);
             End = Apply(End, origin, radians, sx, sy, sz);
             Center = Apply(Center, origin, radians, sx, sy, sz);
+            Mid = Apply(Mid, origin, radians, sx, sy, sz);
             StartTangent = ApplyDirection(StartTangent, radians, sx, sy);
             EndTangent = ApplyDirection(EndTangent, radians, sx, sy);
             MajorAxis = ApplyDirection(MajorAxis, radians, sx, sy);
@@ -432,7 +528,11 @@ internal static class DwgInventory
                 {
                     warnings.Add("insert " + insert.Handle.ToString("X", CultureInfo.InvariantCulture) + ": non-uniform scale on a bulged polyline, arcs are approximate.");
                 }
-                Vertices = Vertices.Select(v => new VertexReport { Point = ApplyPoint(v.Point, origin, radians, sx, sy, sz), Bulge = v.Bulge }).ToList();
+                Vertices = Vertices.Select(v => new VertexReport
+                {
+                    Point = ApplyPoint(v.Point, origin, radians, sx, sy, sz),
+                    Bulge = mirrored ? -v.Bulge : v.Bulge
+                }).ToList();
             }
             if (Radius.HasValue)
             {
@@ -442,13 +542,17 @@ internal static class DwgInventory
                 }
                 Radius = Radius.Value * Math.Sqrt(Math.Abs(sx * sy));
             }
-            if (StartAngle.HasValue)
+            if (Sweep.HasValue)
             {
-                StartAngle = StartAngle.Value + radians;
+                Sweep = mirrored ? -Sweep.Value : Sweep.Value;
             }
-            if (EndAngle.HasValue)
+            if (StartAngle.HasValue && Start.HasValue && Center.HasValue)
             {
-                EndAngle = EndAngle.Value + radians;
+                StartAngle = Math.Atan2(Start.Value.Y - Center.Value.Y, Start.Value.X - Center.Value.X);
+            }
+            if (EndAngle.HasValue && End.HasValue && Center.HasValue)
+            {
+                EndAngle = Math.Atan2(End.Value.Y - Center.Value.Y, End.Value.X - Center.Value.X);
             }
             if (Rotation.HasValue)
             {
@@ -515,6 +619,37 @@ internal static class DwgInventory
             if (Center.HasValue)
             {
                 json.Name("center").Point(Center.Value);
+            }
+            if (Normal.HasValue)
+            {
+                json.Name("normal").Point(Normal.Value);
+            }
+            if (OcsCenter.HasValue)
+            {
+                json.Name("ocs").BeginObject();
+                json.Name("center").Point(OcsCenter.Value);
+                json.Name("startAngle").RawValue(OcsStartAngle.Value);
+                json.Name("endAngle").RawValue(OcsEndAngle.Value);
+                json.EndObject();
+            }
+            if (Mid.HasValue)
+            {
+                json.Name("mid").Point(Mid.Value);
+            }
+            if (Sweep.HasValue)
+            {
+                // The sweep decides quarter-turn segmentation. Keep full double
+                // precision so an exact 90-degree arc is not rounded just above
+                // one segment and split in two.
+                json.Name("sweep").RawValue(Sweep.Value);
+            }
+            if (Elevation.HasValue)
+            {
+                json.Name("elevation").Value(Elevation.Value);
+            }
+            if (!string.IsNullOrEmpty(TransformError))
+            {
+                json.Name("transformError").Value(TransformError);
             }
             if (Radius.HasValue)
             {
@@ -691,6 +826,14 @@ internal static class DwgInventory
         {
             Separate();
             builder.Append(Round(number).ToString("R", CultureInfo.InvariantCulture));
+            first = false;
+            return this;
+        }
+
+        public Json RawValue(double number)
+        {
+            Separate();
+            builder.Append(number.ToString("R", CultureInfo.InvariantCulture));
             first = false;
             return this;
         }

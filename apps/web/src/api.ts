@@ -52,8 +52,22 @@ export async function request<T>(
   return response.json() as Promise<T>
 }
 
-export function artifact(id: string, name: string) {
+export function artifact(id: string, name: string, generation = 0) {
+  // Result members are pinned to one immutable generation; logs, decks and
+  // legacy flat-file rows keep the artifact route.
+  if (generation > 0) {
+    return (
+      '/api/jobs/' + id + '/results/' + generation + '/' + encodeURIComponent(name)
+    )
+  }
   return '/api/jobs/' + id + '/artifacts/' + encodeURIComponent(name)
+}
+
+/** Display metadata pinned to the same generation as the result members. */
+export function displayMetadata(id: string, generation = 0) {
+  return generation > 0
+    ? '/api/jobs/' + id + '/results/' + generation + '/display-metadata'
+    : '/api/jobs/' + id + '/display-metadata'
 }
 
 /**

@@ -319,6 +319,7 @@ def align_profile(profile, pressure, force, displacement):
     if not displacement:
         availability["displacement"] = "displacement_field_missing"
     return {
+        "instance": profile.get("instance"),
         "labels": list(labels),
         "pressure_mpa": pressure_mpa,
         "pressure_kpa": pressure_display,

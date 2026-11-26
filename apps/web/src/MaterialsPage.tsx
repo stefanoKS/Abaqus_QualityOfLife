@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   Archive,
   ArchiveRestore,
@@ -21,7 +21,11 @@ import {
 } from './api'
 import { useI18n, type TranslationKey } from './i18n'
 import { NumberInput } from './shared/components/NumberInput'
-import { hasInvalidField, useAnyInvalidField } from './shared/components/draftGuard'
+import {
+  hasInvalidField,
+  setFieldInvalid,
+  useAnyInvalidField,
+} from './shared/components/draftGuard'
 import {
   TestDataTable,
   materialIssues,
@@ -129,15 +133,29 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   const [caeUnits, setCaeUnits] = useState('N-mm-s-tonne')
   const [exportFolder, setExportFolder] = useState('')
   const caeInput = useRef<HTMLInputElement>(null)
+  // Only the response for the most recently selected card may populate the
+  // editor. Without this token a slow earlier request could replace a newer
+  // selection (or leave its fields editable under the wrong heading).
+  const loadToken = useRef(0)
+  // The same ordering rule applies to the list: an older filter response must
+  // not reset the selection after "Include archived" or a newer refresh.
+  const refreshToken = useRef(0)
+  // Latest requested selection, readable after an await without a stale closure.
+  const selectedRef = useRef<string | null>(null)
+  const caeDensityId = useId()
 
   const refresh = useCallback(async () => {
+    const token = ++refreshToken.current
     const list = await request<LibrarySummary[]>(
       '/api/materials?include_archived=' + (showArchived ? 'true' : 'false'),
     )
+    // A newer filter/refresh has been issued; its response is authoritative.
+    if (token !== refreshToken.current) return null
     setItems(list)
     setSelected((current) =>
       current && list.some((row) => row.id === current) ? current : (list[0]?.id ?? null),
     )
+    return list
   }, [showArchived])
 
   useEffect(() => {
@@ -145,7 +163,11 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   }, [refresh, notify])
 
   const load = useCallback(async (id: string) => {
+    const token = ++loadToken.current
     const found = await request<LibraryDetail>('/api/materials/' + id)
+    // A newer selection, or a newer load, has taken over. Never write a card
+    // into an editor whose selection has already moved on.
+    if (token !== loadToken.current || selectedRef.current !== id) return
     setDetail(found)
     setName(found.name)
     setDraft(fullCard(found.card))
@@ -153,12 +175,29 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   }, [])
 
   useEffect(() => {
+    selectedRef.current = selected
     if (selected) {
+      // Freeze the editor until the clicked card's own detail arrives: the old
+      // card must not stay editable (or saveable) under the new selection.
+      setDetail(null)
       void load(selected).catch((error) => notify(err(error)))
     } else {
+      loadToken.current++
       setDetail(null)
     }
   }, [selected, load, notify])
+
+  // The CAE density is a plain text draft (blank means "not supplied"), but a
+  // typed zero/negative/non-finite value must block Save exactly like the
+  // numeric density field used by the other models.
+  const caeDensityInvalid =
+    draft.model === 'cae_law' &&
+    densityText.trim() !== '' &&
+    (!Number.isFinite(Number(densityText)) || Number(densityText) <= 0)
+  useEffect(() => {
+    setFieldInvalid(caeDensityId, caeDensityInvalid)
+    return () => setFieldInvalid(caeDensityId, false)
+  }, [caeDensityId, caeDensityInvalid])
 
   const draftMaterial: Card = useMemo(
     () => ({
@@ -212,7 +251,7 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
   }
 
   function save() {
-    if (!detail) return
+    if (!detail || detail.id !== selected) return
     if (hasInvalidField()) {
       notify(t('validation.invalidDraft'))
       return
@@ -256,13 +295,13 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
 
   function setArchived(next: boolean) {
     if (!detail) return
+    const id = detail.id
     void run(async () => {
-      await request(
-        '/api/materials/' + detail.id + (next ? '/archive' : '/restore'),
-        'POST',
-      )
+      await request('/api/materials/' + id + (next ? '/archive' : '/restore'), 'POST')
       await refresh()
-      await load(detail.id)
+      // Reload the affected card; `load` discards the response when refresh has
+      // already moved the selection elsewhere.
+      await load(id)
     })
   }
 
@@ -656,8 +695,12 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
           </div>
         </aside>
 
-        <section className="card library-editor">
-          {detail ? (
+        <section
+          className="card library-editor"
+          data-material-id={detail?.id ?? ''}
+          data-loading={selected && detail?.id !== selected ? 'true' : 'false'}
+        >
+          {detail && detail.id === selected ? (
             <>
               <div className="library-editor-head">
                 <label>
@@ -813,6 +856,7 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                   {t('materials.density')} <span className="unit">t/mm³</span>
                   <input
                     aria-label={t('materials.density')}
+                    aria-invalid={caeDensityInvalid || undefined}
                     inputMode="decimal"
                     value={densityText}
                     placeholder={t('materialsLibrary.densityMissing')}
@@ -931,7 +975,7 @@ export default function MaterialsPage({ notify }: { notify: (message: string) =>
                 <p className="empty-line">{t('materialsLibrary.noUsage')}</p>
               )}
             </>
-          ) : (
+          ) : selected ? null : (
             <p className="empty-line">{t('materialsLibrary.empty')}</p>
           )}
         </section>

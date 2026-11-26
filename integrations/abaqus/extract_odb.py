@@ -1,6 +1,7 @@
 """Run with 'abaqus python extract_odb.py' in the run directory. No application packages."""
 
 import json
+import math
 from pathlib import Path
 
 if __package__:
@@ -68,73 +69,102 @@ def _mises_invariant(field):
         return {}
 
 
-def _fields(frame, requested, dimension):
+def _finite(values):
+    """True only when every component is a finite number (measured zero counts)."""
+    try:
+        return bool(values) and all(math.isfinite(float(value)) for value in values)
+    except (TypeError, ValueError):
+        return False
+
+
+def _fields(frame, requested, dimension, problems=None):
     displacement, fields, seen = {}, {}, set()
+    produced = set()
+    problems = problems if problems is not None else {}
     for name in frame.fieldOutputs.keys():
         key = name.split()[0]
         if key not in requested:
             continue
-        field = frame.fieldOutputs[name]
-        raw = {
-            "components": list(field.componentLabels),
-            "type": str(field.type),
-            "averaging": "as_stored",
-            "values": [],
-        }
-        invariant = _mises_invariant(field) if key == "S" else {}
+        try:
+            field = frame.fieldOutputs[name]
+            raw = {
+                "components": list(field.componentLabels),
+                "type": str(field.type),
+                "averaging": "as_stored",
+                "values": [],
+            }
+        except Exception as error:  # noqa: BLE001 - one channel must not hide others
+            problems[key] = f"unreadable field: {type(error).__name__}: {error}"
+            continue
+        try:
+            invariant = _mises_invariant(field) if key == "S" else {}
+            values = list(field.values)
+        except Exception as error:  # noqa: BLE001 - optional channel is independent
+            problems[key] = f"unreadable field values: {type(error).__name__}: {error}"
+            continue
         mises_values = []
-        for value in field.values:
-            instance = value.instance
-            if instance is None:
+        for value in values:
+            try:
+                instance = value.instance
+                if instance is None:
+                    continue
+                position = str(value.position)
+                data = _data(value)
+                if not _finite(data):
+                    # A non-finite record is not a measurement; leave it out and
+                    # let the channel stay unavailable instead of plotting NaN.
+                    problems[key] = "non_finite_sample"
+                    continue
+                if key == "U" and position == "NODAL":
+                    displacement.setdefault(instance.name, []).append(
+                        [value.nodeLabel, *_coordinates(data, dimension)]
+                    )
+                    produced.add(key)
+                else:
+                    entry = {"instance": instance.name, "position": position, "data": data}
+                    if position in ("NODAL", "ELEMENT_NODAL"):
+                        entry["node"] = value.nodeLabel
+                    if position != "NODAL":
+                        entry["element"] = value.elementLabel
+                    if position == "INTEGRATION_POINT":
+                        entry["integration_point"] = value.integrationPoint
+                    section = getattr(value, "sectionPoint", None)
+                    if section is not None:
+                        entry["section_point"] = section.number
+                    orientation = (
+                        value.localCoordSystemDouble
+                        if str(value.precision) == "DOUBLE_PRECISION"
+                        else value.localCoordSystem
+                    )
+                    if orientation is not None:
+                        entry["local_axes"] = [[float(x) for x in axis] for axis in orientation]
+                    raw["values"].append(entry)
+                    produced.add(key)
+                    if key == "S":
+                        # Prefer the solver's own invariant; fall back to a
+                        # component-label-aware plane/3D calculation. The sample
+                        # identity (instance, element, IP, section point) is kept.
+                        mises = invariant.get(_sample_key(value))
+                        if mises is None:
+                            mises = mises_from_components(field.componentLabels, data)
+                        if mises is not None and math.isfinite(float(mises)):
+                            sample = {
+                                "instance": instance.name,
+                                "position": position,
+                                "data": [float(mises)],
+                            }
+                            if position in ("NODAL", "ELEMENT_NODAL"):
+                                sample["node"] = value.nodeLabel
+                            if position != "NODAL":
+                                sample["element"] = value.elementLabel
+                            if position == "INTEGRATION_POINT":
+                                sample["integration_point"] = value.integrationPoint
+                            if section is not None:
+                                sample["section_point"] = section.number
+                            mises_values.append(sample)
+            except Exception as error:  # noqa: BLE001 - skip one bad sample only
+                problems[key] = f"unreadable sample: {type(error).__name__}: {error}"
                 continue
-            position = str(value.position)
-            data = _data(value)
-            if key == "U" and position == "NODAL":
-                displacement.setdefault(instance.name, []).append(
-                    [value.nodeLabel, *_coordinates(data, dimension)]
-                )
-            else:
-                entry = {"instance": instance.name, "position": position, "data": data}
-                if position in ("NODAL", "ELEMENT_NODAL"):
-                    entry["node"] = value.nodeLabel
-                if position != "NODAL":
-                    entry["element"] = value.elementLabel
-                if position == "INTEGRATION_POINT":
-                    entry["integration_point"] = value.integrationPoint
-                section = getattr(value, "sectionPoint", None)
-                if section is not None:
-                    entry["section_point"] = section.number
-                orientation = (
-                    value.localCoordSystemDouble
-                    if str(value.precision) == "DOUBLE_PRECISION"
-                    else value.localCoordSystem
-                )
-                if orientation is not None:
-                    entry["local_axes"] = [[float(x) for x in axis] for axis in orientation]
-                raw["values"].append(entry)
-                if key == "S":
-                    # Prefer the solver's own invariant; fall back to a
-                    # component-label-aware plane/3D calculation. The sample
-                    # identity (instance, element, IP, section point) is kept.
-                    mises = invariant.get(_sample_key(value))
-                    if mises is None:
-                        mises = mises_from_components(field.componentLabels, data)
-                    if mises is not None:
-                        sample = {
-                            "instance": instance.name,
-                            "position": position,
-                            "data": [float(mises)],
-                        }
-                        if position in ("NODAL", "ELEMENT_NODAL"):
-                            sample["node"] = value.nodeLabel
-                        if position != "NODAL":
-                            sample["element"] = value.elementLabel
-                        if position == "INTEGRATION_POINT":
-                            sample["integration_point"] = value.integrationPoint
-                        if section is not None:
-                            sample["section_point"] = section.number
-                        mises_values.append(sample)
-            seen.add(key)
         if raw["values"]:
             fields[name] = raw
         if mises_values:
@@ -144,6 +174,7 @@ def _fields(frame, requested, dimension):
                 "averaging": "as_stored",
                 "values": mises_values,
             }
+    seen.update(produced)
     return displacement, fields, seen
 
 
@@ -405,9 +436,10 @@ def extract(odb, metadata, directory):
             frame_ordinal += 1
             increment = getattr(frame, "incrementNumber", None)
             native_id = getattr(frame, "frameId", None)
+            problems = {}
             try:
                 displacement, fields, available = _fields(
-                    frame, requested, metadata["dimension"]
+                    frame, requested, metadata["dimension"], problems
                 )
             except Exception as error:  # noqa: BLE001 - reported, never hidden
                 skipped.append(
@@ -425,6 +457,27 @@ def extract(odb, metadata, directory):
                 continue
             local_time = float(frame.frameValue)
             total_time = step.totalTime + local_time
+            # A frame header alone is not a result. At least one supported,
+            # identifiable finite measurement is required before a record becomes
+            # a playable frame; a measured all-zero field still counts. The
+            # dropped record keeps its native identity for diagnostics, and the
+            # previous usable frame remains the last result.
+            if not displacement and not fields:
+                skipped.append(
+                    {
+                        "step": display_name,
+                        "step_id": step_id,
+                        "step_ordinal": step_ordinal,
+                        "step_frame_ordinal": step_frame_ordinal,
+                        "frame_ordinal": ordinal,
+                        "native_frame_id": native_id,
+                        "increment": increment,
+                        "local_time": local_time,
+                        "total_time": total_time,
+                        "reason": "no supported finite field measurement",
+                    }
+                )
+                continue
             payload = {
                 "time": total_time,
                 "step": display_name,
@@ -440,8 +493,13 @@ def extract(odb, metadata, directory):
                 "displacements": displacement,
                 "fields": fields,
                 # Optional fields absent from this frame stay identifiable
-                # instead of being interpolated from a neighbour.
+                # instead of being interpolated from a neighbour. The reason is
+                # per variable: an unreadable CPRESS must not hide a good U/S.
                 "unavailable": sorted(requested - available),
+                "unavailable_reasons": {
+                    key: problems.get(key, "field_not_reported")
+                    for key in sorted(requested - available)
+                },
             }
             present_steps.add(step_id)
             if door.get("enabled"):
@@ -512,7 +570,9 @@ def extract(odb, metadata, directory):
         directory,
         result,
         availability="complete" if complete else "partial",
-        require_frames=outcome == "Succeeded",
+        # A successful solve can legitimately expose measured history with no
+        # usable field frame; that history-only generation is still publishable.
+        require_frames=outcome == "Succeeded" and not result["history"],
     )
 
 

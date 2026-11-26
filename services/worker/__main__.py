@@ -18,7 +18,7 @@ import psutil
 from integrations import drawings, dwg
 from packages import engineering
 from packages.engineering.model import Project
-from integrations.abaqus import deck, launcher, results
+from integrations.abaqus import deck, interchange, launcher, results
 from services import store
 
 KNOWN_FILES = {
@@ -39,21 +39,6 @@ KNOWN_FILES = {
     "results.json",
     "extraction-context.json",
 }
-
-
-def restore_index(directory, backup):
-    """Put the previous result index back after a failed/cancelled attempt.
-
-    The extractor publishes only a validated generation, but an attempt can
-    still be rejected by the worker (or interrupted after publishing). Keeping
-    the prior usable generation readable is the contract.
-    """
-    if backup is None or not backup.exists():
-        return
-    current = directory / "results.json"
-    if current.exists():
-        current.unlink()
-    backup.rename(current)
 
 
 def preparation_diagnostic(exc):
@@ -172,7 +157,8 @@ def perform(row, owner):
     extracting = row["extraction"] == "Running"
     fields = {}
     imported = None
-    index_backup = None
+    attempt = None
+    recovery_reason = ""
     try:
         checkpoint(jid)
         setup = Project.model_validate(store.revision(row["revision"])["setup"])
@@ -342,11 +328,6 @@ def perform(row, owner):
             checkpoint(jid)
             fields.update(solver="Succeeded", extraction="Queued", phase="Awaiting extraction")
         else:
-            previous_index = directory / "results.json"
-            index_backup = None
-            if previous_index.exists():
-                index_backup = directory / ("prior-index-" + store.new_id() + ".json")
-                previous_index.rename(index_backup)
             mesh = json.loads((directory / "mesh.json").read_text(encoding="utf-8"))
             metadata_path = directory / "result-metadata.json"
             fixture_labels = row["fixture_labels"]
@@ -354,7 +335,9 @@ def perform(row, owner):
                 fixture_labels = (
                     json.loads(metadata_path.read_text(encoding="utf-8")).get("fixture") or {}
                 ).get("nodes")
-            if row["mode"] == "DEMO":
+            legacy = row["mode"] == "DEMO"
+            candidate = None
+            if legacy:
                 if (
                     row["scenario"] == "extraction_failure"
                     and not (directory / "demo-retry").exists()
@@ -364,6 +347,7 @@ def perform(row, owner):
                         "Requested one-time extraction failure. Retry extraction to recover."
                     )
                 results.write_demo(setup, mesh, directory, fixture_labels)
+                index_path = directory / "results.json"
             else:
                 results.write_metadata(setup, mesh, directory, fixture_labels)
                 # The submitted metadata stays immutable. The terminal solver
@@ -377,37 +361,57 @@ def perform(row, owner):
                     ),
                     encoding="utf-8",
                 )
-                code = monitor(
-                    jid,
-                    owner,
-                    directory,
-                    lambda stream: launcher.start_extraction(
-                        launcher.configured_launcher(), directory, stream
-                    ),
-                    "extract.log",
-                    scope="extraction",
-                )
+                # The extractor publishes every member into one private attempt
+                # directory; the live run directory is never modified.
+                attempt = store.new_id()
+                candidate = interchange.attempt_directory(directory, attempt)
+                os.environ[interchange.ATTEMPT_ENV] = attempt
+                try:
+                    code = monitor(
+                        jid,
+                        owner,
+                        directory,
+                        lambda stream: launcher.start_extraction(
+                            launcher.configured_launcher(), directory, stream
+                        ),
+                        "extract.log",
+                        scope="extraction",
+                    )
+                finally:
+                    os.environ.pop(interchange.ATTEMPT_ENV, None)
                 store.update(jid, owner, extraction_exit=code)
                 if code:
                     raise ValueError("ODB extraction failed. See extract.log.")
-            index = json.loads((directory / "results.json").read_text(encoding="utf-8"))
+                if not candidate.is_dir():
+                    raise ValueError("The extractor did not publish a result generation.")
+                try:
+                    index, _manifest = interchange.validate_published_generation(candidate)
+                except Exception:
+                    shutil.rmtree(candidate, ignore_errors=True)
+                    raise
+                index_path = candidate / "results.json"
+            base = directory if legacy else candidate
+            if legacy:
+                index = json.loads(index_path.read_text(encoding="utf-8"))
             history_only = bool(index.get("history_only"))
             if index["mode"] != row["mode"]:
                 raise ValueError("Extractor returned a result for another job mode.")
             if not index["frames"] and not history_only:
                 raise ValueError(index.get("diagnostic") or "Extractor returned no frames.")
-            if (directory / "history.csv").is_file() is False:
+            if (base / "history.csv").is_file() is False:
                 raise ValueError("Extractor returned no history file.")
             for frame in index["frames"]:
                 name = frame["file"]
-                if not re.fullmatch(r"frame-\d+\.json", name) or not (directory / name).is_file():
+                if not re.fullmatch(r"frame-\d+\.json", name) or not (base / name).is_file():
                     raise ValueError("Extractor returned a missing or invalid frame.")
             checkpoint(jid, "extraction")
             availability = index.get("availability") or "complete"
-            generation = int(row.get("result_generation") or 0) + 1
+            expected_generation = int(row.get("result_generation") or 0)
+            generation = expected_generation if legacy else expected_generation + 1
             summary = {
                 "availability": availability,
                 "solver_outcome": index.get("solver_outcome") or row["solver"],
+                "extraction_outcome": "Succeeded",
                 "failure_reason": index.get("failure_reason") or row.get("diagnostic") or "",
                 "last_step": index.get("last_step"),
                 "last_step_id": index.get("last_step_id"),
@@ -429,19 +433,113 @@ def perform(row, owner):
                 "native_frame_id": index.get("last_native_frame_id"),
                 "increment": index.get("last_increment"),
                 "generation": generation,
-                "index_sha256": store.digest(directory / "results.json"),
+                "index_sha256": store.digest(index_path),
                 "diagnostic": row.get("diagnostic") or "",
             }
-            fields.update(
-                extraction="Succeeded",
-                phase="Partial results ready" if availability == "partial" else "Results ready",
-                result_state=availability,
-                result_summary=store.encoded(summary),
-                result_generation=generation,
-                extraction_error="",
-                salvage=0,
-                cancel_scope=None,
-            )
+            if legacy:
+                # Historical DEMO / direct-extractor layout: flat files only.
+                fields.update(
+                    extraction="Succeeded",
+                    phase="Partial results ready"
+                    if availability == "partial"
+                    else "Results ready",
+                    result_state=availability,
+                    result_summary=store.encoded(summary),
+                    extraction_error="",
+                    salvage=0,
+                    cancel_scope=None,
+                )
+            else:
+                summary.update(
+                    {
+                        "result_dir": f"results/gen-{generation}-{attempt}",
+                        "manifest_sha256": store.digest(candidate / "manifest.json"),
+                    }
+                )
+                fields.update(
+                    phase="Partial results ready"
+                    if availability == "partial"
+                    else "Results ready",
+                )
+                log(directory, fields["phase"])
+                final_rel = f"results/gen-{generation}-{attempt}"
+                final_dir = directory / final_rel
+                try:
+                    interchange.finalize_generation(candidate, final_dir)
+                    # The durable summary travels with the generation so the
+                    # directory describes itself even before the DB commit.
+                    interchange.write_json(
+                        final_dir / "summary.json",
+                        {**summary, "attempt": attempt, "generation": generation},
+                    )
+                except Exception:
+                    shutil.rmtree(candidate, ignore_errors=True)
+                    shutil.rmtree(final_dir, ignore_errors=True)
+                    raise
+                members = sorted(
+                    set(json.loads(manifest(directory)))
+                    | {"results.json", "history.csv"}
+                    | {frame["file"] for frame in index["frames"]}
+                )
+                outcome = store.publish_result_generation(
+                    jid,
+                    owner,
+                    expected_generation,
+                    summary,
+                    generation,
+                    final_rel,
+                    availability,
+                    members,
+                )
+                if outcome == "cancelled":
+                    shutil.rmtree(final_dir, ignore_errors=True)
+                    raise Cancelled()
+                if outcome in {"lease", "missing"}:
+                    # Another worker owns (or the row vanished): never touch its
+                    # pointer from this attempt.
+                    shutil.rmtree(final_dir, ignore_errors=True)
+                    log(directory, "Result generation fenced: " + outcome)
+                    return
+                if outcome != "ok":
+                    # Generation fencing: keep the previous generation and settle
+                    # this attempt as failed without claiming availability.
+                    shutil.rmtree(final_dir, ignore_errors=True)
+                    log(directory, "Result generation fenced: " + outcome)
+                    fields.update(
+                        extraction="Failed",
+                        extraction_error="The result generation was superseded.",
+                        phase="Extraction failed",
+                    )
+                else:
+                    log(directory, "Published result generation %d" % generation)
+                    # A historical row kept its old generation only in the flat
+                    # files. Preserve that exact set before the mirror moves on.
+                    if expected_generation > 0 and not row.get("result_dir"):
+                        try:
+                            interchange.snapshot_flat(
+                                directory,
+                                directory / "results" / f"gen-{expected_generation}-legacy",
+                            )
+                        except Exception as exc:  # noqa: BLE001 - best-effort retention
+                            log(directory, "Previous flat generation not preserved: " + str(exc))
+                    try:
+                        interchange.mirror_flat(directory, final_dir)
+                    except Exception as exc:  # noqa: BLE001 - mirror is compatibility only
+                        log(directory, "Legacy flat mirror not refreshed: " + str(exc))
+                    if row.get("output_dir"):
+                        # Auto-package only after the terminal pointer/summary
+                        # commit, so its provenance describes the committed
+                        # generation.
+                        try:
+                            from services import portable_files
+
+                            packaged = portable_files.package_job(jid)
+                            store.set_publication(jid, packaged["path"], "Saved")
+                        except Exception as exc:  # noqa: BLE001 - publication is reported
+                            log(directory, "Result file not saved: " + str(exc))
+                            store.set_publication(jid, None, "Failed")
+                    return
+
     except ProcessUncertain as exc:
         log(directory, traceback.format_exc())
         store.update(
@@ -458,27 +556,37 @@ def perform(row, owner):
         log(directory, "Terminal solver outcome: " + str(exc))
     except Cancelled:
         if extracting:
+            # The attempt never became authoritative: discard its private
+            # directory and leave the previous generation untouched.
+            if attempt:
+                shutil.rmtree(interchange.attempt_directory(directory, attempt), ignore_errors=True)
+            shutil.rmtree(directory / interchange.STAGING, ignore_errors=True)
             fields.update(extraction="Cancelled", phase="Extraction cancelled")
-            restore_index(directory, index_backup)
         else:
             fields.update(solver="Cancelled", phase="Solver cancelled")
             possible, why = store._candidate_evidence(directory)
             if possible:
+                # A verified stop plus a safe candidate: exactly one extraction-
+                # only recovery. The final settlement below keeps this state and
+                # clears the solver-scope cancellation flag.
                 fields.update(
                     extraction="Queued", phase="Awaiting result recovery", salvage=1
                 )
             else:
-                fields["extraction"] = "Pending"
+                fields.update(extraction="Pending", salvage=0, diagnostic=why)
+                recovery_reason = why
                 log(directory, "No result recovery candidate: " + why)
     except Exception as exc:
         log(directory, traceback.format_exc())
         if extracting:
+            if attempt:
+                shutil.rmtree(interchange.attempt_directory(directory, attempt), ignore_errors=True)
+            shutil.rmtree(directory / interchange.STAGING, ignore_errors=True)
             fields.update(
                 extraction="Failed",
                 extraction_error=preparation_diagnostic(exc),
                 phase="Extraction failed",
             )
-            restore_index(directory, index_backup)
         else:
             fields.update(
                 solver="Failed",
@@ -492,21 +600,9 @@ def perform(row, owner):
                     extraction="Queued", phase="Awaiting result recovery", salvage=1
                 )
             else:
+                recovery_reason = why
                 log(directory, "No result recovery candidate: " + why)
     log(directory, fields["phase"])
-    # Publish the portable result file after a validated extraction, without the
-    # browser: the output folder was captured at submit. A partial generation is
-    # written as a distinguishable file. Solver success, extraction success and
-    # file publication stay separate states.
-    if extracting and fields.get("extraction") == "Succeeded" and row.get("output_dir"):
-        try:
-            from services import portable_files
-
-            published = portable_files.package_job(jid, allow_running=True)
-            fields.update(result_file=published["path"], publication="Saved")
-        except Exception as exc:  # noqa: BLE001 - publication failure is reported, not hidden
-            log(directory, "Result file not saved: " + str(exc))
-            fields.update(publication="Failed")
     # Serialize a last-moment cancellation against publishing the terminal state.
     with store.connection(True) as db:
         current = db.execute(
@@ -516,18 +612,29 @@ def perform(row, owner):
             raise store.Conflict("Worker lease lost")
         if current["cancelled"]:
             if extracting and fields.get("extraction") == "Succeeded":
-                # The attempt already published a validated generation. The
-                # cancellation arrived too late to discard it; the next explicit
-                # extraction clears the stale flag.
+                # Legacy flat extraction only; generation attempts commit through
+                # publish_result_generation and return before this block.
                 fields.update(cancel_scope=None)
+            elif not extracting and fields.get("extraction") == "Queued":
+                # The cancel stopped a verified solver and a safe candidate is
+                # queued: honour the request by clearing the solver-scope flag so
+                # exactly one extraction-only recovery can be claimed.
+                fields.update(
+                    solver="Cancelled",
+                    cancelled=0,
+                    cancel_scope=None,
+                    phase="Awaiting result recovery",
+                )
             else:
                 fields.update(
                     {("extraction" if extracting else "solver"): "Cancelled"},
                     phase="Cancelled",
+                    cancelled=0,
                 )
                 if not extracting:
-                    fields["extraction"] = "Pending"
-                    fields["salvage"] = 0
+                    fields.update(extraction="Pending", salvage=0)
+                    if not fields.get("diagnostic") and recovery_reason:
+                        fields["diagnostic"] = recovery_reason
         elif imported is not None and fields.get("solver") == "Succeeded":
             try:
                 store.append_revision(

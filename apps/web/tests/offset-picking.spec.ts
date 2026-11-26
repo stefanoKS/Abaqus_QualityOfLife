@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { expect, test, type Page } from './fixtures'
+import { settleViewport } from './viewport-ready'
 import type { Job, Revision } from '../src/api'
 
 /**
@@ -96,11 +97,14 @@ test('door and body pick at distinct nonzero offsets through zoom and pan', asyn
       { timeout: 5000 },
     )
     .toBe(true)
+  // Readiness can still mount the next-action banner and a queued refit can
+  // change the camera after the short signature poll above. Wait for the
+  // published settled state, then re-read the host box for every projection.
+  await settleViewport(page)
 
-  const box = await viewportBox(page)
   const status = page.getByRole('status')
-  const body = project(box, await camera(page), 0, -1 - 1)
-  const door = project(box, await camera(page), 0, 14 + 0.5)
+  const body = project(await viewportBox(page), await camera(page), 0, -1 - 1)
+  const door = project(await viewportBox(page), await camera(page), 0, 14 + 0.5)
 
   await page.mouse.click(body.x, body.y)
   await expect(status).toContainText('BODY-1:')
@@ -116,7 +120,7 @@ test('door and body pick at distinct nonzero offsets through zoom and pan', asyn
   const fitted = (await camera(page)).join()
   await page.locator('.seal-vtk-tools button').nth(1).click()
   await expect.poll(async () => (await camera(page)).join()).not.toBe(fitted)
-  const zoomed = project(box, await camera(page), 0, 14 + 0.5)
+  const zoomed = project(await viewportBox(page), await camera(page), 0, 14 + 0.5)
   await page.mouse.click(zoomed.x, zoomed.y)
   await expect(status).toContainText('PANEL-1:')
 

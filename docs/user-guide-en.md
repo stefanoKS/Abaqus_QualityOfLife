@@ -86,6 +86,13 @@ The header shows one language button labelled with the destination language (`En
    specific reason **No closed seal** until the contour is closed in CAD. Compatible evaluated
    endpoints within 1e-6 mm are joined; a larger gap is reported with its measured size and is never
    bridged.
+   **Reflected DWG geometry.** Arcs, circles and polylines whose native extrusion points to −Z are
+   converted from their object coordinate system to world coordinates exactly once. A corrected
+   drawing such as the APLR door therefore joins as one upper door and one lower body while both seal
+   cavities remain. Existing saved imports keep the coordinates they were imported with: to apply the
+   correction, reimport the drawing from the Import stage (or upload the corrected DWG as a new
+   revision) and review geometry-bound roles, regions, fixed nodes and motion. Historical submissions
+   and their results are never rewritten.
 4. **Components** — assign each component a role: weatherstrip seal, door panel, and so on. The same
    stage lists section regions and owns the projected partition: selecting a region highlights it and
    makes it the partition target without leaving Components; **Assign material to this region** is the
@@ -429,6 +436,24 @@ sibling models and unrelated groups are kept. If file cleanup cannot finish, the
   The last reported solver increment and status time are shown separately and
   are not a failure time. A partial result can be reopened from its
   `-partial.aqresult` file in a fresh installation.
+  During a retry, an open Results view keeps reading the generation it started
+  with; it never mixes the old index with new frame bytes. A successful retry
+  becomes visible as one complete new generation, and a later cancelled or
+  stale attempt cannot replace it. The **Cancelled** and **Failed** badges are
+  read from the actual solver outcome, and a legacy package that lacks that fact
+  says **Unknown** rather than guessing.
+- **History-only and incomplete results.** A result with measured history but no
+  usable field frame opens directly on the latest measured step with the CLD
+  curve and its exports; playback, scrubbing, field selection and probing are
+  not offered, and no `Closing` frame is invented. A single initial-state frame
+  is shown as one still image. A header-only frame with no finite measurement is
+  recorded as unreadable and never becomes the last result.
+- **Door-pressure identity.** Pressure, `CPRESS`, `CNORMF`, the arrow, station
+  readout, chart and CSV are joined by the instance-qualified FE node identity,
+  not by array position. If a frame's samples are duplicated, belong to another
+  instance, or cannot be matched to the selected profile, the spatial values and
+  the CSV are suppressed with a reason instead of being attached to the wrong
+  node. A missing value stays blank; a measured zero stays zero.
 - **Result multiplier.** Above the right-side response charts, one labelled
   **Result multiplier (×)** and **Reset to ×1** apply a single dimensionless
   factor to the displayed engineering response: the closing force curve,

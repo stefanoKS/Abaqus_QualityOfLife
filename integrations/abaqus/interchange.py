@@ -2,13 +2,21 @@
 
 from bisect import bisect_left
 import csv
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
 import shutil
+import time
 
 DEMO_NOTICE = "DEMO — synthetic results, not an Abaqus analysis."
 STAGING = ".extract-staging"
+# The worker sets this to the attempt id before it starts the extractor. All
+# result members are then published into one immutable generation directory
+# instead of the live run directory. Direct callers (tests, retained fixtures)
+# do not set it and keep the legacy flat-file layout.
+ATTEMPT_ENV = "ABAQUS_QOL_RESULT_ATTEMPT"
+RESULTS = "results"
 
 
 def reset_staging(directory):
@@ -30,6 +38,165 @@ def write_json(path, data):
     with temp.open("w", encoding="utf-8") as f:
         json.dump(data, f, separators=(",", ":"), allow_nan=False)
     os.replace(temp, path)
+
+
+def digest_file(path):
+    return sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _shared_names():
+    return ("results.json", "history.csv")
+
+
+def _member(path, name):
+    path = Path(path)
+    return {"name": name, "bytes": path.stat().st_size, "sha256": digest_file(path)}
+
+
+def generation_manifest(base, attempt):
+    """Member closure for one published generation, hashes included."""
+    base = Path(base)
+    names = list(_shared_names()) + sorted(
+        entry["file"] for entry in json.loads((base / "results.json").read_text(encoding="utf-8"))["frames"]
+    )
+    return {
+        "version": 1,
+        "attempt": attempt,
+        "members": [_member(base / name, name) for name in names],
+        "index_sha256": digest_file(base / "results.json"),
+    }
+
+
+def _check_member(path, entry):
+    path = Path(path)
+    name = entry.get("name") or path.name
+    if not path.is_file():
+        raise ValueError(f"Generation member {name!r} is missing.")
+    if path.stat().st_size != int(entry.get("bytes", -1)):
+        raise ValueError(f"Generation member {name!r} does not match its recorded size.")
+    if digest_file(path) != entry.get("sha256"):
+        raise ValueError(f"Generation member {name!r} does not match its recorded hash.")
+
+
+def validate_published_generation(base):
+    """Validate a finalized generation directory as one closed set.
+
+    Every index member must exist with its recorded hash, every staged frame
+    must be listed, and no extra frame may be present. Returns ``(result,
+    manifest)`` so the worker can build the durable summary without re-reading.
+    """
+    base = Path(base)
+    index_path = base / "results.json"
+    manifest_path = base / "manifest.json"
+    if not index_path.is_file() or not manifest_path.is_file():
+        raise ValueError("The result generation is incomplete.")
+    result = json.loads(index_path.read_text(encoding="utf-8"))
+    _validate_generation(base, result)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entries = {entry.get("name"): entry for entry in manifest.get("members") or []}
+    for name in _shared_names():
+        if name not in entries:
+            raise ValueError(f"Generation member {name!r} is not in its manifest.")
+        _check_member(base / name, entries[name])
+    for entry in result["frames"]:
+        name = entry.get("file", "")
+        if name not in entries:
+            raise ValueError(f"Frame {name!r} is not in the generation manifest.")
+        _check_member(base / name, entries[name])
+    staged = sorted(path.name for path in base.glob("frame-*.json"))
+    if staged != sorted(entry["file"] for entry in result["frames"]):
+        raise ValueError("The generation contains unlisted or missing frame files.")
+    if digest_file(index_path) != manifest.get("index_sha256"):
+        raise ValueError("The generation index does not match its manifest.")
+    return result, manifest
+
+
+def attempt_directory(directory, attempt):
+    return Path(directory) / RESULTS / f"attempt-{attempt}"
+
+
+def _replace_directory(source, target):
+    """Finalize ``source`` at ``target`` on the same volume, tolerating Windows
+    sharing failures (antivirus/indexer briefly holding a member)."""
+    source, target = Path(source), Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for pause in (0, 0.05, 0.1, 0.2, 0.4):
+        if pause:
+            time.sleep(pause)
+        try:
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            os.replace(source, target)
+            return target
+        except OSError as exc:
+            if getattr(exc, "winerror", None) in (5, 32) or getattr(exc, "errno", None) in (13, 11):
+                continue
+            raise
+    raise OSError(f"The result generation could not be finalized at {target}.")
+
+
+def finalize_generation(source, target):
+    """Finalize a fully validated attempt directory as the candidate generation."""
+    return _replace_directory(source, target)
+
+
+def mirror_flat(directory, source):
+    """Copy a finalized generation into the legacy flat names.
+
+    The flat files are a compatibility mirror only: authoritative reads use the
+    immutable generation directory. Copies (not links) are used so a legacy tool
+    that edits a flat file in place can never mutate the published generation.
+    """
+    directory, source = Path(directory), Path(source)
+    result = json.loads((source / "results.json").read_text(encoding="utf-8"))
+    names = list(_shared_names()) + [entry["file"] for entry in result["frames"]]
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        original = source / name
+        if not original.is_file():
+            continue
+        temporary = directory / f".{name}.{os.getpid()}.tmp"
+        try:
+            shutil.copyfile(original, temporary)
+            os.replace(temporary, directory / name)
+        finally:
+            if temporary.exists():
+                temporary.unlink(missing_ok=True)
+    keep = {entry["file"] for entry in result["frames"]}
+    for path in directory.glob("frame-*.json"):
+        if path.name not in keep:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
+def snapshot_flat(directory, target):
+    """Preserve a historical flat generation before the flat mirror moves on.
+
+    A row written before generation directories has its published bytes only in
+    the flat files. Before the first new-generation publication replaces them,
+    copy that exact set into ``results/gen-<old>-legacy`` so a reader pinned to
+    the old generation can finish.
+    """
+    directory, target = Path(directory), Path(target)
+    index_path = directory / "results.json"
+    if not index_path.is_file() or target.exists():
+        return False
+    result = json.loads(index_path.read_text(encoding="utf-8"))
+    names = list(_shared_names()) + [entry["file"] for entry in result["frames"]]
+    target.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        source = directory / name
+        if source.is_file():
+            shutil.copyfile(source, target / name)
+    try:
+        write_json(target / "manifest.json", generation_manifest(target, f"legacy-{target.name}"))
+    except (OSError, ValueError):
+        pass
+    return True
+
+
 
 
 def _sample(series, times, t):
@@ -399,16 +566,21 @@ def _validate_generation(base, result):
 def finish(directory, result, availability=None, require_frames=False):
     """Validate one attempt and publish it as a single consistent generation.
 
-    Frames and history are written to a private staging directory first; they
-    replace the canonical files only after the index-to-frame identity, step
-    order and units have been checked. A history-only recovery is published
-    explicitly and never invents a contour or a frame cursor.
+    When the worker started this extractor with ``ABAQUS_QOL_RESULT_ATTEMPT``
+    set, every member (frames, history, display metadata, index and a hashed
+    manifest) is written into a private staging directory and finalized as one
+    immutable ``results/attempt-<id>`` directory. The live run directory is not
+    touched; the worker switches the durable generation pointer afterwards.
+
+    Without that environment (direct callers and retained fixtures) the previous
+    flat-file layout is produced so existing callers keep working.
     """
     directory = Path(directory)
     staging = directory / STAGING
+    attempt = os.environ.get(ATTEMPT_ENV, "").strip()
     if not result["frames"] and not result.get("history"):
-        if require_frames:
-            raise ValueError("The ODB contains no readable result frames.")
+        # One actionable message for both a required-frame failure and an
+        # entirely empty read; no caller can mistake it for a partial result.
         raise ValueError("The ODB contains no readable field frames or history.")
     if not result["frames"]:
         result["history_only"] = True
@@ -424,16 +596,19 @@ def finish(directory, result, availability=None, require_frames=False):
         availability = result.get("availability") or "complete"
     result["availability"] = "partial" if availability == "partial" else "complete"
     # A caller may hand already-written frames directly (retained fixtures and
-    # unit tests); staged attempts are preferred and moved into place only after
-    # the whole generation validates.
+    # unit tests); staged attempts are preferred and finalized only after the
+    # whole generation validates.
     staged = bool(result["frames"]) and all(
         (staging / entry["file"]).is_file() for entry in result["frames"]
     )
+    # A history-only generation has no frames but is still a staged attempt.
+    if attempt and staging.is_dir():
+        staged = True
     base = staging if staged else directory
     _validate_generation(base, result)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "history.csv"
-    tmp = directory / "history.csv.tmp"
+    path = base / "history.csv"
+    tmp = base / "history.csv.tmp"
     multi_step = len(result.get("steps") or []) > 1
     header = [
         "execution",
@@ -499,9 +674,26 @@ def finish(directory, result, availability=None, require_frames=False):
         result["last_step_id"] = last_history.get("step_id") if last_history else None
         result["last_local_s"] = None
         result["last_total_s"] = last_history.get("time") if last_history else None
-    # Move validated frames into place, then publish the index last.
+    if staged and attempt:
+        # One immutable generation: frame hashes travel in the index, the hashed
+        # manifest proves the closed member set, and the directory is finalized
+        # only after that proof succeeds.
+        for entry in result["frames"]:
+            entry["sha256"] = digest_file(base / entry["file"])
+        write_json(base / "results.json", result)
+        write_json(base / "manifest.json", generation_manifest(base, attempt))
+        validate_published_generation(base)
+        target = attempt_directory(directory, attempt)
+        _replace_directory(base, target)
+        return {"attempt": attempt, "generation_directory": str(target)}
+    # Legacy flat layout for direct callers, retained fixtures and DEMO output.
     if staged:
+        write_json(base / "results.json", result)
         for entry in result["frames"]:
             os.replace(staging / entry["file"], directory / entry["file"])
-    write_json(directory / "results.json", result)
-    shutil.rmtree(staging, ignore_errors=True)
+        os.replace(staging / "history.csv", directory / "history.csv")
+        os.replace(staging / "results.json", directory / "results.json")
+        shutil.rmtree(staging, ignore_errors=True)
+    else:
+        write_json(directory / "results.json", result)
+    return None

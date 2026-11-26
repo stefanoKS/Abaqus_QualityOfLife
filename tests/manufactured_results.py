@@ -191,4 +191,18 @@ def write(directory, plan="partial-closing"):
         ]
     if plan == "partial-history-only":
         result["frames"] = []
+    # Gate 3 overlap control: a second attempt really reuses frame-00000.json
+    # with a different scalar payload and a changed history.
+    if (directory / "mutate-overlap").exists():
+        if result["frames"]:
+            first = directory / ".extract-staging" / result["frames"][0]["file"]
+            payload = json.loads(first.read_text(encoding="utf-8"))
+            for rows in (payload.get("displacements") or {}).values():
+                for row in rows:
+                    if len(row) > 2:
+                        row[2] = float(row[2]) + 100.0
+            payload["attempt_marker"] = 2
+            first.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        if result["history"]:
+            result["history"][0]["u1"] = 123.0
     finish(directory, result, availability="partial", require_frames=False)

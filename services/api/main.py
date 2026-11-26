@@ -1349,19 +1349,28 @@ def retry_result_file(jid: UUID, body: ResultFileRetry | None = None):
 
 @app.get("/api/jobs/{jid}/display-metadata")
 def display_metadata(jid: UUID):
-    """Run-wide camera bounds and colour ranges for result playback.
+    """Run-wide camera bounds and colour ranges for the active generation.
 
-    New extraction records this in ``results.json``. A retained result without it
-    is read once, server-side, into a derived cache keyed by the run and the
-    index digest. Original artifacts are never rewritten and no solver runs.
+    New extraction records this in the generation's ``results.json``. A retained
+    result without it is derived once, server-side, into a cache keyed by the run,
+    generation and index digest. Original artifacts are never rewritten and no
+    solver runs.
     """
-    job = store.job(jid)
+    return _display_metadata_payload(store.job(jid))
+
+
+RESULT_MEMBER = re.compile(r"^(results\.json|history\.csv|frame-\d+\.json)$")
+
+
+def _display_metadata_payload(job, generation=None):
     if not job["result"]["available"]:
         raise store.Conflict("Results are available only after a validated extraction.")
     import json as _json
 
-    directory = store.job_dir(jid)
-    index_path = directory / "results.json"
+    directory = store.job_dir(job["id"])
+    base, pinned = store.result_generation_dir(job["id"], generation)
+    root = base if base is not None else directory
+    index_path = root / "results.json"
     if not index_path.is_file():
         raise KeyError("Result index unavailable")
     index = _json.loads(index_path.read_text(encoding="utf-8"))
@@ -1369,13 +1378,13 @@ def display_metadata(jid: UUID):
     if isinstance(recorded, dict) and recorded.get("bounds"):
         return {**recorded, "source": "recorded"}
     digest = store.digest(index_path)
-    cache = store.root() / "cache" / "display" / f"{jid}-{digest[:16]}.json"
+    cache = store.root() / "cache" / "display" / f"{job['id']}-g{pinned}-{digest[:16]}.json"
     if cache.is_file():
         return {**_json.loads(cache.read_text(encoding="utf-8")), "source": "cache"}
     from integrations.abaqus.interchange import display_metadata as derive
 
     try:
-        derived = derive(directory, index)
+        derived = derive(root, index)
     except (OSError, KeyError, ValueError) as exc:
         raise store.Conflict(
             "Display metadata is unavailable for this retained result: " + str(exc)
@@ -1385,10 +1394,58 @@ def display_metadata(jid: UUID):
     return {**derived, "source": "derived"}
 
 
+@app.get("/api/jobs/{jid}/results/{generation}/display-metadata")
+def generation_display_metadata(jid: UUID, generation: int):
+    """Display metadata pinned to one retained result generation."""
+    return _display_metadata_payload(store.job(jid), generation)
+
+
+@app.get("/api/jobs/{jid}/results/{generation}/{name}")
+def result_member(jid: UUID, generation: int, name: str):
+    """Serve one immutable member of a pinned result generation.
+
+    The generation directory is never modified after publication, so a reader
+    that started on generation N keeps seeing generation N even while a retry
+    publishes N+1.
+    """
+    job = store.job(jid)
+    if not RESULT_MEMBER.match(name):
+        raise HTTPException(404, "Result member unavailable")
+    base, _ = store.result_generation_dir(jid, generation)
+    if base is None:
+        raise KeyError("Result generation unavailable")
+    path = (base / name).resolve()
+    if path.parent != base or not path.is_file():
+        raise HTTPException(404, "Result member unavailable")
+    media = "text/csv" if name == "history.csv" else "application/json"
+    return FileResponse(
+        path,
+        filename=name,
+        media_type=media,
+        content_disposition_type="inline",
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
 @app.get("/api/jobs/{jid}/artifacts/{name}")
 def artifact(jid: UUID, name: str):
     job = store.job(jid)
     directory = store.job_dir(jid).resolve()
+    # Compatibility for existing callers: result members resolve to the active
+    # immutable generation. Logs and legacy rows keep the flat artifact route.
+    if RESULT_MEMBER.match(name) and int(job["result"]["generation"] or 0):
+        base, _ = store.result_generation_dir(jid)
+        path = (base / name).resolve()
+        if path.parent != base or not path.is_file():
+            raise HTTPException(404, "Artifact unavailable")
+        media = "text/csv" if name == "history.csv" else "application/json"
+        return FileResponse(
+            path,
+            filename=name,
+            media_type=media,
+            content_disposition_type="inline",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
     path = (directory / name).resolve()
     if name not in job["manifest"] or path.parent != directory or not path.is_file():
         raise HTTPException(404, "Artifact unavailable")

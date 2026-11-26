@@ -173,6 +173,10 @@ def initialize():
             db.execute(
                 "ALTER TABLE jobs ADD COLUMN result_generation INTEGER NOT NULL DEFAULT 0"
             )
+        # Immutable generation directory (relative to the job directory). Null on
+        # historical rows, which keep the legacy flat-file layout.
+        if "result_dir" not in jobs_columns:
+            db.execute("ALTER TABLE jobs ADD COLUMN result_dir TEXT")
         if "salvage" not in jobs_columns:
             db.execute("ALTER TABLE jobs ADD COLUMN salvage INTEGER NOT NULL DEFAULT 0")
         if "cancel_scope" not in jobs_columns:
@@ -851,13 +855,20 @@ def public(row):
     snapshot = result.pop("fixture_labels", None)
     result["fixture_labels"] = None if snapshot is None else json.loads(snapshot)
     summary = result_summary(result)
+    generation = int(result.get("result_generation") or 0)
     result["result"] = {
+        # Summary facts first; the durable pointer and availability are
+        # authoritative and must not be shadowed by a stale summary member.
+        **(summary or {}),
         "state": result.get("result_state") or "none",
         "available": result_available(result),
         "summary": summary,
-        "generation": result.get("result_generation") or 0,
+        "generation": generation,
+        # The immutable generation directory (relative) and the pinned read
+        # base. Legacy flat rows expose generation 0 and no base.
+        "dir": result.get("result_dir") or "",
+        "base": f"/api/jobs/{result['id']}/results/{generation}" if generation else "",
         "extraction_error": result.get("extraction_error") or "",
-        **(summary or {}),
     }
     result["result_state"] = result["result"]["state"]
     result["extraction_error"] = result.get("extraction_error") or ""
@@ -1161,43 +1172,69 @@ def set_publication(jid, result_file, publication):
         )
 
 
-def import_result_job(revision, name, members, provenance, availability="complete"):
+def import_result_job(revision, name, members, provenance, availability="complete", package_path=None):
     """Materialize an opened portable result as a read-only historical job.
 
-    The result is never resubmitted or re-extracted; the row exists so the
-    existing viewer can display exactly the packaged frames, history and index.
-    ``availability`` carries a packaged partial generation through the same
-    badge, last-frame and solver-outcome fields as the live run.
+    The result is never resubmitted or re-extracted. The package becomes one
+    immutable generation directory, and every terminal fact it carries is kept
+    independently: solver outcome, extraction outcome, availability, last saved
+    step/time, origin identity and diagnostics. A legacy package that simply did
+    not record a fact is reported as ``Unknown`` rather than guessed as Failed.
     """
     jid = new_id()
     directory = job_dir(jid)
     directory.mkdir(parents=True, exist_ok=True)
-    manifest = []
-    for member, payload in members.items():
-        if member in {"setup.json"}:
-            continue
-        if member.startswith("frames/") or member in {
-            "results.json",
-            "history.csv",
-            "provenance.json",
-        }:
-            target = directory / Path(member).name
-            target.write_bytes(payload)
-            manifest.append(target.name)
-    now = time.time()
-    source = provenance.get("job", {}) if isinstance(provenance, dict) else {}
-    index = {}
+    state = "partial" if availability == "partial" else "complete"
     try:
-        import json as _json
-
-        index = _json.loads(members.get("results.json", b"{}").decode("utf-8"))
+        index = json.loads(members.get("results.json", b"{}").decode("utf-8"))
     except (TypeError, ValueError):
         index = {}
-    state = "partial" if availability == "partial" else "complete"
+    provenance = provenance if isinstance(provenance, dict) else {}
+    origin = provenance.get("job") or {}
+    facts = provenance.get("result") or {}
+    solver_outcome = (
+        index.get("solver_outcome")
+        or facts.get("solver_outcome")
+        or origin.get("solver")
+        or "Unknown"
+    )
+    extraction_outcome = (
+        facts.get("extraction_outcome")
+        or facts.get("extraction")
+        or origin.get("extraction")
+        or "Unknown"
+    )
+    failure_reason = index.get("failure_reason") or facts.get("failure_reason") or ""
+    # One immutable generation directory holds exactly the packaged members.
+    generation_dir = directory / "results" / f"gen-1-{jid}"
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for member, payload in members.items():
+        if member == "setup.json":
+            continue
+        if member.startswith("frames/"):
+            target = generation_dir / Path(member).name
+        elif member in {"results.json", "history.csv", "provenance.json"}:
+            target = generation_dir / Path(member).name
+        else:
+            continue
+        target.write_bytes(payload)
+        manifest.append(target.name)
+    from integrations.abaqus import interchange
+
+    try:
+        interchange.write_json(
+            generation_dir / "manifest.json",
+            interchange.generation_manifest(generation_dir, f"import-{jid}"),
+        )
+    except (OSError, ValueError):
+        pass
+    now = time.time()
     summary = {
         "availability": state,
-        "solver_outcome": index.get("solver_outcome") or source.get("solver"),
-        "failure_reason": index.get("failure_reason") or "",
+        "solver_outcome": solver_outcome,
+        "extraction_outcome": extraction_outcome,
+        "failure_reason": failure_reason,
         "last_step": index.get("last_step"),
         "last_step_id": index.get("last_step_id"),
         "last_role": index.get("last_role"),
@@ -1206,17 +1243,23 @@ def import_result_job(revision, name, members, provenance, availability="complet
         "frames": len(index.get("frames") or []),
         "history_only": bool(index.get("history_only")),
         "initial_only": bool(index.get("initial_only")),
+        "skipped": len(index.get("skipped_frames") or []),
         "frame_ordinal": index.get("last_frame_ordinal"),
         "native_frame_id": index.get("last_native_frame_id"),
         "increment": index.get("last_increment"),
         "imported": True,
+        "origin_job": str(origin.get("id") or ""),
+        "origin_name": str(origin.get("name") or ""),
+        "generation": 1,
+        "result_dir": f"results/gen-1-{jid}",
+        "provenance_complete": solver_outcome != "Unknown" and extraction_outcome != "Unknown",
     }
     with connection(True) as db:
         db.execute(
             """INSERT INTO jobs(id,revision,name,mode,scenario,cpus,token,created,started,ended,
                    solver,extraction,phase,diagnostic,step,increment,step_time,manifest,
-                   result_file,publication,result_state,result_summary,result_generation)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   result_file,publication,result_state,result_summary,result_generation,result_dir)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 jid,
                 str(revision),
@@ -1226,23 +1269,24 @@ def import_result_job(revision, name, members, provenance, availability="complet
                 1,
                 new_id(),
                 now,
-                source.get("created") or now,
-                source.get("ended") or now,
-                "Failed" if state == "partial" else "Succeeded",
-                "Succeeded",
+                origin.get("created") or now,
+                origin.get("ended") or now,
+                solver_outcome,
+                extraction_outcome,
                 "Partial result imported from a portable file"
                 if state == "partial"
                 else "Results imported from a portable file",
-                index.get("failure_reason") or "",
+                failure_reason,
                 index.get("last_step"),
                 index.get("last_increment"),
                 index.get("last_local_s"),
                 encoded(sorted(set(manifest))),
-                str(source.get("id") or ""),
+                str(package_path or origin.get("id") or ""),
                 "Imported",
                 state,
                 encoded(summary),
                 1,
+                f"results/gen-1-{jid}",
             ),
         )
     return job(jid)
@@ -1355,6 +1399,7 @@ def update(jid, owner, **values):
         "result_summary",
         "extraction_error",
         "result_generation",
+        "result_dir",
         "salvage",
         "cancel_scope",
     }
@@ -1374,6 +1419,10 @@ def cancel(jid):
         row = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
         if not row:
             raise KeyError("Job not found")
+        # Repeated cancel/duplicate requests are idempotent: the request is a
+        # flag on the row, not a second action.
+        if row["cancelled"]:
+            return job(jid)
         # A finished solver may still have a queued or running extraction (a
         # salvage attempt, or the existing retry path). Cancelling then stops the
         # extraction only; it must never be read later as cancelling a solver that
@@ -1442,6 +1491,90 @@ def authorize_extraction(jid):
             (str(jid),),
         )
     return job(jid)
+
+
+def publish_result_generation(
+    jid, owner, expected_generation, summary, generation, result_dir, availability, manifest
+):
+    """Atomically switch the durable result pointer and summary.
+
+    The generation directory was already finalized on disk. This transaction is
+    the only action that makes it authoritative. It is fenced on owner, expected
+    generation and cancellation so a late, stale or cancelled attempt cannot
+    replace a newer generation. Returns a reason string; ``ok`` means committed.
+    """
+    state = "partial" if availability == "partial" else "complete"
+    if isinstance(manifest, str):
+        try:
+            manifest = json.loads(manifest)
+        except (TypeError, ValueError):
+            manifest = []
+    with connection(True) as db:
+        row = db.execute(
+            "SELECT owner,cancelled,result_generation FROM jobs WHERE id=?", (str(jid),)
+        ).fetchone()
+        if row is None:
+            return "missing"
+        if row["owner"] != owner:
+            return "lease"
+        if int(row["result_generation"] or 0) != int(expected_generation):
+            return "generation"
+        if row["cancelled"]:
+            return "cancelled"
+        cursor = db.execute(
+            """UPDATE jobs SET result_state=?,result_summary=?,result_generation=?,result_dir=?,
+               extraction='Succeeded',extraction_error='',salvage=0,cancel_scope=NULL,
+               owner=NULL,heartbeat=?,ended=?,manifest=?,phase=?
+               WHERE id=? AND owner=? AND result_generation=? AND cancelled=0""",
+            (
+                state,
+                encoded(summary),
+                int(generation),
+                str(result_dir),
+                time.time(),
+                time.time(),
+                encoded(sorted(set(manifest))),
+                "Partial results ready" if state == "partial" else "Results ready",
+                str(jid),
+                owner,
+                int(expected_generation),
+            ),
+        )
+        return "ok" if cursor.rowcount == 1 else "fenced"
+
+
+def result_generation_dir(jid, generation=None):
+    """Resolve the immutable directory for a pinned generation.
+
+    Returns ``(base, generation)``; ``(None, 0)`` for a legacy flat-file row.
+    Raises ``KeyError`` when the requested generation is not retained.
+    """
+    row = job(jid)
+    current = int(row["result"]["generation"] or 0)
+    if not current:
+        return None, 0
+    requested = current if generation is None else int(generation)
+    if requested < 1 or requested > current:
+        raise KeyError("Result generation unavailable")
+    directory = job_dir(jid).resolve()
+    if requested == current and row["result"].get("dir"):
+        base = (directory / row["result"]["dir"]).resolve()
+    elif requested == current:
+        # A retained row written before generation directories (or an imported
+        # result from an older build) keeps its flat files as the pinned store.
+        base = directory
+    else:
+        candidates = sorted((directory / "results").glob(f"gen-{requested}-*"))
+        if not candidates:
+            raise KeyError("Result generation unavailable")
+        base = candidates[0].resolve()
+    try:
+        base.relative_to(directory)
+    except ValueError as exc:
+        raise KeyError("Result generation unavailable") from exc
+    if not (base / "results.json").is_file():
+        raise KeyError("Result generation unavailable")
+    return base, requested
 
 
 def retry(jid):

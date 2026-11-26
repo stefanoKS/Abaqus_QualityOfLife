@@ -1,3 +1,57 @@
+## Modified APLR · dense seal mesh and near-contact diagnosis · 2026-11-26
+
+Use the [dense-polyline meshing brief](docs/aplr-dense-polyline-meshing.txt) for the new drawing with SHA-256 prefix `d4f4d58e`. The three matching operator mesh jobs completed in 110–128 seconds. In an isolated native replay the 2,820-edge seal generated 78,491 surface elements. A 0.005 mm diagnostic simplification produced 4,498 surface elements in 1.7 seconds, with two cavities, +0.01851% filled-area change and 0.00499 mm maximum measured seal-boundary deviation. The recommended production change belongs in the meshing path and must preserve CAD assignments and material seams.
+
+The saved 10 mm body stroke stops just short of the modified seal. Readiness also reports a missing mounting selection on the inspected operator revision. After mounting nodes were selected in a disposable copy, Prepare still reported an ambiguous body contact side. Testing 10.1 mm body travel on the original and simplified meshes produced completed two-step decks. This was a diagnostic change of motion. No application change or licensed simulation was made in this investigation. Measurements and the mesh comparison are in `.local/evidence/aplr-dense-d4f4d58e/`.
+
+## APLR door geometry and final 2D results acceptance · delivered · 2026-11-26
+
+Executed the [seven-gate handoff](docs/final-results-and-aplr-handoff.txt) on the working tree inspected
+at `62a4e72`; all edits remain uncommitted. All application checks used disposable `SEAL_DATA` roots,
+isolated loopback servers and ignored local evidence. The operator instance on 8765 and its database,
+drawings and retained licensed jobs were not contacted or modified. **No solver was launched.** The
+engineer's `APLR.bak`, `APLR.dwl`, `APLR.dwl2`, `OTR.bak`, `OTR.dwl` and `OTR.dwl2` files were
+preserved untouched.
+
+Build **`6f6493a65ed0`** (entry `index-DV0IT9q6.js`, CSS `index-mMFYzC5a.css`, API 3). Native reader
+`dwg-inventory.exe` SHA-256 `0eec58d6…`.
+
+### Gate status
+
+| Gate | Status | Measured outcome |
+|---|---|---|
+| 1 — APLR native geometry | **PASS** | Baseline `acceptance_dwg.py` exited 1 with 9 components; after the OCS→WCS fix the original DWG imports as one 8-edge upper door, one lower body and one seal, with 2 open chains, 1 filled region, 2 cavities, area **121.0628326 mm²**, 58/122 R2D2, 14 WSFIX, one section and Body seating → Closing. Free endpoints match the reference at import precision. The normal UI (`aplr-workflow.spec.ts`) reaches Prepare and reopens a fresh `.aqmodel` with equal geometry/roles/cavities/material. |
+| 2 — contact side | **PASS** | C-section before: contact 0.74999975, normals `(0,−1)`, min dot −1.0. After exact segment-sweep contact: contact **0.75**, normals **`(0,+1)`**, dot **+1.0**. Slanted endpoint-only +0.978550, reversed CAD order +1.0, initial lower-lip touch reaches the upper lip at t=1.0, initial upper-lip touch t=0, near miss no contact, offset regression +1.0. APLR/OTR/OTR_single acceptance exit 0. |
+| 3 — result generation | **PASS (software, manufactured)** | Immutable per-attempt directory + hashed manifest, fenced atomic pointer commit, generation-qualified read routes, pinned packaging and generation-keyed browser frame cache. Slow retry readers keep the prior generation; a crash before commit leaves a safe candidate; stale/cancelled attempts cannot replace a newer generation. `test_result_generations.py` **8 passed**. |
+| 4 — cancellation/provenance | **PASS** | A verified cancelled solver with a safe ODB queues exactly one extraction-only recovery (Cancelled/Queued/salvage=1/cancelled=0), no second solver launch; repeated cancel is idempotent; no candidate persists a diagnostic. Portable reopen keeps Cancelled vs Failed and legacy Unknown; auto-package runs after commit. `test_cancellation_recovery.py` **5 passed**. |
+| 5 — last measured frame | **PASS** | Empty 0.90 s tail frame dropped while 0.60 s remains last; measured zero counts; U/S/CPRESS/CNORMF independent; unreadable CPRESS keeps U; history-only publishes without playback (`1 / 0`, `max=−1` gone) and opens the latest measured step. `test_last_field_frame.py` **5 passed**; `history-only.spec.ts` passed. |
+| 6 — pressure identity | **PASS (browser)** | Permuted labels `[2,1]`, pressure `[10,0]`, CNORMF `[(3,4),(0,0)]` map to station 0/node 1 = 0 kPa and station 3/node 2 = 10 kPa/(3,4) N; one arrow on node 2, tip (5,7) at 5 mm, ×2 (8,11); CSV original `0,10`, ×2 `0,20`. Duplicate/foreign identity suppresses chart/arrows/export with a localized reason. `pressure-identity.spec.ts` **2 passed**. |
+| 7 — browser failures | **PASS** | Settled camera **9.00000**, zoom **7.20000**, Fit **9.00000**; material editor waits for the clicked card and Density 0 disables Save (including CAE density); offset picking re-reads the current viewport rect and keeps BODY-1/PANEL-1 through zoom/pan. cae-materials → gate-a → materials → offset-picking **18 passed**. |
+
+### Tests actually run
+
+- Python **433 passed, 1 skipped**; `test:i18n` 1075 keys; `test:encoding` 48 files; typecheck/build
+  pass; `scripts/schema.py` additive and byte-stable on a second run.
+- `acceptance_dwg.py` for APLR, OTR and OTR_single: all exit 0, zero solver tokens.
+- Browser: APLR workflow 1 passed; pressure identity 2 passed; history-only 1 passed; the four
+  Gate-7 files 18 passed in the failing order. Full isolated suite on `6f6493a65ed0`: **201 passed,
+  0 failed, 11 skipped (212 tests, 16.0 min)**; the skips are the documented opt-in native/licensed
+  fixtures. See [implementation report A18](docs/implementation-report.md#a18-aplr-door-geometry-and-final-2d-results-acceptance--2026-11-26).
+
+### Outstanding
+
+1. **No solver was launched.** Convergence, mesh/stroke sensitivity and physical correlation remain
+   unestablished; Gate 2 contact side is deck geometry only.
+2. Saved APLR imports keep their old canonical coordinates. Reimport the drawing and review
+   geometry-bound roles, regions, fixed nodes and motion before simulation.
+3. The operator instance on 8765 was not upgraded and still serves its prior release.
+4. 3D solving remains deferred.
+
+**Next executable slice.** Run the small licensed APLR door/body and OTR two-step verification cases
+through API → worker → solver → extractor, compare predicted first-contact strokes with solver contact
+onset, and record convergence, load/pressure curves and sensitivity before any physical-correlation
+claim.
+
 ## Partial results, pressure-arrow calibration and result multiplier · delivered · 2026-11-26
 
 Executed the [handoff](docs/partial-results-arrows-multiplier-handoff.txt) on the working tree after

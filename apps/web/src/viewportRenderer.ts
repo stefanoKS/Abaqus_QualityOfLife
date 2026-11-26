@@ -195,6 +195,10 @@ export class ViewportRenderer {
   private ctx: CanvasRenderingContext2D
   private width = 1
   private height = 1
+  /** Host size used by the last fit; ``data-viewport-ready`` is only true when
+   *  it equals the size the projection was rendered with. */
+  private fitWidth = 0
+  private fitHeight = 0
   private ratio = 1
   private axes: ScreenPoint[] = []
   lengthUnit = 'mm'
@@ -211,6 +215,8 @@ export class ViewportRenderer {
     this.view.setContainer(host)
     this.renderer.getActiveCamera().setParallelProjection(true)
     this.ctx = overlay.getContext('2d')!
+    // No projection has been fitted to this host size yet.
+    host.dataset.viewportReady = 'false'
   }
   setScene(scene: Scene, dimension: '2D' | '3D', fit: boolean) {
     // A frame change keeps the same topology: reuse each actor and only push new
@@ -330,6 +336,8 @@ export class ViewportRenderer {
           )
       )
     this.renderer.resetCameraClippingRange(b)
+    this.fitWidth = this.width
+    this.fitHeight = this.height
     this.draw()
   }
   resize() {
@@ -421,6 +429,26 @@ export class ViewportRenderer {
       }),
     }))
     this.drawOverlay()
+    this.publishViewState()
+  }
+  /**
+   * Publish the camera and the host/fit geometry together, after the render and
+   * the overlay projection were updated. ``viewport-ready`` is true only when
+   * the last fit used the host size that produced this projection, so a camera
+   * read together with ``data-host-size`` is always internally consistent.
+   */
+  private publishViewState() {
+    const size = (width: number, height: number) =>
+      `${width.toFixed(2)}x${height.toFixed(2)}`
+    this.host.dataset.hostSize = size(this.width, this.height)
+    this.host.dataset.fitSize = size(this.fitWidth, this.fitHeight)
+    this.host.dataset.viewportReady =
+      this.fitWidth > 0 &&
+      this.fitWidth === this.width &&
+      this.fitHeight === this.height
+        ? 'true'
+        : 'false'
+    this.host.dataset.camera = this.cameraSignature()
   }
   pick(mode: SelectionMode, x: number, y: number) {
     return pickAt(this.projected, mode, x, y)

@@ -225,7 +225,10 @@ def _display(pressure=10.0, mises=0.2, cnormf=5.0):
 def write_arrows(folder: Path):
     index = _base_index()
     index["door_pressure"] = _profile([0.0], [10.0], [1], [[2.0, 3.0]])
-    index["frames"] = [{"time": 0.0, "step": "Closing", "step_id": "closing", "file": "frame-00000.json"}]
+    index["frames"] = [
+        {"time": 0.0, "step": "Closing", "step_id": "closing", "file": "frame-00000.json"},
+        {"time": 0.5, "step": "Closing", "step_id": "closing", "file": "frame-00001.json"},
+    ]
     index["history"] = [
         {
             "time": 0.0,
@@ -254,7 +257,126 @@ def write_arrows(folder: Path):
     ]
     index["display"] = _display()
     frame = _frame(index, 10.0, [3.0, 4.0], 0.2)
-    return _publish(folder, "arrows", index, {"frame-00000.json": frame})
+    second = _frame(index, 10.0, [3.0, 4.0], 0.2)
+    second.update(
+        {
+            "time": 0.5,
+            "total_time": 0.5,
+            "local_time": 0.5,
+            "frame_ordinal": 1,
+            "step_frame_ordinal": 1,
+            "native_frame_id": 2,
+            "increment": 2,
+        }
+    )
+    return _publish(
+        folder,
+        "arrows",
+        index,
+        {"frame-00000.json": frame, "frame-00001.json": second},
+    )
+
+
+def write_permuted(folder: Path):
+    """Gate 6: a clean label permutation with different payload per node.
+
+    The profile axis is [1, 2] at [0, 3] mm. The frame stores native samples in
+    the order [2, 1] with pressures [10, 0] kPa and CNORMF [(3,4), (0,0)] N, so
+    positional consumption would attach node 2's measurements to node 1.
+    """
+    index = _base_index()
+    index["door_pressure"] = _profile(
+        [0.0, 3.0],
+        [10.0, 0.0],
+        [1, 2],
+        [[2.0, 0.0], [2.0, 3.0]],
+    )
+    index["door_pressure"]["profiles"][0]["maximum_pressure_kpa"] = 10.0
+    index["frames"] = [
+        {"time": 0.0, "step": "Closing", "step_id": "closing", "file": "frame-00000.json"}
+    ]
+    index["history"] = [
+        {
+            "time": 0.0,
+            "step": "Closing",
+            "step_id": "closing",
+            "displacement": 0.0,
+            "force": 5.0,
+            "total_force_N": 5.0,
+            "u1": 0.0,
+            "u2": 0.0,
+            "rf1": 0.0,
+            "rf2": -5.0,
+        }
+    ]
+    index["display"] = _display()
+    frame = _frame(index, 0.0, [0.0, 0.0], 0.0)
+    frame["fields"]["CNORMF"]["values"] = [
+        {
+            "instance": "PANEL-1",
+            "position": "NODAL",
+            "node": 2,
+            "data": [3.0, 4.0],
+        },
+        {
+            "instance": "PANEL-1",
+            "position": "NODAL",
+            "node": 1,
+            "data": [0.0, 0.0],
+        },
+    ]
+    frame["door_pressure"]["profiles"]["profile-1"] = {
+        "instance": "PANEL-1",
+        "supported": True,
+        # Native sample order, deliberately the reverse of the station order.
+        "labels": [2, 1],
+        "pressure_mpa": [0.01, 0.0],
+        "pressure_kpa": [10.0, 0.0],
+        "cnormf_n": [[3.0, 4.0], [0.0, 0.0]],
+        "force_magnitude_n": [5.0, 0.0],
+        "ambiguous": [],
+        "availability": {"pressure": "reported", "force": "reported"},
+    }
+    return _publish(folder, "permuted", index, {"frame-00000.json": frame})
+
+
+def write_history_only(folder: Path):
+    """Measured history with no usable field frame: the CLD curve must still open."""
+    index = _base_index(availability="partial", solver="Succeeded")
+    index["history_only"] = True
+    index["frames"] = []
+    index["door_pressure"] = {"enabled": False}
+    index["history"] = [
+        {
+            "time": 0.0,
+            "step": "Closing",
+            "step_id": "closing",
+            "displacement": 0.0,
+            "force": 0.0,
+            "total_force_N": 0.0,
+            "u1": 0.0,
+            "u2": 0.0,
+            "rf1": 0.0,
+            "rf2": 0.0,
+        },
+        {
+            "time": 1.0,
+            "step": "Closing",
+            "step_id": "closing",
+            "displacement": 1.0,
+            "force": 9.0,
+            "total_force_N": 9.0,
+            "u1": 0.0,
+            "u2": -1.0,
+            "rf1": 0.0,
+            "rf2": -9.0,
+        },
+    ]
+    index["last_step"] = "Closing"
+    index["last_step_id"] = "closing"
+    index["last_total_s"] = 1.0
+    index["display"] = _display()
+    return _publish(folder, "history-only", index, {})
 
 
 def write_gaps(folder: Path):
@@ -495,7 +617,7 @@ def main():
     args = parser.parse_args()
     folder = Path(args.folder)
     folder.mkdir(parents=True, exist_ok=True)
-    for writer in (write_arrows, write_gaps, write_partial, write_partial_body):
+    for writer in (write_arrows, write_gaps, write_permuted, write_history_only, write_partial, write_partial_body):
         print(writer(folder))
 
 

@@ -916,7 +916,7 @@ export const en: Dictionary = {
   'run.multiplierReset': 'Reset to ×1',
   'run.multiplierInvalid': 'Enter a finite, nonnegative multiplier.',
   'run.multiplierActive': '×{factor} applied to displayed responses',
-  'run.partialTitle': 'Failed · partial results',
+  'run.partialTitle': '{outcome} · partial results',
   'run.partialStep': 'Last saved step: {step}',
   'run.partialFrame': 'Saved frame {ordinal} · {total} frames',
   'run.partialTime': 'Last saved local {local} s · total {total} s',
@@ -924,6 +924,8 @@ export const en: Dictionary = {
     'Last reported solver increment {increment} at {time} s (not a failure time)',
   'run.partialHistoryOnly':
     'Only the native history is recoverable; field visualization is unavailable.',
+  'run.noFieldFrames':
+    'No supported field frame was measured. The structural history below is available; playback and field probes are disabled.',
   'run.partialInitialOnly': 'Only the initial state was saved.',
   'run.extractAvailable': 'Extract available results',
   'run.extractAvailableHelp':
@@ -1099,6 +1101,7 @@ export const en: Dictionary = {
   'state.Processing results': 'Processing results',
   'state.Completed': 'Completed',
   'state.Pending': 'Pending',
+  'state.Unknown': 'Unknown',
   'state.Unknown / worker disconnected': 'Unknown / worker disconnected',
 
   'phase.Awaiting worker': 'Awaiting worker',
@@ -1223,6 +1226,8 @@ export const en: Dictionary = {
   'run.pressureExportUnavailable': 'Door pressure is unavailable for the displayed frame.',
   'run.pressureArrayMismatch':
     'The displayed frame pressure array does not match the selected door profile. Scrub to a frame that carries this profile.',
+  'run.pressureIdentityUnavailable':
+    'The displayed frame pressure samples cannot be bound to the selected door profile by node identity (duplicate, missing or foreign instance). Spatial pressure and arrows are suppressed.',
   'run.pressureExportBasis':
     '{profile} · step {step} · displayed frame {frame} · {unit} · stations from the assembled profile',
   'run.exportBasis': '{panel} · {step} · {unit} · {sign}',
